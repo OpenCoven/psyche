@@ -114,7 +114,7 @@ impl Extensions {
             Some(value) => T::deserialize(value.clone())
                 .map(Some)
                 .map_err(|e: toml::de::Error| ConfigError::Parse {
-                    detail: e.message().to_string(),
+                    detail: detail_from(&e),
                     path: None,
                 }),
         }
@@ -128,7 +128,8 @@ impl Extensions {
 /// verbatim and its `Debug` carries `input: Some(<the entire file>)`, so holding
 /// one would leave every secret in the file a single `?err` away from a log. The
 /// deserializer error is reduced to a payload-free form at exactly one place —
-/// [`reduce_toml_error`] — which is what review should grep for.
+/// [`detail_from`] — which is what review should grep for. [`reduce_toml_error`]
+/// wraps it for the file-loading path only, so it is not the exhaustive one.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     /// The file is not valid TOML, or violates the strict schema.
@@ -168,24 +169,36 @@ pub enum ConfigError {
     },
 }
 
-/// The single conversion from a deserializer error into a payload-free one.
+/// The single place a deserializer error is reduced to payload-free text.
 ///
-/// `toml::de::Error::message()` is the bare diagnostic without the source line
-/// that `Display` renders. Line and column are derived from `span()`, which is a
-/// byte offset and therefore carries no file content. Keeping this in one place
-/// means review greps `reduce_toml_error` rather than auditing every `?`.
+/// `toml::de::Error::message()` is the bare diagnostic; its `Display` would
+/// render the offending source line and its `Debug` carries the whole input.
+/// Every crossing of that boundary goes through this function, so review greps
+/// one name rather than auditing each `?`.
+fn detail_from(err: &toml::de::Error) -> String {
+    err.message().to_string()
+}
+
+/// Reduces a deserializer error from the file-loading path, adding position and
+/// originating path to [`detail_from`]'s payload-free text.
+///
+/// Line and column are derived from `span()`, which is a byte offset and
+/// therefore carries no file content.
 fn reduce_toml_error(raw: &str, err: &toml::de::Error, path: Option<&Path>) -> ConfigError {
     let at = err
         .span()
         .map(|s| {
             let before = &raw[..s.start.min(raw.len())];
             let line = before.matches('\n').count() + 1;
+            // Column is a byte offset within the line, not a character offset,
+            // so it can skew on lines containing multibyte text. Content-free
+            // either way.
             let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
             format!("line {line}, column {column}: ")
         })
         .unwrap_or_default();
     ConfigError::Parse {
-        detail: format!("{at}{}", err.message()),
+        detail: format!("{at}{}", detail_from(err)),
         path: path.map(Path::to_path_buf),
     }
 }
