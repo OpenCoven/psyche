@@ -7,7 +7,7 @@ resolver = "3"
 # declared member's manifest on ANY command — `--no-deps` and `--manifest-path`
 # both still walk up to the workspace root — so naming a crate before it exists
 # makes the entire workspace uninvokable, including `cargo test`.
-members = ["crates/psyche-core"]
+members = ["crates/psyche-core", "crates/psyche-config"]
 
 [workspace.package]
 version = "0.0.0"
@@ -25,6 +25,7 @@ publish = false   # distributed via npm, never crates.io
 # Path entries are added by the task that creates each crate, for the same
 # reason `members` is: naming a path that does not exist is a latent break.
 psyche-core = { path = "crates/psyche-core" }
+psyche-config = { path = "crates/psyche-config" }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 thiserror = "2"
