@@ -9,6 +9,11 @@ use std::fmt;
 /// allowlisted secret-store scheme — so neither a bare credential nor a URL
 /// with one embedded in it can enter. Both `Debug` and `Display` redact, so a
 /// reference cannot leave through a log line or a panic message either.
+///
+/// `Serialize` is deliberately not implemented. A type that redacts in logs but
+/// prints plaintext in a config dump is a trap. If a dump ever needs it (e.g. a
+/// `config show` command), it must be a hand-written impl rather than a derive,
+/// so the choice is visible at the site that makes it.
 #[derive(Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(try_from = "String")]
 pub struct SecretRef(String);
@@ -18,6 +23,15 @@ pub struct SecretRef(String);
 /// Every variant is deliberately payload-free. The rejection path is exactly
 /// where a real secret is most likely to be present, so the rejected value is
 /// dropped rather than echoed into an error message or a log line.
+///
+/// **That guarantee ends at this type.** A deserializer may wrap it in an error
+/// that is not payload-free: `toml::de::Error` — the one the configuration
+/// contract actually uses — echoes the offending source line through `Display`,
+/// and its `Debug` carries the entire input file. Logging one with
+/// `tracing::error!(?err)` after a failed config load would emit every secret in
+/// that file, not just the rejected value. A config loader must render its own
+/// message and must never log a `toml::de::Error` from a file that can contain
+/// `secret_ref`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SecretRefError {
     /// The value did not begin with a supported secret-store scheme.
@@ -71,6 +85,21 @@ const REQUIRED_SEGMENTS: usize = 3;
 /// paste accident. Bounds the blast radius of any future redaction bug.
 const MAX_REFERENCE_LEN: usize = 2048;
 
+/// Characters rejected inside a reference path.
+///
+/// `char::is_control` covers Unicode `Cc` only. The `Cf` format characters below
+/// enable visual spoofing — a right-to-left override can make a path render as
+/// something other than what it resolves to — so they are rejected explicitly
+/// rather than pulling in a Unicode-category dependency for the general case.
+fn is_forbidden_in_path(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{200b}'..='\u{200f}'   // zero-width and directional marks
+            | '\u{202a}'..='\u{202e}' // bidi embedding and overrides
+            | '\u{2066}'..='\u{2069}' // bidi isolates
+        )
+}
+
 impl TryFrom<String> for SecretRef {
     type Error = SecretRefError;
 
@@ -89,7 +118,7 @@ impl TryFrom<String> for SecretRef {
         }
         // Surrounding whitespace only: vault and item names may legitimately
         // contain internal spaces.
-        if path.trim() != path || path.chars().any(char::is_control) {
+        if path.trim() != path || path.chars().any(is_forbidden_in_path) {
             return Err(SecretRefError::MalformedPath);
         }
         let mut segments = 0usize;
@@ -196,6 +225,10 @@ mod tests {
         // the grammar as the literal text `VAULT/ITEM/FIELD`, so that input
         // collides with a static example rather than proving an echo. The
         // assertion below is unchanged in strength — only the sample differs.
+        //
+        // Every sample must be >= 8 bytes: windows(8) yields no iterations for
+        // shorter input, so a short sample would pass vacuously. "op://" (the
+        // EmptyPath case, 5 bytes) is deliberately not in this list.
         for input in [
             secretish,
             long,
@@ -231,6 +264,14 @@ mod tests {
             ("op://VAULT/ITEM/field\n", SecretRefError::MalformedPath),
             (
                 "op://VAULT\u{1b}[31m/ITEM/field",
+                SecretRefError::MalformedPath,
+            ),
+            (
+                "op://VAULT/ITEM/fi\u{202e}eld",
+                SecretRefError::MalformedPath,
+            ),
+            (
+                "op://VA\u{200b}ULT/ITEM/field",
                 SecretRefError::MalformedPath,
             ),
         ] {
