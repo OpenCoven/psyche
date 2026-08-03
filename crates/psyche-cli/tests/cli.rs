@@ -77,27 +77,17 @@ fn doctor_succeeds_without_any_telegram_credentials() {
         .stdout(contains("config: ok").and(contains("data_dir: ok")));
 }
 
-#[test]
-fn status_reports_stopped_when_no_daemon_is_running() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = write_config(tmp.path()).unwrap();
-    Command::cargo_bin("psyche")
-        .unwrap()
-        .args(["status", "--config", config.to_str().unwrap(), "--json"])
-        .assert()
-        .success()
-        .stdout(contains("\"state\":\"stopped\""));
-}
-
-/// `stopped` is not observed — there is no daemon IPC in this build — and the
-/// document has to say so. A consumer that learns to trust a bare `state` field
-/// and is told about the caveat in a later release has already shipped the code
-/// that ignores it.
+/// `status` emits no `state` at all, because it observed none.
+///
+/// The document used to say `{"state":"stopped","observed":false}`, which is a
+/// false statement on any host where a daemon *is* running — and `jq -r .state`
+/// is what people actually write. The caveat has to be structural: a field that
+/// is absent cannot be read past.
 ///
 /// Parsed rather than substring-matched, which also pins that stdout is a whole
 /// valid JSON document: a log line leaking onto stdout would fail here.
 #[test]
-fn status_json_marks_the_answer_as_unobserved() {
+fn status_json_does_not_report_a_state_it_could_not_observe() {
     let tmp = tempfile::tempdir().unwrap();
     let config = write_config(tmp.path()).unwrap();
     let assert = Command::cargo_bin("psyche")
@@ -108,16 +98,31 @@ fn status_json_marks_the_answer_as_unobserved() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let document: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
 
-    assert_eq!(document["state"], serde_json::json!("stopped"), "{stdout}");
+    // Versioned, like `psyche.config.v1` and `coven.daemon.v1`. This repository
+    // treats schema versioning as first-class everywhere except, until now, its
+    // own machine-readable output.
+    assert_eq!(
+        document["schema"],
+        serde_json::json!("psyche.status.v1"),
+        "{stdout}"
+    );
     assert_eq!(
         document.get("observed"),
         Some(&serde_json::json!(false)),
         "the answer must be marked as not observed: {stdout}"
     );
+    // Present and null, not absent: a consumer distinguishing "no state" from
+    // "no such field" should not have to.
+    assert_eq!(
+        document.get("state"),
+        Some(&serde_json::Value::Null),
+        "state must be null when nothing was observed: {stdout}"
+    );
+    assert_eq!(document["reason"], serde_json::json!("no-ipc"), "{stdout}");
 }
 
-/// The human rendering carries the same caveat. Without it, the two output modes
-/// disagree about how much the command actually knows.
+/// The human rendering carries the same caveat, and likewise names no state.
+/// Without this the two output modes disagree about how much the command knows.
 #[test]
 fn status_text_says_the_state_was_not_observed() {
     let tmp = tempfile::tempdir().unwrap();
@@ -127,7 +132,10 @@ fn status_text_says_the_state_was_not_observed() {
         .args(["status", "--config", config.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(contains("stopped").and(contains("not observed")));
+        .stdout(contains("not observed").and(contains("no-ipc")))
+        // The old rendering led with `state: stopped`, which is the claim being
+        // retracted. An operator skimming for a state word must not find one.
+        .stdout(contains("stopped").not());
 }
 
 /// The reason lands in the report, on stdout, inside the `config` check — not as

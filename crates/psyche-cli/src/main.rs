@@ -16,9 +16,8 @@ use clap::{Parser, Subcommand};
 // crate root for why the daemon path and the log subscriber are shared rather
 // than reimplemented per binary.
 use psyche_cli::{
-    EXIT_CHECK_FAILED, EXIT_CONFIG, EXIT_OK, EXIT_UNAVAILABLE, daemon, doctor, logging,
+    EXIT_CHECK_FAILED, EXIT_CONFIG, EXIT_OK, EXIT_UNAVAILABLE, daemon, doctor, logging, status,
 };
-use psyche_runtime::LifecycleState;
 
 #[derive(Debug, Parser)]
 #[command(name = "psyche", version, about = "Psyche familiar runtime")]
@@ -176,26 +175,19 @@ async fn main() -> ExitCode {
             unreachable!("doctor is dispatched before the configuration load")
         }
         Command::Status { json } => {
-            // `stopped`, and marked as not observed. `status` is a separate
-            // process from the daemon and there is no IPC in this build, so it
-            // cannot see a running `psyched`; on a host where one *is* running,
-            // this answer is wrong. Carrying the caveat as a field rather than
-            // as a comment in this file is the point — a consumer that learns to
-            // trust a bare `state` and is told about the caveat in a later
-            // release has already written the code that ignores it.
-            //
-            // The spelling comes from `LifecycleState`'s `Display`, not from a
-            // literal here, so the wire word has exactly one definition.
-            let state = LifecycleState::Stopped;
-            if json {
-                let document = serde_json::json!({
-                    "state": state.to_string(),
-                    "observed": false,
-                });
-                println!("{document}");
-            } else {
-                println!("state: {state} (not observed: no daemon IPC in this build)");
-            }
+            // Nothing was observed, and this build has no way to observe
+            // anything: `status` runs in a different process from the daemon and
+            // there is no IPC. Which is why it reports a *reason* rather than a
+            // state — see `psyche_cli::status` for why the caveat is structural.
+            let observation = status::Observation::Unobserved(status::Unobserved::NoIpc);
+            print!(
+                "{}",
+                if json {
+                    status::render_json(&observation) + "\n"
+                } else {
+                    status::render_text(&observation)
+                }
+            );
             ExitCode::from(EXIT_OK)
         }
         Command::Start {

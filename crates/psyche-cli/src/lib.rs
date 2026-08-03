@@ -19,6 +19,7 @@
 pub mod daemon;
 pub mod doctor;
 pub mod logging;
+pub mod status;
 
 // The exit-code space, defined in one place because both binaries owe an
 // operator the same one.
