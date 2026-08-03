@@ -23,16 +23,35 @@ use psyche_runtime::LifecycleState;
 #[derive(Debug, Parser)]
 #[command(name = "psyche", version, about = "Psyche familiar runtime")]
 struct Cli {
+    /// Configuration file. Resolution order: --config, $PSYCHE_CONFIG,
+    /// ./psyche.toml.
+    ///
+    /// `global`, so it is accepted either side of the subcommand:
+    /// `psyche --config X status` reads as the natural order and used to be a
+    /// usage error. It also collapses what were four identical declarations and
+    /// a four-arm match that existed only to pull the value back out of them.
+    ///
+    /// The default is relative to the working directory, which a systemd system
+    /// unit leaves at `/` — so a service without an explicit path was resolving
+    /// `/psyche.toml`. `$PSYCHE_CONFIG` is the fix for the container case, where
+    /// the path cannot be put on argv. Deliberately no XDG or `/etc` lookup:
+    /// deferred, not rejected, and it belongs with the packaging work rather
+    /// than here.
+    #[arg(
+        long,
+        global = true,
+        env = "PSYCHE_CONFIG",
+        default_value = "psyche.toml"
+    )]
+    config: PathBuf,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Start the daemon in the foreground.
+    /// Start the daemon in the foreground. Equivalent to running `psyched`.
     Start {
-        #[arg(long, default_value = "psyche.toml")]
-        config: PathBuf,
         /// Start, then immediately shut down. Used by tests and smoke checks so
         /// the full lifecycle runs without needing a signal.
         #[arg(long)]
@@ -43,22 +62,16 @@ enum Command {
     /// The help text says so because the command cannot do it. It used to
     /// promise a graceful shutdown and exit 0 having done nothing, which is what
     /// `psyche stop && deploy` reads as success.
-    Stop {
-        #[arg(long, default_value = "psyche.toml")]
-        config: PathBuf,
-    },
+    Stop,
     /// Report daemon state.
     Status {
-        #[arg(long, default_value = "psyche.toml")]
-        config: PathBuf,
+        /// Emit a `psyche.status.v1` document on stdout instead of a line of
+        /// prose.
         #[arg(long)]
         json: bool,
     },
     /// Run local, credential-free environment checks.
-    Doctor {
-        #[arg(long, default_value = "psyche.toml")]
-        config: PathBuf,
-    },
+    Doctor,
 }
 
 /// `unwrap`/`expect` are denied outside tests, so every failure path here
@@ -80,12 +93,7 @@ async fn main() -> ExitCode {
     logging::install();
     let cli = Cli::parse();
 
-    let path = match &cli.command {
-        Command::Start { config, .. }
-        | Command::Stop { config }
-        | Command::Status { config, .. }
-        | Command::Doctor { config } => config.clone(),
-    };
+    let path = cli.config;
 
     let config = match psyche_config::load_path(&path) {
         Ok(c) => c,
@@ -101,7 +109,7 @@ async fn main() -> ExitCode {
     tracing::debug!(path = %path.display(), "configuration loaded");
 
     match cli.command {
-        Command::Doctor { .. } => {
+        Command::Doctor => {
             let checks = doctor::run(&config);
             let failed = checks.iter().filter(|c| !c.ok).count();
             for check in &checks {
@@ -118,7 +126,7 @@ async fn main() -> ExitCode {
                 ExitCode::from(EXIT_CHECK_FAILED)
             }
         }
-        Command::Status { json, .. } => {
+        Command::Status { json } => {
             // `stopped`, and marked as not observed. `status` is a separate
             // process from the daemon and there is no IPC in this build, so it
             // cannot see a running `psyched`; on a host where one *is* running,
@@ -145,7 +153,7 @@ async fn main() -> ExitCode {
             shutdown_after_start,
             ..
         } => daemon::run(config, shutdown_after_start).await,
-        Command::Stop { .. } => {
+        Command::Stop => {
             // Non-zero, because nothing was stopped. The previous form printed
             // "no running daemon to stop" and exited 0, which a rolling restart
             // scripted as `psyche stop && deploy` reads as "the old daemon is

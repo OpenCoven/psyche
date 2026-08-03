@@ -19,9 +19,20 @@ use clap::Parser;
 use psyche_cli::{EXIT_CONFIG, daemon, logging};
 
 #[derive(Debug, Parser)]
-#[command(name = "psyched", version, about = "Psyche daemon")]
+#[command(
+    name = "psyched",
+    version,
+    about = "Psyche daemon, in the foreground. Equivalent to `psyche start`."
+)]
 struct Cli {
-    #[arg(long, default_value = "psyche.toml")]
+    /// Configuration file. Resolution order: --config, $PSYCHE_CONFIG,
+    /// ./psyche.toml.
+    ///
+    /// Must match `psyche`'s, flag for flag: an operator who learns one and
+    /// writes the other into a unit file is entitled to have it work. The
+    /// default being relative to the working directory is why the environment
+    /// variable exists — a systemd system unit leaves that at `/`.
+    #[arg(long, env = "PSYCHE_CONFIG", default_value = "psyche.toml")]
     config: PathBuf,
     /// Start, then immediately shut down. Used by tests and smoke checks so the
     /// full lifecycle runs without needing a signal.

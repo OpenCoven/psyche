@@ -207,6 +207,108 @@ fn stop_reports_that_it_cannot_reach_a_daemon() {
         .stdout(predicates::str::is_empty());
 }
 
+/// `--config` beats `$PSYCHE_CONFIG` beats `./psyche.toml`, on both binaries.
+///
+/// The default is relative to the working directory, and a systemd system unit
+/// defaults to `WorkingDirectory=/` — so a `psyched.service` without an explicit
+/// `--config` was resolving `/psyche.toml`. An environment variable is also how a
+/// container image parameterises this, and there was none.
+#[test]
+fn config_resolves_from_the_flag_then_the_environment_then_the_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let chosen = write_config(tmp.path()).unwrap();
+    // A path that would fail to load if it were ever preferred over `--config`.
+    let decoy = tmp.path().join("decoy.toml");
+    std::fs::write(&decoy, "schema_version = \"psyche.config.v99\"\n").unwrap();
+
+    for binary in ["psyche", "psyched"] {
+        // `$PSYCHE_CONFIG` alone.
+        let mut command = Command::cargo_bin(binary).unwrap();
+        if binary == "psyche" {
+            command.arg("start");
+        }
+        command
+            .env("PSYCHE_CONFIG", &chosen)
+            .arg("--shutdown-after-start")
+            .assert()
+            .success();
+
+        // `--config` wins over `$PSYCHE_CONFIG`; the decoy would exit 3.
+        let mut command = Command::cargo_bin(binary).unwrap();
+        if binary == "psyche" {
+            command.arg("start");
+        }
+        command
+            .env("PSYCHE_CONFIG", &decoy)
+            .args([
+                "--config",
+                chosen.to_str().unwrap(),
+                "--shutdown-after-start",
+            ])
+            .assert()
+            .success();
+    }
+}
+
+/// With neither the flag nor the variable set, the default is `./psyche.toml` —
+/// and the error has to name the path that was actually tried, or an operator
+/// whose service resolved `/psyche.toml` has nothing to go on.
+#[test]
+fn the_default_config_is_relative_to_the_working_directory() {
+    let present = tempfile::tempdir().unwrap();
+    write_config(present.path()).unwrap();
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .env_remove("PSYCHE_CONFIG")
+        .current_dir(present.path())
+        .arg("doctor")
+        .assert()
+        .success();
+
+    let absent = tempfile::tempdir().unwrap();
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .env_remove("PSYCHE_CONFIG")
+        .current_dir(absent.path())
+        .arg("doctor")
+        .assert()
+        .code(i32::from(EXIT_CONFIG))
+        .stderr(contains("psyche.toml"));
+}
+
+/// `psyche --config X status` reads as the natural order and used to be a usage
+/// error. A global argument accepts both placements, and the old form still
+/// works — this asserts the pair, because "global" is only worth having if it is
+/// backwards compatible.
+#[test]
+fn config_is_accepted_before_or_after_the_subcommand() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = write_config(tmp.path()).unwrap();
+    let path = config.to_str().unwrap();
+
+    for args in [["--config", path, "status"], ["status", "--config", path]] {
+        Command::cargo_bin("psyche")
+            .unwrap()
+            .args(args)
+            .assert()
+            .success();
+    }
+}
+
+/// The resolution order is stated in `--help`. An operator writing a unit file
+/// reads that, not this repository.
+#[test]
+fn help_states_the_config_resolution_order() {
+    for binary in ["psyche", "psyched"] {
+        Command::cargo_bin(binary)
+            .unwrap()
+            .arg("--help")
+            .assert()
+            .success()
+            .stdout(contains("PSYCHE_CONFIG").and(contains("psyche.toml")));
+    }
+}
+
 /// Every entry point owes the same answer for the same broken configuration.
 ///
 /// Asserted per code rather than as "non-zero": the whole point of the space is
