@@ -6,12 +6,15 @@ an unknown version is reported as an unsupported version, not as an unknown
 field.
 
 Unknown fields are errors. The only exception is the `extensions` table, whose
-keys must themselves be versioned identifiers of the form
-`<namespace>.<name>.v<N>` — for example `psyche.experiment.v1`. This is
-enforced at load time, not merely documented: a key that does not match is
-rejected with an error naming the key.
+keys must themselves be versioned identifiers: at least one non-empty dotted
+segment followed by a final `.v<digits>` — for example `psyche.experiment.v1`,
+or `a.v0` at the minimum. This is enforced at load time, not merely
+documented: a key that does not match is rejected with an error naming the key.
 
-A file larger than 1 MiB is refused before it is read.
+Loading stops after 1 MiB and reports the configuration as too large. The limit
+is applied to the bytes actually read rather than to a stated file size, so it
+also holds for a path that reports no size at all — a FIFO or a character
+device such as `/dev/zero`.
 
 Secrets are named by reference (for example `op://VAULT/ITEM/token`), never
 written as literal values. The `SecretRef` type that enforces this lives in

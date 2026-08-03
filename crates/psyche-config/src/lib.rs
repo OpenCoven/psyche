@@ -3,15 +3,18 @@
 //! cause.
 
 use std::fmt;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use psyche_core::schema::{SchemaError, ensure_schema_version};
 use serde::Deserialize;
 
-/// Largest configuration file this build will read, in bytes.
+/// Largest configuration this build will read, in bytes.
 ///
-/// A daemon that reloads on SIGHUP reads whatever path it was pointed at; a
-/// symlink to a huge file would otherwise be an out-of-memory switch.
+/// A daemon that reloads on SIGHUP reads whatever path it was pointed at; an
+/// oversized file — or an endless stream — would otherwise be an
+/// out-of-memory switch. [`load_path`] enforces this against the bytes it
+/// actually reads, not against a stated size.
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 /// Wire representation. Private on purpose: it is the only thing that derives
@@ -22,6 +25,16 @@ pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigRepr {
+    // Never read: `VersionProbe` validates the value, and this parse cannot
+    // disagree with it — both are `toml::from_str` over the same `&str` with the
+    // same parser, a duplicate key is a hard parse error before either derive
+    // runs, and `deny_unknown_fields` changes what is rejected, not which value
+    // binds. The field exists only so the strict parse accepts the key.
+    #[expect(
+        dead_code,
+        reason = "declared so deny_unknown_fields accepts the key; \
+                  the value is validated once, via VersionProbe"
+    )]
     schema_version: String,
     data_dir: PathBuf,
     coven: CovenConfig,
@@ -105,16 +118,26 @@ impl Extensions {
 
     /// Deserialise one extension table into a caller-owned type.
     ///
+    /// The error names the key but carries no position: the `Value`
+    /// deserializer reports `span() == None`, so there is no line or column to
+    /// report. Naming the key is safe for the same reason the unversioned-key
+    /// check gives — a key is operator-authored structure, not a value.
+    ///
     /// # Errors
     ///
     /// Returns [`ConfigError::Parse`] if the table does not match `T`.
     pub fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>, ConfigError> {
         match self.0.get(key) {
             None => Ok(None),
+            // `value.clone()` is forced by the API: `toml` 1.1.4 implements
+            // `Deserializer` for `Value`, not for `&Value`. Do NOT "optimise"
+            // this into a string round-trip — re-serialising would write every
+            // value back out, which is exactly what this crate keeps out of
+            // memory it does not control.
             Some(value) => T::deserialize(value.clone())
                 .map(Some)
                 .map_err(|e: toml::de::Error| ConfigError::Parse {
-                    detail: detail_from(&e),
+                    detail: format!("extension {key:?}: {}", detail_from(&e)),
                     path: None,
                 }),
         }
@@ -130,6 +153,12 @@ impl Extensions {
 /// deserializer error is reduced to a payload-free form at exactly one place —
 /// [`detail_from`] — which is what review should grep for. [`reduce_toml_error`]
 /// wraps it for the file-loading path only, so it is not the exhaustive one.
+///
+/// `Parse` has three construction sites, not two: the two deserializer paths
+/// above, plus the unversioned-extension-key branch in `load_inner`. That third
+/// one is built from a key this crate validated itself, never from a
+/// `toml::de::Error`, so `detail_from` covering two of three is correct rather
+/// than an omission.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     /// The file is not valid TOML, or violates the strict schema.
@@ -159,12 +188,14 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
-    /// The configuration file is larger than [`MAX_CONFIG_BYTES`].
-    #[error("configuration at {path} is {bytes} bytes, over the {MAX_CONFIG_BYTES} byte limit")]
+    /// The configuration is larger than [`MAX_CONFIG_BYTES`].
+    #[error("configuration at {path} exceeds the {MAX_CONFIG_BYTES} byte limit")]
     TooLarge {
         /// Path that was too large to read.
         path: PathBuf,
-        /// Size reported by the filesystem.
+        /// Bytes read before the cap tripped — always `MAX_CONFIG_BYTES + 1`,
+        /// which is a lower bound and not the true size. The read stops at the
+        /// cap on purpose, and the source may be a stream with no size at all.
         bytes: u64,
     },
 }
@@ -185,25 +216,29 @@ fn detail_from(err: &toml::de::Error) -> String {
 /// Line and column are derived from `span()`, which is a byte offset and
 /// therefore carries no file content.
 fn reduce_toml_error(raw: &str, err: &toml::de::Error, path: Option<&Path>) -> ConfigError {
+    // `raw.get(..start)` rather than `&raw[..start]`: `&str` slicing panics off
+    // a char boundary, and nothing documents that `toml`'s spans land on one.
+    // No position is a worse error, not a dead daemon, so fall back to none.
     let at = err
         .span()
-        .map(|s| {
-            let before = &raw[..s.start.min(raw.len())];
+        .and_then(|s| raw.get(..s.start))
+        .map_or_else(String::new, |before| {
             let line = before.matches('\n').count() + 1;
             // Column is a byte offset within the line, not a character offset,
             // so it can skew on lines containing multibyte text. Content-free
             // either way.
             let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
             format!("line {line}, column {column}: ")
-        })
-        .unwrap_or_default();
+        });
     ConfigError::Parse {
         detail: format!("{at}{}", detail_from(err)),
         path: path.map(Path::to_path_buf),
     }
 }
 
-/// Whether a key looks like `<namespace>.<name>.v<N>`.
+/// Whether a key is a versioned identifier: at least one non-empty dotted
+/// segment, then a final `.v<digits>`. `psyche.experiment.v1` and `a.v0` both
+/// qualify; `v1` and `not_versioned` do not.
 fn is_versioned_key(key: &str) -> bool {
     let mut parts = key.rsplit('.');
     let Some(version) = parts.next() else {
@@ -234,10 +269,6 @@ fn load_inner(raw: &str, path: Option<&Path>) -> Result<Config, ConfigError> {
     ensure_schema_version(&probe.schema_version)?;
 
     let repr: ConfigRepr = toml::from_str(raw).map_err(|e| reduce_toml_error(raw, &e, path))?;
-    // Belt and braces: the strict parse is a second, independent read of the
-    // document, so its version is re-checked rather than assumed to match the
-    // probe's. This is also what keeps the field live rather than dead code.
-    ensure_schema_version(&repr.schema_version)?;
 
     for key in repr.extensions.keys() {
         if !is_versioned_key(key) {
@@ -279,26 +310,31 @@ pub fn load_str(raw: &str) -> Result<Config, ConfigError> {
 ///
 /// # Errors
 ///
-/// Returns [`ConfigError::Read`] if the file cannot be read,
-/// [`ConfigError::TooLarge`] if it exceeds [`MAX_CONFIG_BYTES`], and otherwise
-/// whatever [`load_str`] returns for its contents.
+/// Returns [`ConfigError::Read`] if the file cannot be opened or read,
+/// [`ConfigError::TooLarge`] if more than [`MAX_CONFIG_BYTES`] can be read from
+/// it, and otherwise whatever [`load_str`] returns for its contents.
 pub fn load_path(path: &Path) -> Result<Config, ConfigError> {
-    // Bounded read: a daemon that reloads on SIGHUP should not OOM on a
-    // symlink to a huge file.
-    let meta = std::fs::metadata(path).map_err(|source| ConfigError::Read {
+    let file = std::fs::File::open(path).map_err(|source| ConfigError::Read {
         path: path.to_path_buf(),
         source,
     })?;
-    if meta.len() > MAX_CONFIG_BYTES {
+    // Bound the read, not the metadata: `metadata().len()` is 0 for FIFOs and
+    // character devices, so a size check on it lets an unbounded stream through
+    // — /dev/zero yields valid UTF-8 forever. Reading MAX+1 also closes the
+    // TOCTOU window between stat and read.
+    let mut raw = String::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut raw)
+        .map_err(|source| ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if raw.len() as u64 > MAX_CONFIG_BYTES {
         return Err(ConfigError::TooLarge {
             path: path.to_path_buf(),
-            bytes: meta.len(),
+            bytes: raw.len() as u64,
         });
     }
-    let raw = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
     load_inner(&raw, Some(path))
 }
 
@@ -446,12 +482,15 @@ required_api_version = "coven.daemon.v1"
         let missing: Option<Experiment> = cfg.extensions.get("psyche.absent.v1").unwrap();
         assert_eq!(missing, None);
 
-        // A shape mismatch is a Parse error, not a panic.
+        // A shape mismatch is a Parse error, not a panic, and it names the key
+        // so the operator knows which extension table to look at.
         let bad = cfg
             .extensions
             .get::<u8>("psyche.experiment.v1")
             .unwrap_err();
         assert!(matches!(bad, ConfigError::Parse { .. }), "{bad:?}");
+        let rendered = bad.to_string();
+        assert!(rendered.contains("psyche.experiment.v1"), "{rendered}");
     }
 
     #[test]
@@ -467,6 +506,25 @@ required_api_version = "coven.daemon.v1"
         assert_eq!(cfg.data_dir, PathBuf::from("/var/lib/psyche"));
         assert_eq!(cfg.coven.socket, PathBuf::from("/run/coven.sock"));
         assert_eq!(cfg.schema_version(), "psyche.config.v1");
+    }
+
+    #[test]
+    fn refuses_a_file_over_the_size_cap() {
+        let big = format!("{}\n# {}", valid(), "x".repeat(MAX_CONFIG_BYTES as usize));
+        let file = temp_with(&big);
+        assert!(matches!(
+            load_path(file.path()).unwrap_err(),
+            ConfigError::TooLarge { .. }
+        ));
+    }
+
+    #[test]
+    fn accepts_a_file_just_under_the_size_cap() {
+        // Guards the boundary from the other side: an off-by-one that rejects
+        // everything would otherwise pass the test above.
+        let pad = MAX_CONFIG_BYTES as usize - valid().len() - 16;
+        let ok = format!("{}\n# {}", valid(), "x".repeat(pad));
+        assert!(load_path(temp_with(&ok).path()).is_ok());
     }
 
     #[test]
