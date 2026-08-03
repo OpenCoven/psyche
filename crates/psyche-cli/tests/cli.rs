@@ -12,7 +12,13 @@ use predicates::str::contains;
 // The exit codes are asserted against the constants the binaries return, not
 // against literals: a test carrying its own copy of `3` would keep passing
 // through a renumbering that broke every unit file in the field.
-use psyche_cli::{EXIT_CHECK_FAILED, EXIT_CONFIG, EXIT_UNAVAILABLE};
+use psyche_cli::{EXIT_CONFIG, EXIT_UNAVAILABLE};
+// Split out rather than folded into the line above: its only use is inside a
+// `#[cfg(unix)]` test, so on Windows the import is dead and `-D warnings` — which
+// CI sets workflow-wide — promotes that to a hard error in both the clippy and
+// the test job. Latent on Unix, which is why it survived until a cross-check.
+#[cfg(unix)]
+use psyche_cli::EXIT_CHECK_FAILED;
 
 /// A 30-byte stand-in for a credential parked in an extension table. Long and
 /// distinctive so a partial echo is still detectable by the window scan below.
