@@ -2,16 +2,18 @@
 //! versions are denied before field validation so the error names the real
 //! cause.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use psyche_core::schema::{SchemaError, ensure_schema_version};
 use serde::Deserialize;
 
 /// A parsed `psyche.config.v1` document.
-// `PartialEq` but not `Eq`: `extensions` is a `toml::Table`, whose values
-// include `Value::Float(f64)`, and `f64` is not `Eq` (NaN). The spec's `Eq`
-// derive does not compile; equality here is genuinely partial.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+///
+/// No `Eq`: `extensions` is a `toml::Table` whose values include `Float(f64)`,
+/// so `toml::Value` derives only `PartialEq`. No derived `Debug` either — see
+/// the manual impl below.
+#[derive(Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Must be `psyche.config.v1`; any other value is denied.
@@ -49,7 +51,13 @@ pub enum ConfigError {
     /// The file is not valid TOML, or violates the strict schema.
     #[error("configuration is not valid: {detail}")]
     Parse {
-        /// Deserializer message only. Never the source line, never the file.
+        /// Deserializer message only — never the source line, never the file.
+        ///
+        /// File-free, but not unconditionally value-free: serde's `invalid type`
+        /// diagnostic embeds the offending scalar, so a secret placed in a field
+        /// of the wrong type would appear here. A field typed
+        /// `psyche_core::secret::SecretRef` is unaffected, because its
+        /// `try_from` routes failures through a payload-free error instead.
         detail: String,
     },
     /// The declared `schema_version` is not accepted by this build.
@@ -64,6 +72,25 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
+}
+
+// Manual `Debug`, not derived. `extensions` holds arbitrary untyped
+// `toml::Value`, so a derived impl would print whatever is in it — including a
+// secret placed there by a future extension — on `tracing::debug!(?config)`
+// after a *successful* load. `reduce_toml_error` guards the failure path; this
+// guards the success path, which is the one more often logged.
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("schema_version", &self.schema_version)
+            .field("data_dir", &self.data_dir)
+            .field("coven", &self.coven)
+            .field(
+                "extensions",
+                &format_args!("<{} key(s) redacted>", self.extensions.len()),
+            )
+            .finish()
+    }
 }
 
 /// The single conversion from a deserializer error into a payload-free one.
@@ -177,6 +204,19 @@ required_api_version = "coven.daemon.v1"
         let raw = format!("{VALID}\n[extensions.\"psyche.experiment.v1\"]\nenabled = true\n");
         let cfg = load_str(&raw).unwrap();
         assert!(cfg.extensions.contains_key("psyche.experiment.v1"));
+    }
+
+    #[test]
+    fn debug_does_not_print_extension_values() {
+        let raw = format!(
+            "{VALID}\n[extensions.\"psyche.experiment.v1\"]\nlooks_like_a_secret = \"{}\"\n",
+            "A".repeat(30)
+        );
+        let cfg = load_str(&raw).unwrap();
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("looks_like_a_secret"), "{rendered}");
+        assert!(!rendered.contains(&"A".repeat(30)), "{rendered}");
+        assert!(rendered.contains("1 key(s) redacted"), "{rendered}");
     }
 
     #[test]

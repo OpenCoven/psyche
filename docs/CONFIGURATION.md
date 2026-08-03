@@ -8,9 +8,11 @@ field.
 Unknown fields are errors. The only exception is the `extensions` table, whose
 keys must themselves be versioned identifiers.
 
-Raw secret values are never valid configuration. Secrets are named by reference
-(for example `op://VAULT/ITEM/token`); a literal value is rejected at parse
-time.
+Secrets are named by reference (for example `op://VAULT/ITEM/token`), never
+written as literal values. The `SecretRef` type that enforces this lives in
+`psyche-core` and rejects a literal at parse time — but no field in this release
+is typed as one yet, so nothing enforces it today. Enforcement arrives with the
+first secret-bearing field, in a later workstream.
 
 ## Minimal example
 
