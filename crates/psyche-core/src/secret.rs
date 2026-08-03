@@ -26,7 +26,9 @@ pub enum SecretRefError {
     /// would accept `https://host/bot<token>/send` or
     /// `https://user:pass@host/path`, both of which carry the secret *inside*
     /// the URI — the likelier paste, since it is the form API docs show.
-    #[error("secret_ref must name a supported secret store, e.g. `op://VAULT/ITEM/field`")]
+    #[error(
+        "secret_ref must name a supported secret store (case-sensitive), e.g. `op://VAULT/ITEM/field`"
+    )]
     UnsupportedScheme,
     /// A supported scheme with nothing after it, such as a bare `op://`.
     ///
@@ -34,6 +36,20 @@ pub enum SecretRefError {
     /// configuration file that caused it.
     #[error("secret_ref has a scheme but no path, e.g. `op://` with no vault/item/field")]
     EmptyPath,
+    /// The path is present but not a usable reference: too few segments, an
+    /// empty segment, surrounding whitespace, or a control character.
+    ///
+    /// Whitespace is rejected rather than trimmed. Storing something other than
+    /// what the operator wrote is worse than telling them, and control
+    /// characters would otherwise reach a resolver's log line as injection —
+    /// the same argument `schema` makes for `{found:?}`.
+    #[error(
+        "secret_ref path must be VAULT/ITEM/FIELD with no empty segments, surrounding whitespace, or control characters"
+    )]
+    MalformedPath,
+    /// The reference exceeds the maximum accepted length.
+    #[error("secret_ref is too long")]
+    TooLong,
 }
 
 /// Schemes naming a supported external secret store.
@@ -43,6 +59,18 @@ pub enum SecretRefError {
 /// general URI check, so a value can only ever *point at* a secret.
 const SUPPORTED_SCHEMES: [&str; 1] = ["op://"];
 
+/// Minimum `/`-separated segments after the scheme: vault, item, field.
+///
+/// Path grammar is per-store, so a second scheme means more than another entry
+/// in [`SUPPORTED_SCHEMES`] — it needs per-scheme dispatch, e.g.
+/// `[(&str, fn(&str) -> bool); N]`. Recorded here so that is a deliberate
+/// decision rather than one made under pressure when the second store lands.
+const REQUIRED_SEGMENTS: usize = 3;
+
+/// Longest reference accepted. A vault path is short; anything near this is a
+/// paste accident. Bounds the blast radius of any future redaction bug.
+const MAX_REFERENCE_LEN: usize = 2048;
+
 impl TryFrom<String> for SecretRef {
     type Error = SecretRefError;
 
@@ -50,8 +78,29 @@ impl TryFrom<String> for SecretRef {
         let Some(scheme) = SUPPORTED_SCHEMES.iter().find(|s| raw.starts_with(**s)) else {
             return Err(SecretRefError::UnsupportedScheme);
         };
-        if raw.len() == scheme.len() {
+        if raw.len() > MAX_REFERENCE_LEN {
+            return Err(SecretRefError::TooLong);
+        }
+        // `starts_with` guarantees scheme.len() is a char boundary, so this
+        // slice cannot panic — worth stating in a crate that denies `unwrap`.
+        let path = &raw[scheme.len()..];
+        if path.is_empty() {
             return Err(SecretRefError::EmptyPath);
+        }
+        // Surrounding whitespace only: vault and item names may legitimately
+        // contain internal spaces.
+        if path.trim() != path || path.chars().any(char::is_control) {
+            return Err(SecretRefError::MalformedPath);
+        }
+        let mut segments = 0usize;
+        for segment in path.split('/') {
+            if segment.is_empty() {
+                return Err(SecretRefError::MalformedPath);
+            }
+            segments += 1;
+        }
+        if segments < REQUIRED_SEGMENTS {
+            return Err(SecretRefError::MalformedPath);
         }
         Ok(SecretRef(raw))
     }
@@ -137,17 +186,108 @@ mod tests {
     }
 
     #[test]
-    fn error_messages_never_echo_the_rejected_value() {
-        // The rejection path is where a real secret is most likely present.
+    fn error_renderings_never_echo_any_of_the_rejected_value() {
+        // Display AND Debug: Debug is what panics and `tracing` `?err` print, so
+        // a payload field added to a variant would leak there first. Checks every
+        // 8-byte window, not just the whole string, so a truncated echo fails too.
         let secretish = format!("{}:{}", "1234567890", "A".repeat(35));
-        let rendered = SecretRef::try_from(secretish.clone())
-            .unwrap_err()
-            .to_string();
-        assert!(
-            !rendered.contains(&secretish),
-            "error echoed the input: {rendered}"
+        let long = format!("op://{}", "B".repeat(4096));
+        // Deliberately NOT `op://VAULT/ITEM`: `MalformedPath`'s message states
+        // the grammar as the literal text `VAULT/ITEM/FIELD`, so that input
+        // collides with a static example rather than proving an echo. The
+        // assertion below is unchanged in strength — only the sample differs.
+        for input in [
+            secretish,
+            long,
+            "op://alpha/beta".to_string(),
+            "op:// x/y/z".to_string(),
+        ] {
+            let err = SecretRef::try_from(input.clone()).unwrap_err();
+            for rendering in [err.to_string(), format!("{err:?}")] {
+                for window in input.as_bytes().windows(8) {
+                    let needle = String::from_utf8_lossy(window);
+                    assert!(
+                        !rendering.contains(needle.as_ref()),
+                        "error echoed {needle:?} from input: {rendering}"
+                    );
+                }
+            }
+        }
+    }
+
+    // Mirrors schema.rs's denies_near_misses. Without it, someone "helpfully"
+    // adding .trim() or a case-insensitive scheme match breaks these silently.
+    #[test]
+    fn rejects_near_misses() {
+        for (input, expected) in [
+            ("OP://VAULT/ITEM/field", SecretRefError::UnsupportedScheme),
+            (" op://VAULT/ITEM/field", SecretRefError::UnsupportedScheme),
+            ("op://VAULT/ITEM", SecretRefError::MalformedPath),
+            ("op://VAULT", SecretRefError::MalformedPath),
+            ("op:///", SecretRefError::MalformedPath),
+            ("op://VAULT//field", SecretRefError::MalformedPath),
+            ("op:// VAULT/ITEM/field", SecretRefError::MalformedPath),
+            ("op://VAULT/ITEM/field ", SecretRefError::MalformedPath),
+            ("op://VAULT/ITEM/field\n", SecretRefError::MalformedPath),
+            (
+                "op://VAULT\u{1b}[31m/ITEM/field",
+                SecretRefError::MalformedPath,
+            ),
+        ] {
+            assert_eq!(
+                SecretRef::try_from(input.to_string()).unwrap_err(),
+                expected,
+                "wrong error for {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_internal_spaces_in_segment_names() {
+        // 1Password vault and item names legitimately contain spaces.
+        assert!(SecretRef::try_from("op://My Vault/My Item/token".to_string()).is_ok());
+    }
+
+    #[test]
+    fn rejects_an_over_long_reference() {
+        let long = format!("op://{}", "B".repeat(4096));
+        assert_eq!(
+            SecretRef::try_from(long).unwrap_err(),
+            SecretRefError::TooLong
         );
     }
+
+    // The serde attribute is the load-bearing mechanism and was previously
+    // untested: deleting `#[serde(try_from = "String")]` would make SecretRef
+    // accept any string, and every other test here would still pass.
+    #[test]
+    fn deserialising_goes_through_validation() {
+        // `unwrap_err` on `Result<Holder, _>` needs `Holder: Debug`. Deriving it
+        // is safe precisely because `SecretRef`'s own `Debug` redacts, so the
+        // nested rendering is `Holder { secret_ref: SecretRef(<redacted>) }`.
+        #[derive(Debug, serde::Deserialize)]
+        struct Holder {
+            secret_ref: SecretRef,
+        }
+
+        let ok: Holder = serde_json::from_str(r#"{"secret_ref":"op://V/I/f"}"#).unwrap();
+        assert_eq!(ok.secret_ref.expose_reference(), "op://V/I/f");
+
+        let token_shaped = format!("{}:{}", "1234567890", "A".repeat(35));
+        let json = format!(r#"{{"secret_ref":"{token_shaped}"}}"#);
+        let err = serde_json::from_str::<Holder>(&json).unwrap_err();
+        assert!(
+            !err.to_string().contains(&token_shaped),
+            "serde echoed input: {err}"
+        );
+    }
+
+    // psyche-runtime is tokio-based; these cross task boundaries.
+    const _: fn() = || {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+        assert_send_sync_static::<SecretRef>();
+        assert_send_sync_static::<SecretRefError>();
+    };
 
     #[test]
     fn debug_never_reveals_the_reference() {
