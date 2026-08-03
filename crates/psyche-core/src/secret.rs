@@ -298,6 +298,21 @@ mod tests {
         );
     }
 
+    // Distinct from the test above, which a mutation pass showed is weaker than
+    // it reads: `op://BBBB…` is *also* malformed — one segment, not three — so
+    // removing the MAX_REFERENCE_LEN check entirely still rejects it, just as
+    // `MalformedPath`. That test fails on the variant mismatch, never on the
+    // reference being accepted. This sample is well-formed in every respect
+    // except length, so only the length check can reject it.
+    #[test]
+    fn rejects_an_over_long_but_otherwise_valid_reference() {
+        let long = format!("op://VAULT/ITEM/{}", "B".repeat(MAX_REFERENCE_LEN));
+        assert_eq!(
+            SecretRef::try_from(long).unwrap_err(),
+            SecretRefError::TooLong
+        );
+    }
+
     // The serde attribute is the load-bearing mechanism and was previously
     // untested: deleting `#[serde(try_from = "String")]` would make SecretRef
     // accept any string, and every other test here would still pass.

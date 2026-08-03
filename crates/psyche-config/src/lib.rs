@@ -49,6 +49,15 @@ struct ConfigRepr {
 ///
 /// No `Eq`: [`Extensions`] wraps a `toml::Table` whose values include
 /// `Float(f64)`, so only `PartialEq` is available.
+///
+/// `Config` deliberately does not implement `Deserialize`. Restoring that derive
+/// would let a consumer obtain one without ever running `ensure_schema_version`,
+/// so this is pinned by a compile-fail test rather than left to review:
+///
+/// ```compile_fail
+/// // Must NOT compile: the only route to a Config is load_str/load_path.
+/// let _: psyche_config::Config = toml::from_str("data_dir = \"/tmp\"").unwrap();
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     /// Directory owning local Psyche state.
@@ -527,6 +536,58 @@ required_api_version = "coven.daemon.v1"
         assert!(load_path(temp_with(&ok).path()).is_ok());
     }
 
+    // The two tests above use regular files, whose metadata is accurate, so
+    // they cannot tell a bounded read from a metadata check — a mutation pass
+    // confirmed both stay green if `take(MAX + 1)` is swapped back for
+    // `metadata().len()`. This is the property that change actually fixed.
+    #[test]
+    #[cfg(unix)]
+    fn refuses_a_stream_whose_metadata_understates_its_size() {
+        // A FIFO reports metadata().len() == 0 no matter how much it yields.
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("cfg.fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let w = fifo.clone();
+        let writer = std::thread::spawn(move || {
+            // Opening for write blocks until load_path opens the read end; once
+            // load_path drops the file, write_all returns EPIPE and this
+            // returns, so the join below cannot hang the suite.
+            let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&w) else {
+                return;
+            };
+            let chunk = format!("# {}\n", "x".repeat(4094));
+            // 2 MiB: twice the cap. Bails out once the reader stops.
+            for _ in 0..512 {
+                if f.write_all(chunk.as_bytes()).is_err() {
+                    return;
+                }
+            }
+        });
+
+        let err = load_path(&fifo).unwrap_err();
+        let _ = writer.join();
+
+        assert_eq!(
+            std::fs::metadata(&fifo).unwrap().len(),
+            0,
+            "precondition: FIFO understates size"
+        );
+        // `bytes == MAX_CONFIG_BYTES + 1` is what makes this a bounded-read
+        // test rather than another size test: it pins that the cap tripped on
+        // bytes actually read, not on a size the stream claimed.
+        assert!(
+            matches!(err, ConfigError::TooLarge { bytes, .. } if bytes == MAX_CONFIG_BYTES + 1),
+            "cap must trip on bytes read, not on stated size; got {err:?}"
+        );
+    }
+
     #[test]
     fn parse_errors_report_line_and_column() {
         // Duplicate top-level key: the bare message is "duplicate key", which
@@ -536,6 +597,49 @@ required_api_version = "coven.daemon.v1"
         let rendered = err.to_string();
         assert!(rendered.contains("line "), "{rendered}");
         assert!(rendered.contains("column "), "{rendered}");
+    }
+
+    // `detail_from` is the invariant this crate's docs tell review to grep for,
+    // and it had no test: swapping `err.message()` for `err.to_string()` left
+    // the whole suite green while the error rendered the offending source line
+    // verbatim — secret and all. Every existing parse test asserts what the
+    // message *contains*, never what it must omit.
+    #[test]
+    fn parse_errors_never_echo_the_offending_source_line() {
+        // detail_from must reduce toml::de::Error to message(), never Display:
+        // Display renders the source line, which is where the secret is.
+        let secretish = format!("{}:{}", "1234567890", "A".repeat(35));
+
+        // (a) unknown top-level field whose *value* is the secret
+        let raw = format!("{HEAD}telegram_token = \"{secretish}\"\n{COVEN}");
+        // (b) same, from a file, so reduce_toml_error's path is covered too
+        let f = temp_with(&raw);
+
+        for rendered in [
+            load_str(&raw).unwrap_err().to_string(),
+            load_path(f.path()).unwrap_err().to_string(),
+            // (c) extension get(), the other detail_from call site
+            {
+                let raw = format!(
+                    "{}\n[extensions.\"psyche.experiment.v1\"]\ntoken = \"{secretish}\"\n",
+                    valid()
+                );
+                let cfg = load_str(&raw).unwrap();
+                cfg.extensions
+                    .get::<u8>("psyche.experiment.v1")
+                    .unwrap_err()
+                    .to_string()
+            },
+        ] {
+            // windows(8), matching secret.rs: catches a truncated echo too.
+            for window in secretish.as_bytes().windows(8) {
+                let needle = String::from_utf8_lossy(window);
+                assert!(
+                    !rendered.contains(needle.as_ref()),
+                    "error echoed {needle:?} from the source line: {rendered}"
+                );
+            }
+        }
     }
 
     #[test]
