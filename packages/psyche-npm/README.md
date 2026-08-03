@@ -32,11 +32,30 @@ else:
    the wrapper aborts without executing anything. On a match it spawns the
    binary with `stdio: 'inherit'`, forwards `process.argv.slice(2)` unchanged,
    and exits with the child's status — or `128 + signum` if the child was killed
-   by a signal, which is what a shell reports for the same death.
+   by a signal, which is what a shell reports for the same death. A binary that
+   passes the digest and then fails to exec — a companion package built for the
+   wrong architecture, say — reports the exec error rather than exiting silently.
 
 Arguments and stdio are passed through verbatim. The wrapper parses no flags of
 its own, so `psyche --help` is the Rust binary's help, and
 `psyche status --json | jq` works through it.
+
+## Signals
+
+`SIGINT`, `SIGTERM`, `SIGHUP` and `SIGQUIT` are forwarded to the daemon
+(`SIGINT`, `SIGTERM`, `SIGBREAK` on Windows, which has no others). The wrapper
+then waits for the child and exits with its outcome, so `docker stop`,
+`systemctl stop`, and a Kubernetes `preStop` hook all reach `psyched` and get the
+graceful drain it implements.
+
+This is the reason the wrapper spawns asynchronously. A synchronous spawn blocks
+Node's event loop inside `waitpid`, so a signal handler is JavaScript that cannot
+run until the child has already exited: the wrapper dies, the daemon is
+reparented to init, and it never drains. That failure is invisible interactively
+— Ctrl-C keeps working because a terminal signals the entire foreground process
+group and the child hears it directly, with the wrapper playing no part — and
+appears only under a directed `kill`, which is what every supervisor sends. Two
+tests pin it, and both are shown to fail against the synchronous form.
 
 ## What the all-zero digests mean
 
@@ -84,6 +103,29 @@ a check, not a guarantee, and two limits are worth stating plainly:
 
 Any other platform/arch pair is refused. Notably absent: `win32-arm64`, and any
 32-bit target.
+
+## What the companion packages must do
+
+Two requirements this wrapper depends on, neither of which it can enforce,
+recorded here because the release job that builds those packages at G12 is what
+has to honour them. Both were found by testing this wrapper's failure paths, not
+by reading its code.
+
+- **Declare `os` and `cpu`.** The "not installed" message tells an operator that
+  npm skipped an optional dependency whose platform did not match. npm only does
+  that skipping when the dependency itself declares `os` and `cpu`; without them
+  it installs all five platform binaries on every host, and the message this
+  package ships becomes false.
+- **Do not hide `package.json` behind `exports`.** The binary is located via
+  `require.resolve('<pkg>/package.json')`. A package declaring an `exports` map
+  without a `"./package.json"` entry is installed and importable, yet that call
+  fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`. The wrapper distinguishes this from
+  absence and says so, rather than sending the operator into a reinstall loop
+  that cannot terminate — but the correct fix is on the companion side.
+
+Also outstanding for G12: this repository declares MIT in both `package.json`
+and `Cargo.toml` but contains no `LICENSE` file, so the tarball would ship a
+licence claim with no licence text.
 
 ## Installation
 

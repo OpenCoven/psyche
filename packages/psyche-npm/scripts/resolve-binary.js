@@ -27,6 +27,20 @@ function resolveBinary(platform, arch, manifest, resolvePkgJson = (id) => requir
   try {
     pkgJson = resolvePkgJson(`${pkg}/package.json`);
   } catch (cause) {
+    // Only absence means "not installed". A package that declares `exports`
+    // without a `"./package.json"` entry is present and resolvable yet fails
+    // here with ERR_PACKAGE_PATH_NOT_EXPORTED, and telling that operator to
+    // reinstall sends them round a loop that cannot terminate. Companion
+    // packages must therefore omit `exports` or export `./package.json`; this
+    // branch is what makes a violation legible instead of misleading.
+    if (cause && cause.code !== 'MODULE_NOT_FOUND') {
+      throw new Error(
+        `${pkg} is installed but its package.json could not be resolved ` +
+          `(${cause.code ?? 'unknown error'}). A companion package must not ` +
+          `hide package.json behind an "exports" map.`,
+        { cause }
+      );
+    }
     // npm silently skips an optional dependency whose platform does not match,
     // so this is the ordinary state on an unsupported host. Say which package is
     // missing and that reinstalling is the fix; `MODULE_NOT_FOUND` says neither.
@@ -42,7 +56,29 @@ function resolveBinary(platform, arch, manifest, resolvePkgJson = (id) => requir
 }
 
 /**
- * Maps a `spawnSync` result to the exit code this process should report.
+ * Signals this wrapper forwards to the daemon.
+ *
+ * Ctrl-C already reaches the child without any of this — a tty signals the whole
+ * foreground process group — which is exactly why the gap was easy to miss. A
+ * directed `kill` from a supervisor hits the wrapper alone, so forwarding is the
+ * only thing that lets `psyched`'s SIGTERM handling run at all.
+ *
+ * Windows has no real signals; Node emulates SIGINT, SIGBREAK, SIGHUP and
+ * SIGTERM on top of console events, and listening for a signal it does not
+ * emulate throws. SIGUSR1 and SIGUSR2 are deliberately absent everywhere: Node
+ * reserves SIGUSR1 to start its inspector, and taking it over would silently
+ * disable that for anyone debugging the wrapper.
+ */
+const FORWARDED_SIGNALS =
+  process.platform === 'win32'
+    ? ['SIGINT', 'SIGTERM', 'SIGBREAK']
+    : ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
+
+/**
+ * Maps a child's `(status, signal)` outcome to the exit code this process
+ * should report. Shaped for `child.on('close')`, and identical to what
+ * `spawnSync` returns, so the contract did not change when the wrapper moved off
+ * the synchronous spawn.
  *
  * A child killed by a signal has `status === null`; reporting 1 for that claims
  * the daemon chose to fail when it was actually killed, and reporting 0 would
@@ -58,4 +94,4 @@ function exitCodeFor(result) {
   return 1; // spawn itself failed
 }
 
-module.exports = { resolveBinary, exitCodeFor };
+module.exports = { resolveBinary, exitCodeFor, FORWARDED_SIGNALS };

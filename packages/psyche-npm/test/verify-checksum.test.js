@@ -101,15 +101,43 @@ test('appends .exe only on Windows', () => {
   assert.ok(found.binary.endsWith('psyche.exe'));
 });
 
+/** A resolver that fails the way Node's really does, carrying `code`. */
+function failsWith(code) {
+  return () => {
+    const err = new Error(`stand-in for ${code}`);
+    err.code = code;
+    throw err;
+  };
+}
+
 test('names the missing companion package rather than surfacing MODULE_NOT_FOUND', () => {
   // The bare `require.resolve` failure reads
   // "Cannot find module '@opencoven/psyche-linux-x64/package.json'", which tells
   // an operator nothing about what to do. npm skips optional dependencies whose
   // platform does not match, so this is the *expected* state on an unsupported
   // host, not an exotic one.
+  //
+  // The stand-in sets `code`, not just a message: that is the field Node
+  // populates and the field `resolveBinary` branches on, so a fake that only
+  // matched the text would pass while proving nothing.
   assert.throws(
-    () => resolveBinary('linux', 'x64', MANIFEST, () => { throw new Error('MODULE_NOT_FOUND'); }),
+    () => resolveBinary('linux', 'x64', MANIFEST, failsWith('MODULE_NOT_FOUND')),
     /@opencoven\/psyche-linux-x64.*not installed/s
+  );
+});
+
+test('does not tell an operator to reinstall a package that is already installed', () => {
+  // A companion package declaring `exports` without a `"./package.json"` entry
+  // is present and resolvable, yet `require.resolve('<pkg>/package.json')` fails
+  // with ERR_PACKAGE_PATH_NOT_EXPORTED. Reporting "not installed" there sends
+  // the operator round a reinstall loop that can never succeed, so absence and
+  // misconfiguration must not collapse into one message.
+  assert.throws(
+    () => resolveBinary('linux', 'x64', MANIFEST, failsWith('ERR_PACKAGE_PATH_NOT_EXPORTED')),
+    (err) =>
+      /is installed but its package.json could not be resolved/.test(err.message) &&
+      /exports/.test(err.message) &&
+      !/not installed\./.test(err.message)
   );
 });
 
