@@ -3,6 +3,7 @@
 /// The only configuration schema this build accepts.
 pub const CONFIG_SCHEMA_VERSION: &str = "psyche.config.v1";
 
+/// Reasons a declared schema version is not usable by this build.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SchemaError {
     // {found:?} not {found}: a hand-edited `schema_version = " psyche.config.v1"`
@@ -10,8 +11,13 @@ pub enum SchemaError {
     // value is untrusted text going into a log line — newlines and ANSI escapes
     // are log injection. `expected` is not a field: it is always this const, and
     // a public field would let callers construct a state that cannot exist.
+    /// The configuration declared a version this build does not accept. Denial
+    /// is unconditional: there is no compatibility range and no coercion.
     #[error("unsupported schema_version {found:?}; this build accepts {CONFIG_SCHEMA_VERSION:?}")]
-    UnsupportedVersion { found: String },
+    UnsupportedVersion {
+        /// The rejected value, byte-for-byte as it appeared in the configuration.
+        found: String,
+    },
 }
 
 /// Returns `Ok` only for the exact supported version. No range matching, no
