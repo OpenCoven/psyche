@@ -59,26 +59,20 @@ impl fmt::Display for LifecycleState {
 
 /// Failures from driving the runtime lifecycle.
 ///
-/// `#[non_exhaustive]`: the store, socket, and lease work that attaches at the
-/// drain seam brings its own failures, and adding a variant for one must not be
-/// a breaking change for `psyche-cli`.
+/// Deliberately empty. Nothing in this slice can fail: [`Runtime::start`] does
+/// no I/O yet, and a losing [`Runtime::shutdown`] caller waits for the winner
+/// and returns `Ok` rather than erroring. The type and the `Result` signatures
+/// exist so that the first real failure — opening `data_dir`, binding the Coven
+/// socket, acquiring a lease — is an added variant rather than a breaking
+/// signature change.
 ///
-/// **No current path constructs [`RuntimeError::ShutdownInProgress`].** Since
-/// [`Runtime::shutdown`] makes a losing caller *wait* for the drain rather than
-/// refusing it, there is no longer a moment at which a caller can be told that a
-/// shutdown is in progress — by the time it would be told, the shutdown is
-/// finished. The variant is kept, named for the condition rather than for the
-/// outcome, because the IPC path in the follow-on G2 plan has a caller that
-/// genuinely cannot wait: a remote `psyche stop` answering over a socket must
-/// reply immediately rather than hold the connection open for the drain.
+/// Do not add a variant speculatively. Add it with the code that returns it. An
+/// earlier draft carried a `ShutdownInProgress` variant that nothing
+/// constructed; it implied to every reader that `shutdown` refuses a second
+/// caller, which is the behaviour the waiting loser deliberately replaced.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum RuntimeError {
-    /// Another caller had already claimed the shutdown, and this caller was not
-    /// willing to wait for it.
-    #[error("shutdown already in progress")]
-    ShutdownInProgress,
-}
+pub enum RuntimeError {}
 
 /// Which side of the shutdown election a caller ended up on.
 ///
@@ -162,8 +156,9 @@ impl Runtime {
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError`] once startup acquires anything that can fail.
-    /// This build always returns `Ok`.
+    /// None are possible in this build — [`RuntimeError`] has no variants, so
+    /// this always returns `Ok`. The signature is the point: the first thing
+    /// startup acquires becomes a variant, not a breaking change.
     pub async fn start(config: Config) -> Result<Self, RuntimeError> {
         // `Sender::new`, not `watch::channel(..)`: `channel` also hands back a
         // `Receiver` that this type has no use for, and dropping it would leave
@@ -303,8 +298,9 @@ impl Runtime {
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError`] once the drain acquires anything that can fail.
-    /// This build always returns `Ok`.
+    /// None are possible in this build — [`RuntimeError`] has no variants, so
+    /// this always returns `Ok`. Losing the election is explicitly *not* an
+    /// error; that is what the paragraph above is about.
     pub async fn shutdown(&self) -> Result<(), RuntimeError> {
         match self.shutdown_inner().await? {
             // Both roles, one answer — see the note above.
