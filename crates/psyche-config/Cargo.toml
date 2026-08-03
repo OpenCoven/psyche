@@ -12,5 +12,10 @@ serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+# `load_path` is exercised against a real file, not only against a path that
+# does not exist — the read, size, and path-in-error paths all need one.
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

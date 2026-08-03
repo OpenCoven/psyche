@@ -6,7 +6,12 @@ an unknown version is reported as an unsupported version, not as an unknown
 field.
 
 Unknown fields are errors. The only exception is the `extensions` table, whose
-keys must themselves be versioned identifiers.
+keys must themselves be versioned identifiers of the form
+`<namespace>.<name>.v<N>` — for example `psyche.experiment.v1`. This is
+enforced at load time, not merely documented: a key that does not match is
+rejected with an error naming the key.
+
+A file larger than 1 MiB is refused before it is read.
 
 Secrets are named by reference (for example `op://VAULT/ITEM/token`), never
 written as literal values. The `SecretRef` type that enforces this lives in
@@ -35,3 +40,19 @@ first secret-bearing field, in a later workstream.
 
 Account, principal-binding, and streaming tables are **not** part of this
 release; they arrive with the surface workstreams.
+
+## For consumers
+
+A `Config` is obtainable only through `load_str` or `load_path`. The type does
+not implement `Deserialize`, and the wire representation that does is private,
+so there is no way to construct a `Config` that skipped the version check —
+including by nesting it inside another `#[derive(Deserialize)]` struct.
+
+`schema_version` is a method, not a field: a validated `Config` can only ever
+hold the one accepted value, so storing it would add nothing and making it
+writable would weaken the guarantee.
+
+Extension values are read through `Extensions::get`, which deserialises one
+table into a caller-owned type. `Extensions` deliberately does not expose the
+underlying `toml::Table` — that keeps `toml` out of this crate's public API, and
+its `Debug` redacts values, since a future extension may carry a secret.
