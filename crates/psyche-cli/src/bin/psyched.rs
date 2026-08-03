@@ -28,10 +28,13 @@ struct Cli {
     /// Configuration file. Resolution order: --config, $PSYCHE_CONFIG,
     /// ./psyche.toml.
     ///
-    /// Must match `psyche`'s, flag for flag: an operator who learns one and
-    /// writes the other into a unit file is entitled to have it work. The
-    /// default being relative to the working directory is why the environment
-    /// variable exists — a systemd system unit leaves that at `/`.
+    /// The default is relative to the working directory, which a systemd system
+    /// unit leaves at `/`. Set $PSYCHE_CONFIG or pass --config in a unit file or
+    /// a container, or the path resolves to /psyche.toml.
+    //
+    // Must match `psyche`'s, flag for flag — an operator who learns one and
+    // writes the other into a unit file is entitled to have it work. Asserted by
+    // `psyche_start_and_psyched_accept_the_same_flags`.
     #[arg(long, env = "PSYCHE_CONFIG", default_value = "psyche.toml")]
     config: PathBuf,
     /// Start, then immediately shut down. Used by tests and smoke checks so the

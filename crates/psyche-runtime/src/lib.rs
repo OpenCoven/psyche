@@ -331,8 +331,12 @@ impl Runtime {
     }
 }
 
-// psyche-cli holds a `Runtime` across tokio task boundaries and awaits these two
-// futures inside `tokio::spawn`.
+// These bounds are asserted here rather than left to the first caller that needs
+// them. No consumer requires them *today* — psyche-cli awaits both futures
+// inline on one task and contains no `tokio::spawn`, no `Arc<Runtime>` and no
+// sharing across threads — but a daemon that supervises anything acquires all
+// three, and the point of asserting them now is the note below about where the
+// error would otherwise appear.
 const _: fn() = || {
     fn assert_send_sync_static<T: Send + Sync + 'static>() {}
     assert_send_sync_static::<Runtime>();
@@ -340,9 +344,11 @@ const _: fn() = || {
 
     // The types being `Send` is not the property the drain seam needs. Holding a
     // `std` `MutexGuard` across the await in `shutdown` would leave `Runtime`
-    // perfectly `Send` and make the *future* `!Send`, and the error would
-    // surface in psyche-cli at the `tokio::spawn`, naming the spawn rather than
-    // the seam. These two assertions put it here instead.
+    // perfectly `Send` and make the *future* `!Send` — a distinction that costs
+    // nothing until someone writes `tokio::spawn(runtime.shutdown())`, at which
+    // point the compiler reports it against the spawn in the consuming crate
+    // rather than against the seam that caused it. These two assertions put the
+    // error here instead, where the fix is.
     fn assert_send<T: Send>(_: &T) {}
     fn futures_are_send(runtime: &Runtime, config: Config) {
         assert_send(&Runtime::start(config));

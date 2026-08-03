@@ -25,17 +25,22 @@ struct Cli {
     /// Configuration file. Resolution order: --config, $PSYCHE_CONFIG,
     /// ./psyche.toml.
     ///
-    /// `global`, so it is accepted either side of the subcommand:
-    /// `psyche --config X status` reads as the natural order and used to be a
-    /// usage error. It also collapses what were four identical declarations and
-    /// a four-arm match that existed only to pull the value back out of them.
+    /// Accepted on either side of the subcommand.
     ///
     /// The default is relative to the working directory, which a systemd system
-    /// unit leaves at `/` — so a service without an explicit path was resolving
-    /// `/psyche.toml`. `$PSYCHE_CONFIG` is the fix for the container case, where
-    /// the path cannot be put on argv. Deliberately no XDG or `/etc` lookup:
-    /// deferred, not rejected, and it belongs with the packaging work rather
-    /// than here.
+    /// unit leaves at `/`. Set $PSYCHE_CONFIG or pass --config in a unit file or
+    /// a container, or the path resolves to /psyche.toml.
+    //
+    // Doc comment above is operator-facing and reaches `--help` verbatim, so the
+    // rationale lives down here instead:
+    //
+    // `global` collapses what were four identical per-subcommand declarations
+    // and the four-arm match that existed only to pull the value back out of
+    // them, and makes `psyche --config X status` parse — it reads as the natural
+    // order and used to be a usage error. Backwards compatible either way.
+    //
+    // Deliberately no XDG or `/etc` lookup: deferred to the packaging work, not
+    // rejected.
     #[arg(
         long,
         global = true,
@@ -62,7 +67,8 @@ enum Command {
     /// promise a graceful shutdown and exit 0 having done nothing, which is what
     /// `psyche stop && deploy` reads as success.
     Stop,
-    /// Report daemon state.
+    /// Report daemon state. This build cannot observe one — there is no daemon
+    /// IPC — so it reports why instead.
     Status {
         /// Emit a `psyche.status.v1` document on stdout instead of a line of
         /// prose.

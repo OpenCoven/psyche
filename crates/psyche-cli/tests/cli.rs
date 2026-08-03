@@ -300,7 +300,12 @@ fn start_and_stop_run_without_any_telegram_credentials() {
         .env_remove("PSYCHE_TELEGRAM_TOKEN")
         .args(["start", "--config", path, "--shutdown-after-start"])
         .assert()
-        .success();
+        .success()
+        // Logs go to stderr, never stdout. The invariant was pinned only for
+        // `status --json`, and the daemon is the path that logs volumes — a
+        // subscriber misconfigured to stdout would corrupt every `--json`
+        // pipeline running alongside it.
+        .stdout(predicates::str::is_empty());
 
     // `stop` is asserted against its documented code, not `.success()`. It has
     // no daemon IPC to use, so "did nothing" is the truthful answer and 0 would
@@ -431,6 +436,95 @@ fn config_is_accepted_before_or_after_the_subcommand() {
             .assert()
             .success();
     }
+}
+
+/// Every long option `psyche start` accepts, `psyched` accepts too, and the
+/// reverse.
+///
+/// The two are documented as equivalent, and `daemon.rs` is shared so they
+/// cannot drift in behaviour — but nothing stopped one of them growing a flag
+/// the other lacked, which is the same promise broken at the argument layer.
+#[test]
+fn psyche_start_and_psyched_accept_the_same_flags() {
+    /// Long option names appearing anywhere in a help text.
+    ///
+    /// A scan rather than a regex: this crate has no regex dependency and does
+    /// not need one to find `--word` tokens.
+    fn long_options(help: &str) -> std::collections::BTreeSet<String> {
+        let mut found = std::collections::BTreeSet::new();
+        for token in help.split_whitespace() {
+            let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+            // Nested rather than a `let` chain: those stabilised after this
+            // workspace's 1.85 MSRV.
+            if let Some(name) = token.strip_prefix("--") {
+                let plausible = !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+                if plausible {
+                    found.insert(name.to_owned());
+                }
+            }
+        }
+        // clap attaches these itself, and at different levels: `--version` sits
+        // on `psyche` rather than on `psyche start`. Neither is a flag either
+        // program declares, so neither is a drift this test is about.
+        found.remove("help");
+        found.remove("version");
+        found
+    }
+
+    let of = |args: &[&str], binary: &str| {
+        let assert = Command::cargo_bin(binary)
+            .unwrap()
+            .args(args)
+            .assert()
+            .success();
+        long_options(&String::from_utf8_lossy(&assert.get_output().stdout))
+    };
+
+    let start = of(&["start", "--help"], "psyche");
+    let psyched = of(&["--help"], "psyched");
+    assert_eq!(start, psyched, "psyche start and psyched disagree on flags");
+    // A guard on the scan itself: an extraction that found nothing would make
+    // the equality above vacuously true.
+    assert!(start.contains("config"), "{start:?}");
+    assert!(start.contains("shutdown-after-start"), "{start:?}");
+}
+
+/// A malformed `PSYCHE_LOG` is not the same thing as an absent one.
+///
+/// `try_from_env(..).unwrap_or_else(|_| info)` treated them identically, so a
+/// mistyped filter silently ran at info and the operator concluded that the
+/// level they asked for was broken. The warning goes to stderr with `eprintln!`
+/// because the subscriber is not up yet — `tracing::warn!` here goes nowhere.
+///
+/// `info=bogus` rather than `trce`: `trce` *parses*, as a bare target directive,
+/// so no amount of error handling can catch it. See `logging.rs`.
+#[test]
+fn a_malformed_log_filter_is_reported_and_an_absent_one_is_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = write_config(tmp.path()).unwrap();
+    let path = config.to_str().unwrap();
+
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .env("PSYCHE_LOG", "info=bogus")
+        .args(["status", "--config", path])
+        .assert()
+        // A bad filter is not a reason to refuse to run.
+        .success()
+        .stderr(contains("PSYCHE_LOG").and(contains("not a valid filter")))
+        // And it must not corrupt the output stream a consumer parses.
+        .stdout(contains("not observed"));
+
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .env_remove("PSYCHE_LOG")
+        .args(["status", "--config", path])
+        .assert()
+        .success()
+        .stderr(predicates::str::is_empty());
 }
 
 /// The resolution order is stated in `--help`. An operator writing a unit file
