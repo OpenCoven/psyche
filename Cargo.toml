@@ -3,12 +3,11 @@
 # 1.85 — exactly our pin — so under resolver 2 a routine `cargo update` would
 # select a release requiring a newer compiler and break the build.
 resolver = "3"
-members = [
-    "crates/psyche-core",
-    "crates/psyche-config",
-    "crates/psyche-runtime",
-    "crates/psyche-cli",
-]
+# Members are added by the task that creates each crate. Cargo loads every
+# declared member's manifest on ANY command — `--no-deps` and `--manifest-path`
+# both still walk up to the workspace root — so naming a crate before it exists
+# makes the entire workspace uninvokable, including `cargo test`.
+members = ["crates/psyche-core"]
 
 [workspace.package]
 version = "0.0.0"
