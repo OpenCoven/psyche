@@ -1,0 +1,25 @@
+[package]
+name = "psyche-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+psyche-config = { workspace = true }
+thiserror = { workspace = true }
+# Declared even though this slice awaits nothing: `start` and `shutdown` are
+# `async fn` because the drain seam they bracket becomes a real await in the
+# follow-on G2 plan, and widening a sync signature to async later is a breaking
+# change for psyche-cli. The dependency is what makes that signature honest.
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# `#[tokio::test]` needs the `macros` and `rt` features; the workspace entry
+# carries both.
+tokio = { workspace = true }
+
+[lints]
+workspace = true
