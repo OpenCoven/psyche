@@ -3,10 +3,16 @@
 //! Runs until interrupted, then takes the one graceful shutdown path
 //! `psyche_runtime::Runtime` offers. There is no forced exit: a caller wanting
 //! one terminates the process.
+//!
+//! A thin wrapper: argument parsing, configuration loading, then the shared run
+//! path in `daemon.rs`. `psyche start` calls the same function, so the two
+//! cannot come to mean different things.
 
-// The same installer `psyche` uses, included rather than copied. Two subscribers
+// Included rather than copied, for the reason `daemon.rs` gives: two subscribers
 // configured independently would eventually disagree about the writer, and a
 // daemon logging to stdout instead of stderr is a corrupted `--json` pipeline.
+#[path = "../daemon.rs"]
+mod daemon;
 #[path = "../logging.rs"]
 mod logging;
 
@@ -14,7 +20,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use psyche_runtime::Runtime;
 
 #[derive(Debug, Parser)]
 #[command(name = "psyched", version, about = "Psyche daemon")]
@@ -41,20 +46,5 @@ async fn main() -> ExitCode {
         }
     };
 
-    let runtime = Runtime::start(config).await;
-
-    // Short-circuiting rather than nested: with `--shutdown-after-start` the
-    // signal handler is never installed, which is the point of the flag.
-    if !cli.shutdown_after_start && tokio::signal::ctrl_c().await.is_err() {
-        eprintln!("failed to install signal handler");
-        return ExitCode::FAILURE;
-    }
-
-    match runtime.shutdown().await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("{e}");
-            ExitCode::FAILURE
-        }
-    }
+    daemon::run(config, cli.shutdown_after_start).await
 }

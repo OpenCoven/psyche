@@ -85,6 +85,47 @@ fn status_reports_stopped_when_no_daemon_is_running() {
         .stdout(contains("\"state\":\"stopped\""));
 }
 
+/// `stopped` is not observed — there is no daemon IPC in this build — and the
+/// document has to say so. A consumer that learns to trust a bare `state` field
+/// and is told about the caveat in a later release has already shipped the code
+/// that ignores it.
+///
+/// Parsed rather than substring-matched, which also pins that stdout is a whole
+/// valid JSON document: a log line leaking onto stdout would fail here.
+#[test]
+fn status_json_marks_the_answer_as_unobserved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = write_config(tmp.path()).unwrap();
+    let assert = Command::cargo_bin("psyche")
+        .unwrap()
+        .args(["status", "--config", config.to_str().unwrap(), "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let document: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+
+    assert_eq!(document["state"], serde_json::json!("stopped"), "{stdout}");
+    assert_eq!(
+        document.get("observed"),
+        Some(&serde_json::json!(false)),
+        "the answer must be marked as not observed: {stdout}"
+    );
+}
+
+/// The human rendering carries the same caveat. Without it, the two output modes
+/// disagree about how much the command actually knows.
+#[test]
+fn status_text_says_the_state_was_not_observed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = write_config(tmp.path()).unwrap();
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .args(["status", "--config", config.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("stopped").and(contains("not observed")));
+}
+
 #[test]
 fn doctor_fails_clearly_on_an_unsupported_schema_version() {
     let tmp = tempfile::tempdir().unwrap();
@@ -113,16 +154,64 @@ required_api_version = "coven.daemon.v1"
 fn start_and_stop_run_without_any_telegram_credentials() {
     // coven-psy1 acceptance requires all four subcommands to run with no
     // credentials present, not just doctor and status.
+    //
+    // `start` is driven with `--shutdown-after-start` because it now actually
+    // starts the daemon. The previous form of this test passed against a stub
+    // that printed a line and exited 0, which is precisely the thing that made
+    // the subcommand's own help text a lie.
     let tmp = tempfile::tempdir().unwrap();
     let config = write_config(tmp.path()).unwrap();
-    for subcommand in ["start", "stop"] {
-        Command::cargo_bin("psyche")
-            .unwrap()
-            .env_remove("TELEGRAM_BOT_TOKEN")
-            .env_remove("PSYCHE_TELEGRAM_TOKEN")
-            .args([subcommand, "--config", config.to_str().unwrap()])
+    let path = config.to_str().unwrap();
+
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .env_remove("TELEGRAM_BOT_TOKEN")
+        .env_remove("PSYCHE_TELEGRAM_TOKEN")
+        .args(["start", "--config", path, "--shutdown-after-start"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .env_remove("TELEGRAM_BOT_TOKEN")
+        .env_remove("PSYCHE_TELEGRAM_TOKEN")
+        .args(["stop", "--config", path])
+        .assert()
+        .success();
+}
+
+/// `psyche start` says it starts the daemon in the foreground, so it must run
+/// the same lifecycle `psyched` runs — not exit 0 having started nothing, which
+/// is what `psyche start && systemctl ...` would have read as success.
+///
+/// Asserted against the transitions themselves rather than the exit code: a stub
+/// that exits 0 is exactly what this is here to catch.
+#[test]
+fn psyche_start_runs_the_same_lifecycle_as_psyched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = write_config(tmp.path()).unwrap();
+    // Rebuilt per iteration: `AndPredicate` is not `Clone` because its `Item`
+    // type parameter is `str`, which is unsized.
+    let expected = || {
+        contains("psyche runtime started")
+            .and(contains("\"state\":\"draining\""))
+            .and(contains("\"state\":\"stopped\""))
+    };
+
+    for binary in ["psyche", "psyched"] {
+        let mut command = Command::cargo_bin(binary).unwrap();
+        if binary == "psyche" {
+            command.arg("start");
+        }
+        command
+            .args([
+                "--config",
+                config.to_str().unwrap(),
+                "--shutdown-after-start",
+            ])
             .assert()
-            .success();
+            .success()
+            .stderr(expected());
     }
 }
 

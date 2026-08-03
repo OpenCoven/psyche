@@ -1,11 +1,19 @@
 //! Composition root. Owns the daemon lifecycle and the only shutdown path.
 
+use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use psyche_config::Config;
+use tokio::sync::watch;
 
 /// Graceful shutdown stops intake, then drains, then exits. `Draining` is
 /// observable so `psyche status` can distinguish it from `Running`.
+///
+/// Deliberately **not** `#[non_exhaustive]`, unlike [`RuntimeError`]. A new
+/// state is a new thing an operator can be told, and it *should* break every
+/// renderer until each one decides how to say it. `#[non_exhaustive]` would push
+/// consumers into a `_` arm that silently misreports the new state as whatever
+/// the fallback says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleState {
     /// Accepting work.
@@ -33,13 +41,60 @@ impl LifecycleState {
     }
 }
 
+/// The wire spelling of a state: `running`, `draining`, `stopped`.
+///
+/// This exists so no consumer has to reach for `{:?}`. A `Debug` rendering that
+/// something else formats into JSON or a log field becomes a compatibility
+/// surface that can never be renamed — and `Debug` here would emit the
+/// capitalised variant name, which is not what any of them want.
+impl fmt::Display for LifecycleState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            LifecycleState::Running => "running",
+            LifecycleState::Draining => "draining",
+            LifecycleState::Stopped => "stopped",
+        })
+    }
+}
+
 /// Failures from driving the runtime lifecycle.
+///
+/// `#[non_exhaustive]`: the store, socket, and lease work that attaches at the
+/// drain seam brings its own failures, and adding a variant for one must not be
+/// a breaking change for `psyche-cli`.
+///
+/// **No current path constructs [`RuntimeError::ShutdownInProgress`].** Since
+/// [`Runtime::shutdown`] makes a losing caller *wait* for the drain rather than
+/// refusing it, there is no longer a moment at which a caller can be told that a
+/// shutdown is in progress — by the time it would be told, the shutdown is
+/// finished. The variant is kept, named for the condition rather than for the
+/// outcome, because the IPC path in the follow-on G2 plan has a caller that
+/// genuinely cannot wait: a remote `psyche stop` answering over a socket must
+/// reply immediately rather than hold the connection open for the drain.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RuntimeError {
-    /// [`Runtime::shutdown`] was called on a runtime that had already begun
-    /// stopping.
-    #[error("runtime already stopped")]
-    AlreadyStopped,
+    /// Another caller had already claimed the shutdown, and this caller was not
+    /// willing to wait for it.
+    #[error("shutdown already in progress")]
+    ShutdownInProgress,
+}
+
+/// Which side of the shutdown election a caller ended up on.
+///
+/// Private, and the reason [`Runtime::shutdown`] is a thin wrapper over
+/// [`Runtime::shutdown_inner`]: the public contract is that *the runtime is
+/// stopped*, which is true for both roles, but "exactly one caller advances the
+/// state machine" is an internal invariant that the concurrency test has to be
+/// able to see. Exposing it publicly would be API no caller has asked for; if
+/// one ever does, the extension point is `Ok(ShutdownOutcome)`, never an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownRole {
+    /// Won the election and drove the drain.
+    Driver,
+    /// Lost the election and waited for the driver to reach
+    /// [`LifecycleState::Stopped`].
+    Observer,
 }
 
 /// Current state plus the ordered log of states this runtime has occupied.
@@ -84,30 +139,45 @@ impl Lifecycle {
 #[derive(Debug)]
 pub struct Runtime {
     lifecycle: Arc<Mutex<Lifecycle>>,
-    /// Held for the store and lease work that attaches at the drain point in
-    /// the follow-on G2 plan; nothing in this slice reads it yet.
-    #[expect(
-        dead_code,
-        reason = "consumed by the store/lease work in the G2 follow-on"
-    )]
+    /// Publishes each transition to [`Runtime::subscribe`]rs, and is how a
+    /// losing shutdown caller waits for the drain it did not drive.
+    ///
+    /// The mutex above remains the election; this is only the announcement.
+    /// `watch::Sender::send` has no compare-and-swap, so deciding the transition
+    /// here instead would lose the single-acquisition property that the
+    /// 24,000-attempt concurrency test exists to protect.
+    state_tx: watch::Sender<LifecycleState>,
     config: Config,
 }
 
 impl Runtime {
     /// Builds the composition root and brings it to [`LifecycleState::Running`].
     ///
-    /// `async` although nothing is awaited yet: the store and lease wiring in
-    /// the follow-on G2 plan starts here, and widening a synchronous signature
-    /// to `async` later would break every caller.
-    pub async fn start(config: Config) -> Self {
-        tracing::info!(state = "running", "psyche runtime started");
-        Self {
+    /// `async` although nothing is awaited yet, and fallible although nothing
+    /// fails yet, for the same reason: the store and lease wiring in the
+    /// follow-on G2 plan starts here, and that work — opening `data_dir`,
+    /// binding the Coven socket, acquiring a lease — is exactly what fails.
+    /// Widening either signature later would break every caller, which is the
+    /// break these two decisions exist to avoid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError`] once startup acquires anything that can fail.
+    /// This build always returns `Ok`.
+    pub async fn start(config: Config) -> Result<Self, RuntimeError> {
+        // `Sender::new`, not `watch::channel(..)`: `channel` also hands back a
+        // `Receiver` that this type has no use for, and dropping it would leave
+        // a sender with no receivers. See `transition_to` for why that matters.
+        let state_tx = watch::Sender::new(LifecycleState::Running);
+        tracing::info!(state = %LifecycleState::Running, "psyche runtime started");
+        Ok(Self {
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 current: LifecycleState::Running,
                 history: vec![LifecycleState::Running],
             })),
+            state_tx,
             config,
-        }
+        })
     }
 
     /// Takes the lifecycle lock, recovering from poisoning instead of panicking.
@@ -131,6 +201,29 @@ impl Runtime {
         self.lifecycle().current
     }
 
+    /// The configuration this runtime was started with.
+    #[must_use]
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// A receiver that observes each state this runtime enters.
+    ///
+    /// The only way to learn that a runtime has stopped without polling
+    /// [`Runtime::state`]. Two properties of `watch` a caller must know:
+    ///
+    /// - The current state counts as already seen, so `changed()` reports the
+    ///   *next* transition. Read [`watch::Receiver::borrow`] first if the state
+    ///   at subscription time matters.
+    /// - Values coalesce. A receiver that does not keep up sees the latest
+    ///   state, not every state — a subscriber polled once after a fast
+    ///   shutdown observes `Stopped` and never `Draining`. [`Runtime::transitions`]
+    ///   is the lossless record; this is the live one.
+    #[must_use]
+    pub fn subscribe(&self) -> watch::Receiver<LifecycleState> {
+        self.state_tx.subscribe()
+    }
+
     /// Every state this runtime has occupied, oldest first.
     ///
     /// Ordered, not a set: the contract graceful shutdown owes an operator is
@@ -142,54 +235,123 @@ impl Runtime {
         self.lifecycle().history.clone()
     }
 
-    /// Records a forward transition, logging it if it happened, and reports
-    /// whether it happened.
+    /// Records a forward transition, publishing and logging it if it happened,
+    /// and reports whether it happened.
     ///
     /// The bool is the concurrency primitive: whichever caller gets `true` for
     /// [`LifecycleState::Draining`] owns the shutdown, because the test and the
     /// write both happen inside one lock acquisition.
     fn transition_to(&self, next: LifecycleState) -> bool {
-        let moved = self.lifecycle().advance(next);
-        if moved {
-            tracing::info!(state = ?next, "psyche lifecycle transition");
+        let mut lifecycle = self.lifecycle();
+        if !lifecycle.advance(next) {
+            return false;
         }
-        moved
+        // Published while the guard is still held, so a subscriber can never
+        // observe a state the machine has not entered, and two transitions
+        // cannot be published in the opposite order to the one they were made.
+        //
+        // `send_replace`, not `send`: `send` fails when no receiver exists and
+        // — this is the part that bites — does not store the value it failed to
+        // deliver. A `let _ = send(..)` here would leave the published state at
+        // `Running` for a runtime nobody had subscribed to yet, and the first
+        // losing caller to subscribe would then wait on a `Stopped` that had
+        // already been sent and dropped. `send_replace` always stores.
+        self.state_tx.send_replace(next);
+        // Dropped before logging: a subscriber's `Layer` runs arbitrary code on
+        // this thread, and panicking with the lifecycle lock held would poison
+        // it in the middle of shutdown.
+        drop(lifecycle);
+        tracing::info!(state = %next, "psyche lifecycle transition");
+        true
+    }
+
+    /// Waits until [`LifecycleState::Stopped`] has been published.
+    ///
+    /// Returns immediately if it already has, which is the common case for a
+    /// caller arriving after the runtime has fully stopped.
+    async fn await_stopped(&self) {
+        let mut receiver = self.subscribe();
+        // `borrow_and_update` before `changed`, in that order and in a loop:
+        // `subscribe` marks the current value as seen, so awaiting `changed`
+        // first would miss a `Stopped` that was published before this caller
+        // subscribed, and wait for a transition that can never come.
+        while *receiver.borrow_and_update() != LifecycleState::Stopped {
+            if receiver.changed().await.is_err() {
+                // Unreachable: the sender lives in `self`, which this call
+                // borrows. Breaking rather than panicking anyway — this is the
+                // shutdown path.
+                break;
+            }
+        }
     }
 
     /// Stops intake, drains in-flight work, then exits. There is no forced
     /// path — a caller wanting immediate exit terminates the process.
     ///
+    /// Safe to call from any number of callers. Exactly one drives the drain;
+    /// the rest wait for it and return once the runtime is
+    /// [`LifecycleState::Stopped`]. That waiting is not politeness, it is the
+    /// contract: an operator whose first SIGTERM appears to do nothing sends a
+    /// second, and a caller that returned immediately would let `psyched` fall
+    /// out of `main` and exit the process mid-drain — graceful shutdown
+    /// defeated by ordinary operator behaviour.
+    ///
+    /// Returns `Ok(())` for both roles. A caller that merely waited still has
+    /// the answer it asked for — the runtime is stopped, and it stopped
+    /// gracefully. An error would be false by the time it was returned, and
+    /// every caller would have to translate it back into success.
+    ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::AlreadyStopped`] if shutdown has already been
-    /// started by this or another caller. Exactly one concurrent caller is
-    /// given the `Ok`.
+    /// Returns [`RuntimeError`] once the drain acquires anything that can fail.
+    /// This build always returns `Ok`.
     pub async fn shutdown(&self) -> Result<(), RuntimeError> {
+        match self.shutdown_inner().await? {
+            // Both roles, one answer — see the note above.
+            ShutdownRole::Driver | ShutdownRole::Observer => Ok(()),
+        }
+    }
+
+    /// [`Runtime::shutdown`], plus which side of the election the caller was on.
+    async fn shutdown_inner(&self) -> Result<ShutdownRole, RuntimeError> {
         // Claim the shutdown and publish `Draining` under a single lock
         // acquisition. Testing the state and then transitioning in a second
         // acquisition would let two concurrent callers both observe `Running`
         // and both drive the machine, which once there is real drain work means
         // running it twice.
         if !self.transition_to(LifecycleState::Draining) {
-            return Err(RuntimeError::AlreadyStopped);
+            self.await_stopped().await;
+            return Ok(ShutdownRole::Observer);
         }
 
         // The drain seam. Nothing durable is in flight in this slice; the store
-        // and lease work in the follow-on G2 plan awaits here. The guard is
-        // deliberately dropped before this point — a `std` guard is `!Send`, so
-        // holding one across the await this becomes would make the future
-        // `!Send` and break the assertion below.
+        // and lease work in the follow-on G2 plan awaits here. No lifecycle
+        // guard is live across it — `transition_to` takes and drops its own —
+        // which is what keeps this future `Send`; the assertion below fails to
+        // compile if that stops being true.
 
         self.transition_to(LifecycleState::Stopped);
-        Ok(())
+        Ok(ShutdownRole::Driver)
     }
 }
 
-// psyche-cli will hold this across tokio task boundaries.
+// psyche-cli holds a `Runtime` across tokio task boundaries and awaits these two
+// futures inside `tokio::spawn`.
 const _: fn() = || {
     fn assert_send_sync_static<T: Send + Sync + 'static>() {}
     assert_send_sync_static::<Runtime>();
     assert_send_sync_static::<RuntimeError>();
+
+    // The types being `Send` is not the property the drain seam needs. Holding a
+    // `std` `MutexGuard` across the await in `shutdown` would leave `Runtime`
+    // perfectly `Send` and make the *future* `!Send`, and the error would
+    // surface in psyche-cli at the `tokio::spawn`, naming the spawn rather than
+    // the seam. These two assertions put it here instead.
+    fn assert_send<T: Send>(_: &T) {}
+    fn futures_are_send(runtime: &Runtime, config: Config) {
+        assert_send(&Runtime::start(config));
+        assert_send(&runtime.shutdown());
+    }
 };
 
 #[cfg(test)]
@@ -212,13 +374,32 @@ required_api_version = "coven.daemon.v1"
 
     #[tokio::test]
     async fn starts_running() {
-        let rt = Runtime::start(test_config()).await;
+        let rt = Runtime::start(test_config()).await.unwrap();
         assert_eq!(rt.state(), LifecycleState::Running);
     }
 
     #[tokio::test]
+    async fn the_configuration_is_readable_after_start() {
+        let rt = Runtime::start(test_config()).await.unwrap();
+        assert_eq!(
+            rt.config().data_dir,
+            std::path::Path::new("/tmp/psyche-test")
+        );
+    }
+
+    // The wire spellings are what `psyche status --json` emits and what log
+    // filters match on. Pinned against the literals, not against each other, so
+    // renaming a variant cannot silently rename a field an operator scripts.
+    #[test]
+    fn states_render_as_their_wire_spellings() {
+        assert_eq!(LifecycleState::Running.to_string(), "running");
+        assert_eq!(LifecycleState::Draining.to_string(), "draining");
+        assert_eq!(LifecycleState::Stopped.to_string(), "stopped");
+    }
+
+    #[tokio::test]
     async fn shutdown_drains_then_stops_in_order() {
-        let rt = Runtime::start(test_config()).await;
+        let rt = Runtime::start(test_config()).await.unwrap();
         rt.shutdown().await.unwrap();
         assert_eq!(rt.state(), LifecycleState::Stopped);
         assert_eq!(
@@ -231,12 +412,72 @@ required_api_version = "coven.daemon.v1"
         );
     }
 
+    // Previously asserted that a second shutdown is an error. It is not any
+    // more: it waits for the first to finish and reports the truth, which for a
+    // runtime that has already stopped is available immediately.
+    //
+    // Both calls are bounded by a timeout because the failure they guard
+    // against is a *hang*, not a wrong answer: a `transition_to` that publishes
+    // with `send` rather than `send_replace` stores nothing when there are no
+    // receivers, so the second call waits on a `Stopped` that was announced to
+    // nobody and never recorded. Verified by mutation — without the timeout
+    // that swap wedges the suite indefinitely instead of failing it, which in
+    // CI is a stuck job rather than a red one.
     #[tokio::test]
-    async fn second_shutdown_is_an_error_not_a_panic() {
-        let rt = Runtime::start(test_config()).await;
-        rt.shutdown().await.unwrap();
-        let err = rt.shutdown().await.unwrap_err();
-        assert!(matches!(err, RuntimeError::AlreadyStopped));
+    async fn a_later_shutdown_succeeds_without_redriving_the_drain() {
+        use std::time::Duration;
+
+        let rt = Runtime::start(test_config()).await.unwrap();
+        for attempt in 0..2 {
+            tokio::time::timeout(Duration::from_secs(5), rt.shutdown())
+                .await
+                .unwrap_or_else(|_| panic!("shutdown {attempt} never returned"))
+                .unwrap();
+        }
+        assert_eq!(rt.state(), LifecycleState::Stopped);
+        assert_eq!(rt.transitions().len(), 3, "{:?}", rt.transitions());
+    }
+
+    // The role, not just the outcome: with both callers returning `Ok`, this is
+    // the only place the election is visible.
+    #[tokio::test]
+    async fn only_the_first_caller_drives_the_drain() {
+        let rt = Runtime::start(test_config()).await.unwrap();
+        assert_eq!(rt.shutdown_inner().await.unwrap(), ShutdownRole::Driver);
+        assert_eq!(rt.shutdown_inner().await.unwrap(), ShutdownRole::Observer);
+    }
+
+    // The property A4 exists for: a caller that lost the election must not
+    // return while the drain is still running. Driving the transitions directly
+    // rather than racing two `shutdown` calls is deliberate — the drain seam
+    // contains no await, so a real winner passes from `Draining` to `Stopped`
+    // within a single poll and there is no window a second task could be
+    // scheduled in. A test that tried to hit that window would be measuring the
+    // scheduler, and would pass against a loser that returns immediately
+    // whenever the winner happened to finish first.
+    #[tokio::test]
+    async fn a_losing_caller_does_not_return_before_stopped_is_published() {
+        use std::time::Duration;
+
+        let rt = Runtime::start(test_config()).await.unwrap();
+        // Enter `Draining` with no winner running, so nothing will publish
+        // `Stopped` unless this test does.
+        assert!(rt.transition_to(LifecycleState::Draining));
+
+        let waited = tokio::time::timeout(Duration::from_millis(250), rt.shutdown()).await;
+        assert!(
+            waited.is_err(),
+            "a losing caller returned while the runtime was still {}",
+            rt.state()
+        );
+
+        assert!(rt.transition_to(LifecycleState::Stopped));
+        // Now that `Stopped` is published the same call returns, and promptly:
+        // a caller arriving after the drain has finished must not block either.
+        tokio::time::timeout(Duration::from_millis(250), rt.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     // The transition log is what `psyche status` and the ordering assertion
@@ -244,11 +485,49 @@ required_api_version = "coven.daemon.v1"
     // which in a daemon that is signalled repeatedly is an unbounded allocation.
     #[tokio::test]
     async fn the_transition_log_is_bounded_by_the_state_count() {
-        let rt = Runtime::start(test_config()).await;
+        let rt = Runtime::start(test_config()).await.unwrap();
         for _ in 0..1_000 {
             let _ = rt.shutdown().await;
         }
         assert_eq!(rt.transitions().len(), 3, "{:?}", rt.transitions());
+    }
+
+    // A subscriber that keeps up sees every state, in order, with none skipped.
+    // The transitions are driven by the test rather than by `shutdown` because
+    // `watch` coalesces: against a real shutdown, whose two transitions happen
+    // in one poll, a receiver is *expected* to observe only `Stopped`, and an
+    // assertion of the full sequence would be green or red depending on the
+    // scheduler. This form asserts the channel's ordering guarantee, which is
+    // the part that is actually a guarantee.
+    #[tokio::test]
+    async fn a_subscriber_that_keeps_up_observes_every_state_in_order() {
+        let rt = Runtime::start(test_config()).await.unwrap();
+        let mut receiver = rt.subscribe();
+
+        let mut seen = vec![*receiver.borrow_and_update()];
+        for next in [LifecycleState::Draining, LifecycleState::Stopped] {
+            assert!(rt.transition_to(next));
+            receiver.changed().await.unwrap();
+            seen.push(*receiver.borrow_and_update());
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                LifecycleState::Running,
+                LifecycleState::Draining,
+                LifecycleState::Stopped
+            ]
+        );
+    }
+
+    // A subscriber created after the fact still learns the current state, which
+    // is what makes `await_stopped` safe for a caller that arrives late.
+    #[tokio::test]
+    async fn a_late_subscriber_sees_the_state_the_runtime_is_actually_in() {
+        let rt = Runtime::start(test_config()).await.unwrap();
+        rt.shutdown().await.unwrap();
+        assert_eq!(*rt.subscribe().borrow(), LifecycleState::Stopped);
     }
 
     // Two callers must not both drive the machine: with a separate test and
@@ -275,6 +554,10 @@ required_api_version = "coven.daemon.v1"
     // and retaking it for the write, so what matters is how often threads
     // arrive at a *fresh* `Running` runtime together, not how long any one of
     // them runs.
+    //
+    // The reader thread added alongside them takes part in the same barrier, so
+    // the contenders are still released together and the constants above still
+    // mean what they meant when they were measured.
     #[test]
     fn concurrent_shutdowns_elect_exactly_one_winner() {
         use std::sync::Barrier;
@@ -290,32 +573,65 @@ required_api_version = "coven.daemon.v1"
         let executor = tokio::runtime::Builder::new_multi_thread().build().unwrap();
 
         for round in 0..ROUNDS {
-            let rt = Arc::new(executor.block_on(Runtime::start(test_config())));
-            let barrier = Arc::new(Barrier::new(THREADS));
-            let wins = Arc::new(AtomicUsize::new(0));
+            let rt = Arc::new(executor.block_on(Runtime::start(test_config())).unwrap());
+            // +1 for the reader.
+            let barrier = Arc::new(Barrier::new(THREADS + 1));
+            let drivers = Arc::new(AtomicUsize::new(0));
 
             std::thread::scope(|scope| {
                 for _ in 0..THREADS {
                     let rt = Arc::clone(&rt);
                     let barrier = Arc::clone(&barrier);
-                    let wins = Arc::clone(&wins);
+                    let drivers = Arc::clone(&drivers);
                     let handle = executor.handle().clone();
                     scope.spawn(move || {
                         // Everything that can be done ahead of the contended
                         // section is done before the barrier, so the threads
                         // are released as close to simultaneously as the OS
                         // allows.
-                        let shutdown = async { rt.shutdown().await.is_ok() };
+                        let shutdown = async { rt.shutdown_inner().await };
                         barrier.wait();
-                        if handle.block_on(shutdown) {
-                            wins.fetch_add(1, Ordering::SeqCst);
+                        // `matches!`, not `==`: `RuntimeError` is deliberately
+                        // not `PartialEq`, and comparing errors is not what
+                        // this asserts anyway.
+                        if matches!(handle.block_on(shutdown), Ok(ShutdownRole::Driver)) {
+                            drivers.fetch_add(1, Ordering::SeqCst);
                         }
+                        // Whatever this caller's role was, `shutdown` returning
+                        // means the runtime is stopped. A loser that returned
+                        // early would be caught here observing `Running` or
+                        // `Draining`.
+                        assert_eq!(
+                            rt.state(),
+                            LifecycleState::Stopped,
+                            "round {round}: shutdown returned before the runtime stopped"
+                        );
                     });
                 }
+
+                // Read-only, and asserts the one thing a concurrent observer of
+                // a state machine must be able to rely on.
+                let rt = Arc::clone(&rt);
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    let mut highest = LifecycleState::Running.rank();
+                    for _ in 0..10_000 {
+                        let observed = rt.state().rank();
+                        assert!(
+                            observed >= highest,
+                            "round {round}: state went backwards, {observed} after {highest}"
+                        );
+                        highest = observed;
+                        if highest == LifecycleState::Stopped.rank() {
+                            break;
+                        }
+                    }
+                });
             });
 
             assert_eq!(
-                wins.load(Ordering::SeqCst),
+                drivers.load(Ordering::SeqCst),
                 1,
                 "round {round}: expected exactly one caller to own the shutdown"
             );
@@ -351,7 +667,9 @@ required_api_version = "coven.daemon.v1"
 looks_like_a_secret = "{secretish}"
 "#
         );
-        let rt = Runtime::start(psyche_config::load_str(&raw).unwrap()).await;
+        let rt = Runtime::start(psyche_config::load_str(&raw).unwrap())
+            .await
+            .unwrap();
         let rendered = format!("{rt:?}");
         assert!(!rendered.contains("looks_like_a_secret"), "{rendered}");
         assert!(!rendered.contains(&secretish), "{rendered}");
@@ -379,7 +697,7 @@ looks_like_a_secret = "{secretish}"
     // A poisoned lock must not take the daemon's shutdown path down with it.
     #[tokio::test]
     async fn a_poisoned_lock_does_not_panic_the_shutdown_path() {
-        let rt = Runtime::start(test_config()).await;
+        let rt = Runtime::start(test_config()).await.unwrap();
         let lock = Arc::clone(&rt.lifecycle);
         std::thread::spawn(move || {
             let _guard = lock.lock().unwrap();
