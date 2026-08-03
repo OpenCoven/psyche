@@ -12,7 +12,7 @@ use predicates::str::contains;
 // The exit codes are asserted against the constants the binaries return, not
 // against literals: a test carrying its own copy of `3` would keep passing
 // through a renumbering that broke every unit file in the field.
-use psyche_cli::{EXIT_CONFIG, EXIT_UNAVAILABLE};
+use psyche_cli::{EXIT_CHECK_FAILED, EXIT_CONFIG, EXIT_UNAVAILABLE};
 
 /// A 30-byte stand-in for a credential parked in an extension table. Long and
 /// distinctive so a partial echo is still detectable by the window scan below.
@@ -130,8 +130,11 @@ fn status_text_says_the_state_was_not_observed() {
         .stdout(contains("stopped").and(contains("not observed")));
 }
 
+/// The reason lands in the report, on stdout, inside the `config` check — not as
+/// one raw error on stderr with no checks run. `doctor` is dispatched before the
+/// configuration is loaded precisely so it has something to say here.
 #[test]
-fn doctor_fails_clearly_on_an_unsupported_schema_version() {
+fn doctor_reports_a_bad_schema_version_as_a_failed_check() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("psyche.toml");
     std::fs::write(
@@ -150,8 +153,124 @@ required_api_version = "coven.daemon.v1"
         .unwrap()
         .args(["doctor", "--config", path.to_str().unwrap()])
         .assert()
-        .failure()
-        .stderr(contains("unsupported schema_version").and(contains("psyche.config.v99")));
+        .code(i32::from(EXIT_CONFIG))
+        .stdout(
+            contains("config: fail")
+                .and(contains("unsupported schema_version"))
+                .and(contains("psyche.config.v99"))
+                // Every dependent check is reported as not run. A shorter list
+                // would read as though they had passed.
+                .and(contains("data_dir: skipped"))
+                .and(contains("coven_socket_path: skipped"))
+                .and(contains("extensions: skipped")),
+        );
+}
+
+/// `psyche doctor --config /nope.toml` used to print one raw `ConfigError` and
+/// exit with **zero checks run** — the single case the command most exists for
+/// was the one case it refused to run in.
+#[test]
+fn doctor_still_runs_when_the_config_file_is_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("nope.toml");
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .args(["doctor", "--config", missing.to_str().unwrap()])
+        .assert()
+        .code(i32::from(EXIT_CONFIG))
+        .stdout(contains("config: fail").and(contains("nope.toml")))
+        // Four lines, always. The check list is the contract; a load failure
+        // shortens no part of it.
+        .stdout(predicates::function::function(|out: &str| {
+            out.lines().count() == 4
+        }));
+}
+
+/// An unwritable `data_dir` is a failed *check*, not a bad configuration, and
+/// the two get different codes on purpose — an operator scripting `doctor`
+/// cannot otherwise tell "your file is malformed" from "your disk is not
+/// writable".
+#[cfg(unix)]
+#[test]
+fn doctor_exits_with_the_check_failed_code_on_an_unwritable_data_dir() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let blocked = tmp.path().join("blocked");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    // Root ignores mode bits. Determined by trying rather than by reading a uid,
+    // which would need libc — forbidden here.
+    if std::fs::write(blocked.join(".root-check"), b"").is_ok() {
+        eprintln!(
+            "skipping: this process writes through mode 0o500 (root, or a permissionless fs)"
+        );
+        return;
+    }
+
+    let path = tmp.path().join("psyche.toml");
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+schema_version = "psyche.config.v1"
+data_dir = "{}"
+
+[coven]
+socket = "/run/coven.sock"
+required_api_version = "coven.daemon.v1"
+"#,
+            blocked.display()
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .args(["doctor", "--config", path.to_str().unwrap()])
+        .assert()
+        .code(i32::from(EXIT_CHECK_FAILED))
+        .stdout(contains("data_dir: fail"));
+
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// `doctor --json` is versioned for the same reason the configuration and the
+/// Coven API are: the alternative is the `name: status (detail)` line format
+/// getting `grep`ped into a contract nobody chose to make.
+///
+/// Parsed rather than substring-matched, which also pins that stdout is one
+/// whole JSON document — a log line leaking onto stdout would fail here.
+#[test]
+fn doctor_json_emits_a_versioned_document() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = write_config(tmp.path()).unwrap();
+    let assert = Command::cargo_bin("psyche")
+        .unwrap()
+        .args(["doctor", "--config", config.to_str().unwrap(), "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let document: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+
+    assert_eq!(
+        document["schema"],
+        serde_json::json!("psyche.doctor.v1"),
+        "{stdout}"
+    );
+    assert_eq!(document["failed"], serde_json::json!(0), "{stdout}");
+    let checks = document["checks"].as_array().unwrap();
+    let names: Vec<&str> = checks.iter().filter_map(|c| c["name"].as_str()).collect();
+    assert_eq!(
+        names,
+        ["config", "data_dir", "coven_socket_path", "extensions"],
+        "{stdout}"
+    );
+    // `coven_socket_path` contacts nothing and cannot fail. Reporting it as `ok`
+    // in a list where any non-`ok` fails the command was a claim of
+    // verification it never performed.
+    assert_eq!(checks[2]["status"], serde_json::json!("info"), "{stdout}");
 }
 
 #[test]
@@ -265,12 +384,23 @@ fn the_default_config_is_relative_to_the_working_directory() {
         .assert()
         .success();
 
+    // `doctor` puts the reason in its report on stdout; `status` short-circuits
+    // on stderr. Both have to name the file they actually tried.
     let absent = tempfile::tempdir().unwrap();
     Command::cargo_bin("psyche")
         .unwrap()
         .env_remove("PSYCHE_CONFIG")
         .current_dir(absent.path())
         .arg("doctor")
+        .assert()
+        .code(i32::from(EXIT_CONFIG))
+        .stdout(contains("psyche.toml"));
+
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .env_remove("PSYCHE_CONFIG")
+        .current_dir(absent.path())
+        .arg("status")
         .assert()
         .code(i32::from(EXIT_CONFIG))
         .stderr(contains("psyche.toml"));
@@ -596,7 +726,10 @@ fn doctor_output_never_contains_an_extension_value() {
     // The count is reportable and is reported: without this, a `doctor` that
     // simply never mentions extensions would pass the absence checks below
     // while proving nothing about the redaction.
-    assert!(stdout.contains("extensions: ok"), "{stdout}");
+    //
+    // `info`, not `ok`: a tally verifies nothing, and it sat in a list where any
+    // non-`ok` entry failed the whole command.
+    assert!(stdout.contains("extensions: info"), "{stdout}");
     assert!(stdout.contains("1 table(s) present"), "{stdout}");
 
     for (stream, label) in [(&stdout, "stdout"), (&stderr, "stderr")] {

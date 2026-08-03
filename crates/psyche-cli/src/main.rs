@@ -71,7 +71,51 @@ enum Command {
         json: bool,
     },
     /// Run local, credential-free environment checks.
-    Doctor,
+    Doctor {
+        /// Emit a `psyche.doctor.v1` document on stdout instead of one line per
+        /// check.
+        ///
+        /// The line format is what an operator would otherwise `grep`, and a
+        /// format that gets grepped is frozen whether or not anyone decided to
+        /// freeze it.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Loads the configuration, runs every check against whatever came back, prints
+/// the report, and returns the code that describes it.
+///
+/// The load result is passed into [`doctor::run`] rather than unwrapped here:
+/// a configuration that will not load is the case `doctor` most exists for, and
+/// the command has to have something to say about it beyond one raw error.
+///
+/// Three outcomes, three codes. `EXIT_CONFIG` means the file is wrong;
+/// `EXIT_CHECK_FAILED` means the file was fine and something it describes is
+/// not. An operator scripting this could not previously tell them apart.
+fn doctor_command(path: &std::path::Path, json: bool) -> ExitCode {
+    let loaded = psyche_config::load_path(path);
+    let checks = doctor::run(path, loaded.as_ref());
+
+    // stdout: the report *is* this command's output, and `doctor > report.txt`
+    // has to capture all of it. The failure reason travels inside the `config`
+    // check rather than being duplicated onto stderr.
+    print!(
+        "{}",
+        if json {
+            doctor::render_json(&checks) + "\n"
+        } else {
+            doctor::render_text(&checks)
+        }
+    );
+
+    if loaded.is_err() {
+        ExitCode::from(EXIT_CONFIG)
+    } else if doctor::failures(&checks) > 0 {
+        ExitCode::from(EXIT_CHECK_FAILED)
+    } else {
+        ExitCode::from(EXIT_OK)
+    }
 }
 
 /// `unwrap`/`expect` are denied outside tests, so every failure path here
@@ -95,6 +139,21 @@ async fn main() -> ExitCode {
 
     let path = cli.config;
 
+    // `doctor` is dispatched *before* the load, and is the only subcommand that
+    // is. Loading first short-circuited it on exactly the input it exists to
+    // explain: `psyche doctor --config /nope.toml` printed one raw `ConfigError`
+    // and exited with zero checks run, which also left the `config` check
+    // vacuous — it could only ever report `ok`.
+    //
+    // Taken out of `cli.command` here rather than matched again below, so the
+    // match that follows has no `Doctor` arm to write. A dead arm returning a
+    // code nothing can observe is the same kind of defect as a command that
+    // reports a state it did not measure.
+    let command = match cli.command {
+        Command::Doctor { json } => return doctor_command(&path, json),
+        other => other,
+    };
+
     let config = match psyche_config::load_path(&path) {
         Ok(c) => c,
         Err(e) => {
@@ -108,23 +167,13 @@ async fn main() -> ExitCode {
     // structs it does not own.
     tracing::debug!(path = %path.display(), "configuration loaded");
 
-    match cli.command {
-        Command::Doctor => {
-            let checks = doctor::run(&config);
-            let failed = checks.iter().filter(|c| !c.ok).count();
-            for check in &checks {
-                let status = if check.ok { "ok" } else { "FAIL" };
-                println!("{}: {status} ({})", check.name, check.detail);
-            }
-            if failed == 0 {
-                ExitCode::from(EXIT_OK)
-            } else {
-                // A check failed, which is a different thing from the
-                // configuration being wrong — that exits `EXIT_CONFIG` before
-                // reaching here. Keeping them apart is the reason the space
-                // exists.
-                ExitCode::from(EXIT_CHECK_FAILED)
-            }
+    match command {
+        // Returned by the match above, which is the only way `command` is
+        // bound. Exhaustiveness still demands the arm; `unreachable!` is the
+        // honest thing to put in it, and it names the reason so the next reader
+        // does not try to write a test that reaches here.
+        Command::Doctor { .. } => {
+            unreachable!("doctor is dispatched before the configuration load")
         }
         Command::Status { json } => {
             // `stopped`, and marked as not observed. `status` is a separate
