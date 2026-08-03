@@ -231,6 +231,163 @@ fn psyched_start_then_stop_exits_zero() {
         .stderr(contains("psyche lifecycle transition"));
 }
 
+/// The signal path, driven with a real signal.
+///
+/// Every other lifecycle test here uses `--shutdown-after-start`, which by
+/// design never installs a handler — so the whole signal branch was unexercised,
+/// and `psyched` shipped handling SIGINT only. `systemctl stop`, `docker stop`,
+/// and a bare `kill` all send SIGTERM, so the drain was unreachable in exactly
+/// the deployments that matter.
+///
+/// Both binaries and both signals, because `psyche start` and `psyched` are
+/// supposed to be the same daemon, and an operator's `kill` is as much a
+/// shutdown request as their Ctrl-C.
+#[cfg(unix)]
+mod signals {
+    use std::io::{BufRead as _, BufReader};
+    use std::process::{Command, ExitStatus, Stdio};
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+
+    /// Emitted by `daemon::run` once the runtime is up. Waiting for it is what
+    /// keeps the signal from arriving before a handler could possibly exist —
+    /// without it this test would be racing startup rather than testing drain.
+    const READY: &str = "psyche daemon ready";
+
+    /// Bounds the whole exchange. A daemon that ignores the signal keeps running
+    /// forever, and an unbounded read of its stderr would wedge CI rather than
+    /// fail it — which has already happened once in this project, for 600s.
+    const LIMIT: Duration = Duration::from_secs(30);
+
+    /// Runs `binary args...`, waits for the daemon to report ready, sends
+    /// `signal`, and returns the exit status with everything written to stderr.
+    ///
+    /// Returns `io::Result` and is unwrapped by its caller: `clippy.toml` allows
+    /// `unwrap` only in frames reachable from a `#[test]` fn, and a free helper
+    /// here is not one.
+    fn drain_under(
+        binary: &str,
+        args: &[&str],
+        signal: &str,
+    ) -> std::io::Result<(ExitStatus, String)> {
+        let mut child = Command::new(binary)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| std::io::Error::other("child stderr was not piped"))?;
+
+        // Read on another thread and deliver through a channel, so every wait
+        // below is a `recv_timeout` rather than a blocking read. The thread ends
+        // when the child closes stderr, which disconnects the channel and is how
+        // the post-signal collection below learns it is done.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { return };
+                if tx.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+
+        let mut log = String::new();
+        let timed_out = |e: RecvTimeoutError| {
+            std::io::Error::other(format!("gave up waiting on {binary} stderr: {e:?}"))
+        };
+        loop {
+            let line = rx.recv_timeout(LIMIT).map_err(timed_out)?;
+            let ready = line.contains(READY);
+            log.push_str(&line);
+            log.push('\n');
+            if ready {
+                break;
+            }
+        }
+
+        // `/bin/kill` through `Command`, not `libc::kill`: `unsafe_code` is
+        // forbidden at the workspace level and cannot be re-allowed, so there is
+        // no in-process way to raise a signal at another pid.
+        let status = Command::new("kill")
+            .args([&format!("-{signal}"), &child.id().to_string()])
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!(
+                "kill -{signal} failed: {status}"
+            )));
+        }
+
+        // Drain to EOF. Disconnected means the child closed stderr, i.e. exited.
+        loop {
+            match rx.recv_timeout(LIMIT) {
+                Ok(line) => {
+                    log.push_str(&line);
+                    log.push('\n');
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(e) => return Err(timed_out(e)),
+            }
+        }
+
+        Ok((child.wait()?, log))
+    }
+
+    /// Asserts `log` shows a full graceful drain: `draining`, then `stopped`.
+    ///
+    /// Ordered, not merely present. A daemon that jumped straight to `stopped`
+    /// skipped the drain, which is the whole property being bought here.
+    fn assert_drained(label: &str, status: ExitStatus, log: &str) {
+        assert!(
+            status.success(),
+            "{label}: expected a graceful exit, got {status}\n{log}"
+        );
+        let draining = log
+            .find("\"state\":\"draining\"")
+            .unwrap_or_else(|| panic!("{label}: never entered draining\n{log}"));
+        let stopped = log
+            .find("\"state\":\"stopped\"")
+            .unwrap_or_else(|| panic!("{label}: never reached stopped\n{log}"));
+        assert!(
+            draining < stopped,
+            "{label}: reached stopped without draining first\n{log}"
+        );
+    }
+
+    #[test]
+    fn both_binaries_drain_on_sigterm_and_sigint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = super::write_config(tmp.path()).unwrap();
+        let config = config.to_str().unwrap();
+
+        let cases: [(&str, Vec<&str>, &str); 3] = [
+            (
+                env!("CARGO_BIN_EXE_psyched"),
+                vec!["--config", config],
+                "TERM",
+            ),
+            (
+                env!("CARGO_BIN_EXE_psyched"),
+                vec!["--config", config],
+                "INT",
+            ),
+            (
+                env!("CARGO_BIN_EXE_psyche"),
+                vec!["start", "--config", config],
+                "TERM",
+            ),
+        ];
+
+        for (binary, args, signal) in cases {
+            let label = format!("{binary} {} on SIG{signal}", args.join(" "));
+            let (status, log) = drain_under(binary, &args, signal).unwrap();
+            assert_drained(&label, status, &log);
+        }
+    }
+}
+
 /// Extension tables are untyped, so a future one may hold a credential. `doctor`
 /// may report how many there are; it may never report what is in them.
 ///
