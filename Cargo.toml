@@ -7,7 +7,12 @@ resolver = "3"
 # declared member's manifest on ANY command — `--no-deps` and `--manifest-path`
 # both still walk up to the workspace root — so naming a crate before it exists
 # makes the entire workspace uninvokable, including `cargo test`.
-members = ["crates/psyche-core", "crates/psyche-config", "crates/psyche-runtime"]
+members = [
+    "crates/psyche-core",
+    "crates/psyche-config",
+    "crates/psyche-runtime",
+    "crates/psyche-cli",
+]
 
 [workspace.package]
 version = "0.0.0"
