@@ -122,6 +122,39 @@ jobs:
       - name: Scan history
         run: gitleaks detect --no-banner --redact --log-opts="--all"
 
-# The npm distribution job is added by Task 8, which creates
-# `packages/psyche-npm`. Adding it here would leave CI red for a whole task,
-# for the same reason a workspace member cannot be declared before it exists.
+  npm:
+    name: npm distribution (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the floor declared by `engines` in packages/psyche-npm and is
+        # the only boundary in `>=20`; without this leg that field is an
+        # assertion nobody checks, and code written on a newer local Node would
+        # break for users on the version we say we support. 22 is the current
+        # LTS. There is deliberately no upper leg: `>=20` has no upper bound, so
+        # any newer version is an arbitrary point rather than a boundary, and a
+        # regression there surfaces on the first local `npm test` — this package
+        # has no dependencies and nothing platform-specific to drift.
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No `npm ci` / `npm install`: the wrapper has no dependencies and no
+      # devDependencies, and its `optionalDependencies` are the not-yet-published
+      # companion packages, so an install would 404 rather than do anything. The
+      # suite is `node:test` against three source files and needs nothing fetched.
+      - name: Wrapper tests
+        run: npm --prefix packages/psyche-npm test
+      # Positional, not `--prefix`: `pack` ignores the prefix and reads
+      # package.json from the working directory.
+      #
+      # Runs on both legs on purpose. `pack` is what decides which files reach
+      # the registry, and the bundled npm differs per Node major (10 on Node 20,
+      # 11 on Node 22+), so the repeat is a check that the `files` allowlist
+      # resolves to the same tarball across npm majors rather than duplicated
+      # work. Both were confirmed to produce the same five files locally.
+      - name: Pack dry run
+        run: npm pack ./packages/psyche-npm --dry-run
