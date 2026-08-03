@@ -9,6 +9,10 @@ use assert_cmd::Command;
 // `.and(..)` on a predicate comes from this trait, not from `contains` itself.
 use predicates::prelude::PredicateBooleanExt as _;
 use predicates::str::contains;
+// The exit codes are asserted against the constants the binaries return, not
+// against literals: a test carrying its own copy of `3` would keep passing
+// through a renumbering that broke every unit file in the field.
+use psyche_cli::{EXIT_CONFIG, EXIT_UNAVAILABLE};
 
 /// A 30-byte stand-in for a credential parked in an extension table. Long and
 /// distinctive so a partial echo is still detectable by the window scan below.
@@ -171,13 +175,86 @@ fn start_and_stop_run_without_any_telegram_credentials() {
         .assert()
         .success();
 
+    // `stop` is asserted against its documented code, not `.success()`. It has
+    // no daemon IPC to use, so "did nothing" is the truthful answer and 0 would
+    // be the false one — see `stop_reports_that_it_cannot_reach_a_daemon`.
     Command::cargo_bin("psyche")
         .unwrap()
         .env_remove("TELEGRAM_BOT_TOKEN")
         .env_remove("PSYCHE_TELEGRAM_TOKEN")
         .args(["stop", "--config", path])
         .assert()
-        .success();
+        .code(i32::from(EXIT_UNAVAILABLE));
+}
+
+/// `psyche stop` used to print `no running daemon to stop` and exit 0, while its
+/// own help text promised it would "ask a running daemon to shut down
+/// gracefully". Structurally the same defect as the `psyche start` stub: the
+/// scripted failure is `psyche stop && deploy`, or a rolling restart that
+/// believes the old daemon is gone.
+#[test]
+fn stop_reports_that_it_cannot_reach_a_daemon() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = write_config(tmp.path()).unwrap();
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .args(["stop", "--config", config.to_str().unwrap()])
+        .assert()
+        .code(i32::from(EXIT_UNAVAILABLE))
+        .stderr(contains("not implemented in this build"))
+        // The caveat belongs on stderr so a `--json`-style stdout pipeline stays
+        // clean, and so `stop > /dev/null` cannot hide it.
+        .stdout(predicates::str::is_empty());
+}
+
+/// Every entry point owes the same answer for the same broken configuration.
+///
+/// Asserted per code rather than as "non-zero": the whole point of the space is
+/// that an operator scripting these can tell "your configuration is malformed"
+/// from "your environment is not in the state it needs to be", and `failure()`
+/// cannot see the difference.
+#[test]
+fn a_broken_config_exits_with_the_configuration_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("does-not-exist.toml");
+    let unsupported = tmp.path().join("unsupported.toml");
+    std::fs::write(
+        &unsupported,
+        r#"
+schema_version = "psyche.config.v99"
+data_dir = "/tmp"
+
+[coven]
+socket = "/run/coven.sock"
+required_api_version = "coven.daemon.v1"
+"#,
+    )
+    .unwrap();
+    let malformed = tmp.path().join("malformed.toml");
+    std::fs::write(
+        &malformed,
+        "schema_version = \"psyche.config.v1\"\nthis is not toml",
+    )
+    .unwrap();
+
+    let entry_points: [(&str, &[&str]); 5] = [
+        ("psyche", &["doctor"]),
+        ("psyche", &["status"]),
+        ("psyche", &["start", "--shutdown-after-start"]),
+        ("psyche", &["stop"]),
+        ("psyched", &["--shutdown-after-start"]),
+    ];
+
+    for path in [&missing, &unsupported, &malformed] {
+        for (binary, args) in entry_points {
+            let mut command = Command::cargo_bin(binary).unwrap();
+            command.args(args);
+            command
+                .args(["--config", path.to_str().unwrap()])
+                .assert()
+                .code(i32::from(EXIT_CONFIG));
+        }
+    }
 }
 
 /// `psyche start` says it starts the daemon in the foreground, so it must run

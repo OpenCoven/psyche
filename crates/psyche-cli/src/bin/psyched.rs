@@ -16,7 +16,7 @@ use clap::Parser;
 // two subscribers configured independently would eventually disagree about the
 // writer, and a daemon logging to stdout instead of stderr is a corrupted
 // `--json` pipeline.
-use psyche_cli::{daemon, logging};
+use psyche_cli::{EXIT_CONFIG, daemon, logging};
 
 #[derive(Debug, Parser)]
 #[command(name = "psyched", version, about = "Psyche daemon")]
@@ -37,9 +37,11 @@ async fn main() -> ExitCode {
     let config = match psyche_config::load_path(&cli.config) {
         Ok(c) => c,
         Err(e) => {
-            // Display, not `{:?}` — see the note on `psyche`'s `main`.
+            // Display, not `{:?}` — see the note on `psyche`'s `main`. The code
+            // is the same one `psyche` returns for the same file: an operator's
+            // unit file must not have to know which binary it invoked.
             eprintln!("{e}");
-            return ExitCode::FAILURE;
+            return ExitCode::from(EXIT_CONFIG);
         }
     };
 

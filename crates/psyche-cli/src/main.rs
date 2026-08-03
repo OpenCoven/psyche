@@ -15,7 +15,9 @@ use clap::{Parser, Subcommand};
 // From the `psyche_cli` library target, which `psyched` also links. See that
 // crate root for why the daemon path and the log subscriber are shared rather
 // than reimplemented per binary.
-use psyche_cli::{daemon, doctor, logging};
+use psyche_cli::{
+    EXIT_CHECK_FAILED, EXIT_CONFIG, EXIT_OK, EXIT_UNAVAILABLE, daemon, doctor, logging,
+};
 use psyche_runtime::LifecycleState;
 
 #[derive(Debug, Parser)]
@@ -36,7 +38,11 @@ enum Command {
         #[arg(long)]
         shutdown_after_start: bool,
     },
-    /// Ask a running daemon to shut down gracefully.
+    /// Not implemented in this build: there is no daemon IPC yet.
+    ///
+    /// The help text says so because the command cannot do it. It used to
+    /// promise a graceful shutdown and exit 0 having done nothing, which is what
+    /// `psyche stop && deploy` reads as success.
     Stop {
         #[arg(long, default_value = "psyche.toml")]
         config: PathBuf,
@@ -56,7 +62,8 @@ enum Command {
 }
 
 /// `unwrap`/`expect` are denied outside tests, so every failure path here
-/// returns [`ExitCode::FAILURE`] after rendering the error with `Display`.
+/// returns a named exit code after rendering the error with `Display`. The codes
+/// are defined and documented in [`psyche_cli`]; nothing here invents one.
 ///
 /// `Display`, never `{:?}`: `psyche_config::ConfigError` reduces every
 /// deserializer error to a payload-free message at one place inside that crate,
@@ -84,7 +91,7 @@ async fn main() -> ExitCode {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{e}");
-            return ExitCode::FAILURE;
+            return ExitCode::from(EXIT_CONFIG);
         }
     };
 
@@ -102,9 +109,13 @@ async fn main() -> ExitCode {
                 println!("{}: {status} ({})", check.name, check.detail);
             }
             if failed == 0 {
-                ExitCode::SUCCESS
+                ExitCode::from(EXIT_OK)
             } else {
-                ExitCode::FAILURE
+                // A check failed, which is a different thing from the
+                // configuration being wrong — that exits `EXIT_CONFIG` before
+                // reaching here. Keeping them apart is the reason the space
+                // exists.
+                ExitCode::from(EXIT_CHECK_FAILED)
             }
         }
         Command::Status { json, .. } => {
@@ -128,15 +139,19 @@ async fn main() -> ExitCode {
             } else {
                 println!("state: {state} (not observed: no daemon IPC in this build)");
             }
-            ExitCode::SUCCESS
+            ExitCode::from(EXIT_OK)
         }
         Command::Start {
             shutdown_after_start,
             ..
         } => daemon::run(config, shutdown_after_start).await,
         Command::Stop { .. } => {
-            eprintln!("no running daemon to stop");
-            ExitCode::SUCCESS
+            // Non-zero, because nothing was stopped. The previous form printed
+            // "no running daemon to stop" and exited 0, which a rolling restart
+            // scripted as `psyche stop && deploy` reads as "the old daemon is
+            // gone". It is not gone; this build has no way to ask it.
+            eprintln!("stop is not implemented in this build (no daemon IPC)");
+            ExitCode::from(EXIT_UNAVAILABLE)
         }
     }
 }
