@@ -281,22 +281,70 @@ mod tests {
     /// Returns the `Result` rather than unwrapping: `clippy.toml` allows
     /// `unwrap` only in frames reachable from a `#[test]` fn, and a free helper
     /// is not one. The caller unwrapping also names the failing test.
+    /// Renders a path as a TOML basic string, escaping what TOML gives meaning to.
+    ///
+    /// A Windows temp directory is `C:\Users\RUNNER~1\AppData\Local\Temp\...`,
+    /// and interpolating that raw makes `\U` a unicode escape: the loader fails
+    /// with "too few unicode value digits" and the test reads as though the
+    /// configuration loader were broken. Nothing platform-specific here — the
+    /// escaping is simply what writing a path into TOML has always required.
+    fn toml_str(path: &Path) -> String {
+        format!(
+            "\"{}\"",
+            path.display()
+                .to_string()
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+        )
+    }
+
     fn config_for(data_dir: &Path) -> Result<Config, ConfigError> {
         psyche_config::load_str(&format!(
             r#"
 schema_version = "psyche.config.v1"
-data_dir = "{}"
+data_dir = {}
 
 [coven]
 socket = "/run/coven.sock"
 required_api_version = "coven.daemon.v1"
 "#,
-            data_dir.display()
+            toml_str(data_dir)
         ))
     }
 
     fn check<'a>(checks: &'a [Check], name: &str) -> Option<&'a Check> {
         checks.iter().find(|c| c.name == name)
+    }
+
+    /// A Windows path survives being written into a TOML fixture.
+    ///
+    /// Runs on every platform on purpose: the bug this pins is not conditional
+    /// code, it is a string that means something different to the TOML parser,
+    /// so a literal Windows path exercises it from macOS just as well. Without
+    /// this, five `doctor` tests passed everywhere developers work and failed on
+    /// `windows-latest` with "too few unicode value digits" — an error naming the
+    /// config loader, which is not where the defect was.
+    #[test]
+    fn a_windows_style_path_round_trips_through_a_toml_fixture() {
+        let windows = Path::new(r"C:\Users\RUNNER~1\AppData\Local\Temp\psyche");
+        let rendered = toml_str(windows);
+        assert_eq!(
+            rendered, r#""C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\psyche""#,
+            "every backslash must be escaped or TOML reads \\U as a unicode escape"
+        );
+
+        let config = psyche_config::load_str(&format!(
+            r#"
+schema_version = "psyche.config.v1"
+data_dir = {rendered}
+
+[coven]
+socket = "/run/coven.sock"
+required_api_version = "coven.daemon.v1"
+"#
+        ))
+        .expect("a path with backslashes must survive the fixture");
+        assert_eq!(config.data_dir, windows);
     }
 
     /// The whole of `doctor`'s coverage used to be process spawns, because these

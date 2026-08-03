@@ -24,17 +24,34 @@ use psyche_cli::EXIT_CHECK_FAILED;
 /// distinctive so a partial echo is still detectable by the window scan below.
 const SECRETISH: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
+/// Renders a path as a TOML basic string, escaping what TOML gives meaning to.
+///
+/// A Windows temp directory is `C:\Users\RUNNER~1\AppData\Local\Temp\...`, and
+/// interpolating that raw makes `\U` a unicode escape: the loader fails with
+/// "too few unicode value digits" and the test reads as though the configuration
+/// loader were broken rather than the fixture. Nothing platform-specific here —
+/// the escaping is simply what writing a path into TOML has always required.
+fn toml_str(path: &std::path::Path) -> String {
+    format!(
+        "\"{}\"",
+        path.display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    )
+}
+
 fn config_body(data_dir: &std::path::Path) -> String {
     format!(
         r#"
 schema_version = "psyche.config.v1"
-data_dir = "{}"
+data_dir = {}
 
 [coven]
 socket = "/run/coven.sock"
 required_api_version = "coven.daemon.v1"
 "#,
-        data_dir.display()
+        toml_str(data_dir)
     )
 }
 
@@ -229,13 +246,13 @@ fn doctor_exits_with_the_check_failed_code_on_an_unwritable_data_dir() {
         format!(
             r#"
 schema_version = "psyche.config.v1"
-data_dir = "{}"
+data_dir = {}
 
 [coven]
 socket = "/run/coven.sock"
 required_api_version = "coven.daemon.v1"
 "#,
-            blocked.display()
+            toml_str(&blocked)
         ),
     )
     .unwrap();
