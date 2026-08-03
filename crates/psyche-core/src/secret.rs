@@ -50,15 +50,15 @@ pub enum SecretRefError {
     /// configuration file that caused it.
     #[error("secret_ref has a scheme but no path, e.g. `op://` with no vault/item/field")]
     EmptyPath,
-    /// The path is present but not a usable reference: too few segments, an
-    /// empty segment, surrounding whitespace, or a control character.
+    /// The path is present but not a usable reference: too few segments, an empty
+    /// segment, surrounding whitespace, or a control or format character.
     ///
     /// Whitespace is rejected rather than trimmed. Storing something other than
     /// what the operator wrote is worse than telling them, and control
     /// characters would otherwise reach a resolver's log line as injection —
     /// the same argument `schema` makes for `{found:?}`.
     #[error(
-        "secret_ref path must be VAULT/ITEM/FIELD with no empty segments, surrounding whitespace, or control characters"
+        "secret_ref path must be VAULT/ITEM/FIELD with no empty segments, surrounding whitespace, or control or format characters"
     )]
     MalformedPath,
     /// The reference exceeds the maximum accepted length.
