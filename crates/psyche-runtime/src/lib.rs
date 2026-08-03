@@ -254,32 +254,81 @@ required_api_version = "coven.daemon.v1"
     // Two callers must not both drive the machine: with a separate test and
     // transition, both could observe `Running` and both proceed, which once the
     // drain seam does real work means draining twice.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_shutdowns_elect_exactly_one_winner() {
-        let rt = Arc::new(Runtime::start(test_config()).await);
-        let mut tasks = Vec::new();
-        for _ in 0..16 {
-            let rt = Arc::clone(&rt);
-            tasks.push(tokio::spawn(async move { rt.shutdown().await.is_ok() }));
+    //
+    // OS threads released by a `Barrier`, deliberately not tokio tasks.
+    // `shutdown` contains no await inside its critical region, so tokio tasks
+    // run to completion before the next is polled and never overlap no matter
+    // how many workers the runtime has — a task-based version of this test
+    // passes against a check-then-act implementation, which is the exact
+    // regression it exists to catch.
+    //
+    // Mutation-tested rather than assumed. Against a `shutdown` that tests the
+    // state and then transitions in a second lock acquisition, the previous
+    // tokio-task form of this test detected the race 0 times in 60 runs; this
+    // form detected it 60 times in 60, and 60/60 again against the wider
+    // check-`== Stopped`-then-transition variant. If these constants are
+    // lowered, re-run that mutation — at 8 threads and 200 rounds detection
+    // drops to 42/60, which is not a guard.
+    //
+    // Many short rounds rather than one long one: the window a racy
+    // implementation opens is the gap between dropping the lock after the test
+    // and retaking it for the write, so what matters is how often threads
+    // arrive at a *fresh* `Running` runtime together, not how long any one of
+    // them runs.
+    #[test]
+    fn concurrent_shutdowns_elect_exactly_one_winner() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const THREADS: usize = 16;
+        const ROUNDS: usize = 1_000;
+
+        // One executor for the whole test. `Handle::block_on` drives the future
+        // on the *calling* thread rather than handing it to a worker, so the
+        // threads below contend directly instead of being serialised through
+        // the scheduler.
+        let executor = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+
+        for round in 0..ROUNDS {
+            let rt = Arc::new(executor.block_on(Runtime::start(test_config())));
+            let barrier = Arc::new(Barrier::new(THREADS));
+            let wins = Arc::new(AtomicUsize::new(0));
+
+            std::thread::scope(|scope| {
+                for _ in 0..THREADS {
+                    let rt = Arc::clone(&rt);
+                    let barrier = Arc::clone(&barrier);
+                    let wins = Arc::clone(&wins);
+                    let handle = executor.handle().clone();
+                    scope.spawn(move || {
+                        // Everything that can be done ahead of the contended
+                        // section is done before the barrier, so the threads
+                        // are released as close to simultaneously as the OS
+                        // allows.
+                        let shutdown = async { rt.shutdown().await.is_ok() };
+                        barrier.wait();
+                        if handle.block_on(shutdown) {
+                            wins.fetch_add(1, Ordering::SeqCst);
+                        }
+                    });
+                }
+            });
+
+            assert_eq!(
+                wins.load(Ordering::SeqCst),
+                1,
+                "round {round}: expected exactly one caller to own the shutdown"
+            );
+            assert_eq!(
+                rt.transitions(),
+                vec![
+                    LifecycleState::Running,
+                    LifecycleState::Draining,
+                    LifecycleState::Stopped
+                ],
+                "round {round}"
+            );
         }
-        let mut winners = 0;
-        for task in tasks {
-            if task.await.unwrap() {
-                winners += 1;
-            }
-        }
-        assert_eq!(
-            winners, 1,
-            "expected exactly one caller to own the shutdown"
-        );
-        assert_eq!(
-            rt.transitions(),
-            vec![
-                LifecycleState::Running,
-                LifecycleState::Draining,
-                LifecycleState::Stopped
-            ]
-        );
     }
 
     // `Runtime` derives `Debug` purely on the strength of `Config` redacting its
