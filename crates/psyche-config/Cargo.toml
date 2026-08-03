@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# `publish` is NOT inherited implicitly: without this line the member falls back
+# to `publish = true` and the workspace's `publish = false` is inert.
+publish.workspace = true
 
 [dependencies]
 psyche-core = { workspace = true }

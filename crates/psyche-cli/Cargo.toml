@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# `publish` is NOT inherited implicitly: without this line the member falls back
+# to `publish = true` and the workspace's `publish = false` is inert.
+publish.workspace = true
 
 # The shared implementation. Declared explicitly alongside the binaries rather
 # than left to autodiscovery, so all three targets read from one list. The two
