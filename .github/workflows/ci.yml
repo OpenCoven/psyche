@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the MSRV rather than `@stable`, and stated explicitly rather
+      # than left to the action's default: `rust-toolchain.toml` already pins
+      # 1.85.0 and takes precedence over whatever cargo is invoked through, so
+      # `@stable` would download a toolchain the build then never uses — a
+      # slower job that silently tests nothing about the version we ship.
+      # The two pins must agree; Step 4 is what catches it if they drift.
+      #
+      # Verified: this action runs `rustup default <toolchain>` and does NOT
+      # export RUSTUP_TOOLCHAIN, so `rust-toolchain.toml` really does win. That
+      # is why the pin here is documentation rather than mechanism — and why the
+      # `supply-chain` job below has to escape it explicitly.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+          components: rustfmt, clippy
+      # `RUSTFLAGS` is part of this action's cache key (it hashes every env var
+      # whose name starts with CARGO/CC/CFLAGS/CXX/CMAKE/RUST). Setting it at
+      # workflow scope, above, is what keeps that key constant across runs; a
+      # per-step `RUSTFLAGS` would be invisible here and the restored cache
+      # would have been built with different flags.
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  supply-chain:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # NOT the MSRV pin, unlike the `rust` job. cargo-deny is a tool we run
+      # against the tree, not something we ship, so its build toolchain says
+      # nothing about what we support. It also cannot use the pin: cargo-deny
+      # 0.19.8 declares rust-version 1.88.0, and `cargo install` under 1.85.0
+      # refuses outright —
+      #   error: cannot install package `cargo-deny`, it requires rustc 1.88.0
+      #   or newer, while the currently active rustc version is 1.85.0
+      # No `components`: this job never runs fmt or clippy.
+      - uses: dtolnay/rust-toolchain@stable
+      # `+stable` is load-bearing, not decoration. `rust-toolchain.toml` sits at
+      # the repo root and outranks `rustup default`, so a bare `cargo install`
+      # here would run under 1.85.0 and hit the error above no matter which
+      # toolchain the step above installed. An explicit `+toolchain` is the one
+      # thing that outranks the toolchain file.
+      #
+      # Installed directly rather than via a third-party action: it is the same
+      # binary and the same command engineers run locally in Task 7 Step 2, so
+      # there is no CI-only path, and it adds no extra action to trust. Pinned
+      # to the version that policy was actually validated against, so a new
+      # cargo-deny release cannot turn CI red with no change to this repo.
+      - name: Install cargo-deny
+        run: cargo +stable install cargo-deny --locked --version 0.19.8
+      - name: Audit
+        run: cargo deny check licenses advisories bans sources
+
+  secrets:
+    name: Secret guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The gitleaks CLI, not `gitleaks/gitleaks-action`. The action is
+      # separately licensed: its entrypoint looks up the repository owner and,
+      # when the owner is an Organization, exits 1 unless a `GITLEAKS_LICENSE`
+      # secret is present. `OpenCoven` is an Organization, so the action form
+      # would fail every run until someone buys a key. The CLI it wraps is MIT
+      # and has no such gate.
+      #
+      # This is the same reasoning the `supply-chain` job applies to cargo-deny:
+      # run the real binary, with the same arguments an engineer runs locally,
+      # rather than a wrapper. Version and digest are pinned because a job whose
+      # whole purpose is supply-chain hygiene should not curl an unverified
+      # tarball.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 --retry 3 --location --silent --show-error --fail \
+            --output "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" gitleaks
+          install -m 0755 gitleaks /usr/local/bin/gitleaks
+          rm -f "$archive" gitleaks
+          gitleaks version
+      # `--log-opts=--all` scans every commit on every ref, which is what the
+      # `fetch-depth: 0` above is for: a secret that was committed and then
+      # reverted is still a leaked secret. `--redact` keeps the finding out of
+      # the public log, which would otherwise re-leak whatever it found.
+      - name: Scan history
+        run: gitleaks detect --no-banner --redact --log-opts="--all"
+
+# The npm distribution job is added by Task 8, which creates
+# `packages/psyche-npm`. Adding it here would leave CI red for a whole task,
+# for the same reason a workspace member cannot be declared before it exists.
