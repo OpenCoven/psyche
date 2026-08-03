@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# `SecretRef` derives `Deserialize` with `#[serde(try_from = "String")]`, which
+# is what forces every deserialised reference through the validating
+# `TryFrom<String>` impl rather than straight into the newtype.
+serde = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]
