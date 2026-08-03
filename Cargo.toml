@@ -1,5 +1,8 @@
 [workspace]
-resolver = "2"
+# Resolver 3 is MSRV-aware. clap, assert_cmd, and toml all declare rust-version
+# 1.85 — exactly our pin — so under resolver 2 a routine `cargo update` would
+# select a release requiring a newer compiler and break the build.
+resolver = "3"
 members = [
     "crates/psyche-core",
     "crates/psyche-config",
@@ -19,7 +22,7 @@ psyche-core = { path = "crates/psyche-core" }
 psyche-config = { path = "crates/psyche-config" }
 psyche-runtime = { path = "crates/psyche-runtime" }
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
@@ -34,4 +37,6 @@ tempfile = "3"
 codegen-units = 1
 lto = true
 opt-level = "s"
-strip = true
+# "debuginfo", not true: `strip = true` also removes the symbol table, which
+# turns field panics in an npm-distributed daemon into unresolved hex addresses.
+strip = "debuginfo"

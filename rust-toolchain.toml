@@ -1,4 +1,4 @@
 [toolchain]
 channel = "1.85.0"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "rust-src"]  # rust-src: rust-analyzer stdlib support
 profile = "minimal"
