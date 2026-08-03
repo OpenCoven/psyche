@@ -20,18 +20,18 @@ use psyche_config::Config;
 
 /// One named check and the single line it contributes to `doctor` output.
 #[derive(Debug)]
-pub(crate) struct Check {
+pub struct Check {
     /// Stable identifier an operator or a script can grep for.
-    pub(crate) name: &'static str,
+    pub name: &'static str,
     /// Whether the check passed. Any `false` makes `doctor` exit non-zero.
-    pub(crate) ok: bool,
+    pub ok: bool,
     /// Operator-facing explanation. Built from named config fields only.
-    pub(crate) detail: String,
+    pub detail: String,
 }
 
 /// Every check here is local and credential-free. Reaching the Coven socket or
 /// a Telegram API is explicitly *not* done — those belong to later gates.
-pub(crate) fn run(config: &Config) -> Vec<Check> {
+pub fn run(config: &Config) -> Vec<Check> {
     let mut checks = vec![Check {
         name: "config",
         ok: true,
@@ -78,4 +78,46 @@ pub(crate) fn run(config: &Config) -> Vec<Check> {
     });
 
     checks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Returns the `Result` rather than unwrapping: `clippy.toml` allows
+    /// `unwrap` only in frames reachable from a `#[test]` fn, and a free helper
+    /// is not one. The caller unwrapping also names the failing test.
+    fn config_for(data_dir: &Path) -> Result<Config, psyche_config::ConfigError> {
+        psyche_config::load_str(&format!(
+            r#"
+schema_version = "psyche.config.v1"
+data_dir = "{}"
+
+[coven]
+socket = "/run/coven.sock"
+required_api_version = "coven.daemon.v1"
+"#,
+            data_dir.display()
+        ))
+    }
+
+    /// The whole of `doctor`'s coverage used to be process spawns, because these
+    /// modules were reachable only through two binary crate roots. Calling `run`
+    /// directly is what the library target bought.
+    #[test]
+    fn every_check_is_named_and_explained() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = config_for(tmp.path()).unwrap();
+        let checks = run(&config);
+
+        let names: Vec<&str> = checks.iter().map(|c| c.name).collect();
+        assert_eq!(
+            names,
+            ["config", "data_dir", "coven_socket_path", "extensions"],
+            "the check list is the command's contract with a scripting operator"
+        );
+        for check in &checks {
+            assert!(!check.detail.is_empty(), "{} has no detail", check.name);
+        }
+    }
 }

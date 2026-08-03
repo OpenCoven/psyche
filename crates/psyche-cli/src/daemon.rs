@@ -108,7 +108,7 @@ impl Signals {
 /// answer is to report the failure and exit without starting anything. The
 /// previous form installed after `start` and returned failure while a `Running`
 /// runtime went out of scope undrained.
-pub(crate) async fn run(config: Config, shutdown_after_start: bool) -> ExitCode {
+pub async fn run(config: Config, shutdown_after_start: bool) -> ExitCode {
     // `--shutdown-after-start` skips installation entirely: the flag exists so
     // the full lifecycle can run without a signal, and arming handlers that
     // nothing will ever wait on would only change what the process does to

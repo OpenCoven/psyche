@@ -1,18 +1,21 @@
 //! `psyche` — the operator-facing command line.
 //!
+//! Argument parsing and dispatch only; the work lives in the `psyche_cli`
+//! library, which `psyched` links too.
+//!
 //! Nothing here reaches the network or reads a credential: every subcommand in
 //! this slice is local, so `psyche doctor` is usable on a machine that has never
-//! been given a Telegram token. See [`doctor`] for the rules governing what may
-//! be printed.
-
-mod daemon;
-mod doctor;
-mod logging;
+//! been given a Telegram token. See [`psyche_cli::doctor`] for the rules
+//! governing what may be printed.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+// From the `psyche_cli` library target, which `psyched` also links. See that
+// crate root for why the daemon path and the log subscriber are shared rather
+// than reimplemented per binary.
+use psyche_cli::{daemon, doctor, logging};
 use psyche_runtime::LifecycleState;
 
 #[derive(Debug, Parser)]

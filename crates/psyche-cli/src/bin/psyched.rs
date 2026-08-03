@@ -5,21 +5,18 @@
 //! one terminates the process.
 //!
 //! A thin wrapper: argument parsing, configuration loading, then the shared run
-//! path in `daemon.rs`. `psyche start` calls the same function, so the two
-//! cannot come to mean different things.
-
-// Included rather than copied, for the reason `daemon.rs` gives: two subscribers
-// configured independently would eventually disagree about the writer, and a
-// daemon logging to stdout instead of stderr is a corrupted `--json` pipeline.
-#[path = "../daemon.rs"]
-mod daemon;
-#[path = "../logging.rs"]
-mod logging;
+//! path in [`psyche_cli::daemon`]. `psyche start` calls the same function, so the
+//! two cannot come to mean different things.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
+// Linked from the `psyche_cli` library rather than copied or `#[path]`-included:
+// two subscribers configured independently would eventually disagree about the
+// writer, and a daemon logging to stdout instead of stderr is a corrupted
+// `--json` pipeline.
+use psyche_cli::{daemon, logging};
 
 #[derive(Debug, Parser)]
 #[command(name = "psyched", version, about = "Psyche daemon")]

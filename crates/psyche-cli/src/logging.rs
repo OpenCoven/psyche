@@ -6,8 +6,9 @@
 //! stdout that an operator is expected to pipe into a parser; interleaving log
 //! lines there would corrupt it.
 //!
-//! Shared by both binaries — `psyched` includes this file with `#[path]` rather
-//! than carrying its own copy, so the writer and format cannot drift apart.
+//! Shared by both binaries — they link this module from the `psyche_cli`
+//! library rather than carrying a copy each, so the writer and the format cannot
+//! drift apart.
 
 use tracing_subscriber::EnvFilter;
 
@@ -15,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 ///
 /// `try_init`'s error is discarded on purpose: a second install attempt is not
 /// a reason to refuse to run, and the failure mode — no logs — is visible.
-pub(crate) fn install() {
+pub fn install() {
     let filter = EnvFilter::try_from_env("PSYCHE_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .json()
