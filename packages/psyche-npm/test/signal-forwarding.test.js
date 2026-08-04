@@ -20,7 +20,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 
-const WRAPPER = path.join(__dirname, '..', 'bin', 'psyche.js');
+const PACKAGE_ROOT = path.join(__dirname, '..');
+const MANIFEST = path.join(__dirname, '..', 'package.json');
 
 /** Poll until `predicate` holds, or fail the test rather than hang. */
 async function waitFor(predicate, description, timeoutMs = 10_000) {
@@ -42,6 +43,15 @@ async function waitFor(predicate, description, timeoutMs = 10_000) {
 function stageWrapper(script) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'psyche-sig-'));
   const key = `${process.platform}-${process.arch}`;
+  const wrapperRoot = path.join(root, 'wrapper');
+  fs.cpSync(path.join(PACKAGE_ROOT, 'bin'), path.join(wrapperRoot, 'bin'), { recursive: true });
+  fs.cpSync(path.join(PACKAGE_ROOT, 'scripts'), path.join(wrapperRoot, 'scripts'), { recursive: true });
+
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
+  const digest = crypto.createHash('sha256').update(script).digest('hex');
+  manifest.psyche.checksums[key] = digest;
+  fs.writeFileSync(path.join(wrapperRoot, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
+
   const binDir = path.join(root, 'node_modules', '@opencoven', `psyche-${key}`, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
 
@@ -52,35 +62,18 @@ function stageWrapper(script) {
     JSON.stringify({ name: `@opencoven/psyche-${key}`, version: '0.0.0' })
   );
 
-  // The wrapper reads `../package.json` relative to `bin/psyche.js`, so the real
-  // manifest is patched in place and restored by the caller.
-  const digest = crypto.createHash('sha256').update(script).digest('hex');
-  return { root, key, digest, log: path.join(root, 'child.log') };
+  return {
+    root,
+    wrapper: path.join(wrapperRoot, 'bin', 'psyche.js'),
+    log: path.join(root, 'child.log'),
+  };
 }
 
-/**
- * Runs `body` with the shipped manifest's digest for this platform overridden,
- * then restores the file byte-for-byte.
- *
- * `await body()`, not `return body()`: with a synchronous `finally` an async
- * body only gets as far as returning its promise before the manifest is put
- * back, so the wrapper — which reads the manifest from disk in another process —
- * sees the all-zero placeholder, fails the checksum, and exits before the child
- * ever runs. That produced a "timed out waiting for the stand-in binary" failure
- * that looked like a defect in the wrapper rather than in this helper.
- */
-async function withDigest(key, digest, body) {
-  const manifestPath = path.join(__dirname, '..', 'package.json');
-  const original = fs.readFileSync(manifestPath, 'utf8');
-  const manifest = JSON.parse(original);
-  manifest.psyche.checksums[key] = digest;
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
-  try {
-    return await body();
-  } finally {
-    fs.writeFileSync(manifestPath, original);
-  }
-}
+test('does not modify the shipped manifest while staging a wrapper', () => {
+  const original = fs.readFileSync(MANIFEST, 'utf8');
+  stageWrapper('#!/bin/sh\nexit 0\n');
+  assert.strictEqual(fs.readFileSync(MANIFEST, 'utf8'), original);
+});
 
 // `SIGQUIT` rather than `SIGTERM` for the second case: both are forwarded, and
 // using two different signals proves the handler passes the signal it received
@@ -94,21 +87,19 @@ while true; do sleep 0.1; done
 `;
     const staged = stageWrapper(script);
 
-    await withDigest(staged.key, staged.digest, async () => {
-      const child = spawn(process.execPath, [WRAPPER], {
-        env: { ...process.env, NODE_PATH: path.join(staged.root, 'node_modules'), PSYCHE_TEST_LOG: staged.log },
-        stdio: 'ignore',
-      });
-
-      const logged = () => (fs.existsSync(staged.log) ? fs.readFileSync(staged.log, 'utf8') : '');
-      await waitFor(() => logged().includes('UP'), 'the stand-in binary to start');
-
-      child.kill(signal);
-      await waitFor(() => logged().includes(`GOT-${signal}`), `the child to receive ${signal}`);
-
-      // The wrapper must also not outlive the child it was waiting on.
-      await waitFor(() => child.exitCode !== null || child.signalCode !== null, 'the wrapper to exit');
+    const child = spawn(process.execPath, [staged.wrapper], {
+      env: { ...process.env, NODE_PATH: path.join(staged.root, 'node_modules'), PSYCHE_TEST_LOG: staged.log },
+      stdio: 'ignore',
     });
+
+    const logged = () => (fs.existsSync(staged.log) ? fs.readFileSync(staged.log, 'utf8') : '');
+    await waitFor(() => logged().includes('UP'), 'the stand-in binary to start');
+
+    child.kill(signal);
+    await waitFor(() => logged().includes(`GOT-${signal}`), `the child to receive ${signal}`);
+
+    // The wrapper must also not outlive the child it was waiting on.
+    await waitFor(() => child.exitCode !== null || child.signalCode !== null, 'the wrapper to exit');
   });
 }
 
@@ -119,12 +110,10 @@ test('reports a spawn failure instead of exiting 1 in silence', { skip: process.
   const script = '\x7fELF not really an executable';
   const staged = stageWrapper(script);
 
-  const result = await withDigest(staged.key, staged.digest, () =>
-    spawnSync(process.execPath, [WRAPPER], {
-      env: { ...process.env, NODE_PATH: path.join(staged.root, 'node_modules') },
-      encoding: 'utf8',
-    })
-  );
+  const result = spawnSync(process.execPath, [staged.wrapper], {
+    env: { ...process.env, NODE_PATH: path.join(staged.root, 'node_modules') },
+    encoding: 'utf8',
+  });
 
   assert.notStrictEqual(result.status, 0, 'a binary that cannot exec must not report success');
   assert.notStrictEqual(result.stderr.trim(), '', `exit ${result.status} with no explanation`);

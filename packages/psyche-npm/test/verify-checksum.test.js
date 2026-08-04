@@ -43,10 +43,11 @@ const ZERO_DIGEST = '0'.repeat(64);
 test('the placeholder digests fail closed rather than disabling the check', () => {
   // No release artifact exists at this gate, so no real digest can be recorded
   // and every entry is all-zero. That is a *closed* door, not an open one: a
-  // SHA-256 of all zero bytes is not the digest of any file, so `verifyChecksum`
-  // rejects every real binary against it. The release job that builds the
-  // companion packages is what replaces these. If this test ever has to change,
-  // the change is "the digests are real now" — never "the check is off".
+  // placeholder is not expected to match any release artifact, so
+  // `verifyChecksum` rejects the binaries tested against it. The release job
+  // that builds the companion packages is what replaces these. If this test
+  // ever has to change, the change is "the digests are real now" — never "the
+  // check is off".
   const shipped = Object.entries(manifest.psyche.checksums);
   assert.ok(shipped.length > 0);
   for (const [key, digest] of shipped) {

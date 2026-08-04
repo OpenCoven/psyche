@@ -66,10 +66,11 @@ Every entry in `psyche.checksums` is currently 64 zeros:
 ```
 
 This is a placeholder, and it **fails closed**. No release artifact exists yet,
-so no true digest can be recorded; a run of all zero bytes is not the SHA-256 of
-any file, so step 4 above rejects every real binary it is compared against. The
-placeholder therefore cannot be mistaken for a disabled check — the wrapper is
-inert until the digests are real, which is the intended state before G12.
+so no true digest can be recorded. The all-zero value is not expected to match
+any release artifact, so step 4 above rejects the binaries tested against it.
+The placeholder therefore cannot be mistaken for a disabled check — the
+wrapper is inert until the digests are real, which is the intended state before
+G12.
 
 The release job that builds the companion packages is what replaces these
 values. A test in `test/verify-checksum.test.js` asserts both that the shipped
