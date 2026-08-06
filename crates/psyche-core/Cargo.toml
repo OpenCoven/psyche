@@ -1,0 +1,25 @@
+[package]
+name = "psyche-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# `publish` is NOT inherited implicitly: without this line the member falls back
+# to `publish = true` and the workspace's `publish = false` is inert.
+publish.workspace = true
+
+[dependencies]
+# `SecretRef` derives `Deserialize` with `#[serde(try_from = "String")]`, which
+# is what forces every deserialised reference through the validating
+# `TryFrom<String>` impl rather than straight into the newtype.
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Exercises the `#[serde(try_from = "String")]` path — the way a reference
+# actually enters the type in production — rather than only `TryFrom` directly.
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "psyche-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# `publish` is NOT inherited implicitly: without this line the member falls back
+# to `publish = true` and the workspace's `publish = false` is inert.
+publish.workspace = true
+
+[dependencies]
+psyche-core = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# `load_path` is exercised against a real file, not only against a path that
+# does not exist — the read, size, and path-in-error paths all need one.
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

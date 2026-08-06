@@ -1,0 +1,51 @@
+[package]
+name = "psyche-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# `publish` is NOT inherited implicitly: without this line the member falls back
+# to `publish = true` and the workspace's `publish = false` is inert.
+publish.workspace = true
+
+# The shared implementation. Declared explicitly alongside the binaries rather
+# than left to autodiscovery, so all three targets read from one list. The two
+# binaries were previously stitched together with `#[path]` includes, which
+# compiled each shared file once per binary and left none of them reachable from
+# `tests/` or from a doc-test.
+[lib]
+name = "psyche_cli"
+path = "src/lib.rs"
+
+# Both binary targets are declared explicitly because neither inferred name is
+# the one operators type: `src/main.rs` would infer `psyche-cli`, not `psyche`.
+[[bin]]
+name = "psyche"
+path = "src/main.rs"
+
+[[bin]]
+name = "psyched"
+path = "src/bin/psyched.rs"
+
+[dependencies]
+psyche-config = { workspace = true }
+psyche-runtime = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# Deliberately NOT depending on psyche-core: everything this crate needs from it
+# arrives through `psyche_config::Config` (`schema_version()` returns
+# `psyche_core::schema::CONFIG_SCHEMA_VERSION`, and a `SchemaError` reaches the
+# operator through `ConfigError`). An unused manifest entry is a false edge in
+# the dependency graph, and nothing here would fail to compile without it.
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

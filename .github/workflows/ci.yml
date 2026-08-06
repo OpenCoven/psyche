@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the MSRV rather than `@stable`, and stated explicitly rather
+      # than left to the action's default: `rust-toolchain.toml` already pins
+      # 1.85.0 and takes precedence over whatever cargo is invoked through, so
+      # `@stable` would download a toolchain the build then never uses — a
+      # slower job that silently tests nothing about the version we ship.
+      # The two pins must agree; Step 4 is what catches it if they drift.
+      #
+      # Verified: this action runs `rustup default <toolchain>` and does NOT
+      # export RUSTUP_TOOLCHAIN, so `rust-toolchain.toml` really does win. That
+      # is why the pin here is documentation rather than mechanism — and why the
+      # `supply-chain` job below has to escape it explicitly.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+          components: rustfmt, clippy
+      # `RUSTFLAGS` is part of this action's cache key (it hashes every env var
+      # whose name starts with CARGO/CC/CFLAGS/CXX/CMAKE/RUST). Setting it at
+      # workflow scope, above, is what keeps that key constant across runs; a
+      # per-step `RUSTFLAGS` would be invisible here and the restored cache
+      # would have been built with different flags.
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  supply-chain:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # NOT the MSRV pin, unlike the `rust` job. cargo-deny is a tool we run
+      # against the tree, not something we ship, so its build toolchain says
+      # nothing about what we support. It also cannot use the pin: cargo-deny
+      # 0.19.8 declares rust-version 1.88.0, and `cargo install` under 1.85.0
+      # refuses outright —
+      #   error: cannot install package `cargo-deny`, it requires rustc 1.88.0
+      #   or newer, while the currently active rustc version is 1.85.0
+      # No `components`: this job never runs fmt or clippy.
+      - uses: dtolnay/rust-toolchain@stable
+      # `+stable` is load-bearing, not decoration. `rust-toolchain.toml` sits at
+      # the repo root and outranks `rustup default`, so a bare `cargo install`
+      # here would run under 1.85.0 and hit the error above no matter which
+      # toolchain the step above installed. An explicit `+toolchain` is the one
+      # thing that outranks the toolchain file.
+      #
+      # Installed directly rather than via a third-party action: it is the same
+      # binary and the same command engineers run locally in Task 7 Step 2, so
+      # there is no CI-only path, and it adds no extra action to trust. Pinned
+      # to the version that policy was actually validated against, so a new
+      # cargo-deny release cannot turn CI red with no change to this repo.
+      - name: Install cargo-deny
+        run: cargo +stable install cargo-deny --locked --version 0.19.8
+      - name: Audit
+        run: cargo deny check licenses advisories bans sources
+
+  secrets:
+    name: Secret guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The gitleaks CLI, not `gitleaks/gitleaks-action`. The action is
+      # separately licensed: its entrypoint looks up the repository owner and,
+      # when the owner is an Organization, exits 1 unless a `GITLEAKS_LICENSE`
+      # secret is present. `OpenCoven` is an Organization, so the action form
+      # would fail every run until someone buys a key. The CLI it wraps is MIT
+      # and has no such gate.
+      #
+      # This is the same reasoning the `supply-chain` job applies to cargo-deny:
+      # run the real binary, with the same arguments an engineer runs locally,
+      # rather than a wrapper. Version and digest are pinned because a job whose
+      # whole purpose is supply-chain hygiene should not curl an unverified
+      # tarball.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 --retry 3 --location --silent --show-error --fail \
+            --output "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" gitleaks
+          install -m 0755 gitleaks /usr/local/bin/gitleaks
+          rm -f "$archive" gitleaks
+          gitleaks version
+      # `--log-opts=--all` scans every commit on every ref, which is what the
+      # `fetch-depth: 0` above is for: a secret that was committed and then
+      # reverted is still a leaked secret. `--redact` keeps the finding out of
+      # the public log, which would otherwise re-leak whatever it found.
+      - name: Scan history
+        run: gitleaks detect --no-banner --redact --log-opts="--all"
+
+  npm:
+    name: npm distribution (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the floor declared by `engines` in packages/psyche-npm and is
+        # the only boundary in `>=20`; without this leg that field is an
+        # assertion nobody checks, and code written on a newer local Node would
+        # break for users on the version we say we support. 22 is the current
+        # LTS. There is deliberately no upper leg: `>=20` has no upper bound, so
+        # any newer version is an arbitrary point rather than a boundary, and a
+        # regression there surfaces on the first local `npm test` — this package
+        # has no dependencies and nothing platform-specific to drift.
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No `npm ci` / `npm install`: the wrapper has no dependencies and no
+      # devDependencies, and its `optionalDependencies` are the not-yet-published
+      # companion packages, so an install would 404 rather than do anything. The
+      # suite is `node:test` against three source files and needs nothing fetched.
+      - name: Wrapper tests
+        run: npm --prefix packages/psyche-npm test
+      # Positional, not `--prefix`: `pack` ignores the prefix and reads
+      # package.json from the working directory.
+      #
+      # Runs on both legs on purpose. `pack` is what decides which files reach
+      # the registry, and the bundled npm differs per Node major (10 on Node 20,
+      # 11 on Node 22+), so the repeat is a check that the `files` allowlist
+      # resolves to the same tarball across npm majors rather than duplicated
+      # work. Both were confirmed to produce the same five files locally.
+      - name: Pack dry run
+        run: npm pack ./packages/psyche-npm --dry-run
