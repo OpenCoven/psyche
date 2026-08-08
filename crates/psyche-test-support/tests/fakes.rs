@@ -958,8 +958,7 @@ async fn input_request_digest_binds_every_artifact_field_order_and_content() {
             "size":2
         }
     ]);
-    let baseline =
-        AdoptionRequest::new(serde_json::from_value(base.clone()).unwrap()).unwrap();
+    let baseline = AdoptionRequest::new(serde_json::from_value(base.clone()).unwrap()).unwrap();
     let retained_digest = serde_json::to_value(baseline.request_digest()).unwrap();
     let mut mutations = Vec::new();
 
@@ -1017,10 +1016,8 @@ async fn input_request_digest_binds_every_artifact_field_order_and_content() {
     mutations.push(("added_content", added));
 
     for (name, mutated_input) in mutations {
-        let rebuilt = AdoptionRequest::new(
-            serde_json::from_value(mutated_input.clone()).unwrap(),
-        )
-        .unwrap();
+        let rebuilt =
+            AdoptionRequest::new(serde_json::from_value(mutated_input.clone()).unwrap()).unwrap();
         assert_ne!(
             serde_json::to_value(rebuilt.request_digest()).unwrap(),
             retained_digest,
