@@ -20,5 +20,18 @@ ulid = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 
+[features]
+test-fault-injection = []
+
+[[bin]]
+name = "crash_writer"
+path = "src/bin/crash_writer.rs"
+required-features = ["test-fault-injection"]
+
+[[test]]
+name = "crash"
+path = "tests/crash.rs"
+required-features = ["test-fault-injection"]
+
 [lints]
 workspace = true

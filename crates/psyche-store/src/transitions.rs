@@ -1,7 +1,7 @@
 use psyche_core::contracts::{ContractError, SchemaKind};
 use psyche_core::digest::{Sha256Digest, digest};
 use psyche_core::id::RecordId;
-use rusqlite::{TransactionBehavior, params};
+use rusqlite::{Transaction, TransactionBehavior, params};
 use time::format_description::well_known::Rfc3339;
 
 use crate::{Store, StoreError, records};
@@ -143,64 +143,10 @@ impl Store {
     /// Validates and appends one immutable transition.
     pub fn append_transition(&mut self, transition: &Transition) -> Result<(), StoreError> {
         transition.validate()?;
-        let sql_version = i64::try_from(transition.record_version)
-            .map_err(|_| StoreError::Contract(invalid(transition.kind, "record_version")))?;
-        let created_at = transition
-            .created_at
-            .format(&Rfc3339)
-            .map_err(|_| StoreError::Contract(ContractError::CanonicalizationFailed))?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let history = authenticated_history(&transaction, transition.kind, &transition.record_id)?;
-        if let Some(stored) = history
-            .iter()
-            .find(|stored| stored.record_version == transition.record_version)
-        {
-            if stored == transition {
-                transaction.commit()?;
-                return Ok(());
-            }
-            return Err(transition_conflict(transition));
-        }
-
-        let valid_position = match history.last() {
-            None => transition.record_version == 1,
-            Some(previous) => {
-                previous
-                    .record_version
-                    .checked_add(1)
-                    .is_some_and(|next| next == transition.record_version)
-                    && transition.from_state.as_deref() == Some(previous.to_state.as_str())
-            }
-        };
-        if !valid_position {
-            return Err(transition_conflict(transition));
-        }
-
-        transaction.execute(
-            "
-            INSERT INTO transitions (
-                kind,
-                record_id,
-                from_state,
-                to_state,
-                record_version,
-                transition_digest,
-                created_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            ",
-            params![
-                records::kind_key(transition.kind),
-                transition.record_id.as_str(),
-                transition.from_state.as_deref(),
-                &transition.to_state,
-                sql_version,
-                transition.transition_digest.as_str(),
-                created_at,
-            ],
-        )?;
+        append_in_transaction(&transaction, transition)?;
         transaction.commit()?;
         Ok(())
     }
@@ -218,6 +164,71 @@ impl Store {
         let kind = records::schema_kind_for_id(record_id);
         authenticated_history(&self.connection, kind, record_id)
     }
+}
+
+/// Package-private production primitive for appending within an owned transaction.
+///
+/// The caller owns begin/commit so record and transition writes can be one atomic operation.
+pub(crate) fn append_in_transaction(
+    transaction: &Transaction<'_>,
+    transition: &Transition,
+) -> Result<(), StoreError> {
+    transition.validate()?;
+    let sql_version = i64::try_from(transition.record_version)
+        .map_err(|_| StoreError::Contract(invalid(transition.kind, "record_version")))?;
+    let created_at = transition
+        .created_at
+        .format(&Rfc3339)
+        .map_err(|_| StoreError::Contract(ContractError::CanonicalizationFailed))?;
+    let history = authenticated_history(transaction, transition.kind, &transition.record_id)?;
+    if let Some(stored) = history
+        .iter()
+        .find(|stored| stored.record_version == transition.record_version)
+    {
+        if stored == transition {
+            return Ok(());
+        }
+        return Err(transition_conflict(transition));
+    }
+
+    let valid_position = match history.last() {
+        None => transition.record_version == 1,
+        Some(previous) => {
+            previous
+                .record_version
+                .checked_add(1)
+                .is_some_and(|next| next == transition.record_version)
+                && transition.from_state.as_deref() == Some(previous.to_state.as_str())
+        }
+    };
+    if !valid_position {
+        return Err(transition_conflict(transition));
+    }
+
+    transaction.execute(
+        "
+            INSERT INTO transitions (
+                kind,
+                record_id,
+                from_state,
+                to_state,
+                record_version,
+                transition_digest,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ",
+        params![
+            records::kind_key(transition.kind),
+            transition.record_id.as_str(),
+            transition.from_state.as_deref(),
+            &transition.to_state,
+            sql_version,
+            transition.transition_digest.as_str(),
+            created_at,
+        ],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn validate_all(connection: &rusqlite::Connection) -> Result<(), StoreError> {

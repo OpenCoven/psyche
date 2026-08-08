@@ -5,7 +5,7 @@ use crate::StoreError;
 /// Latest SQLite schema version understood by this build.
 pub const CURRENT_DATABASE_VERSION: u32 = 1;
 
-pub(crate) fn apply_migration_sql(
+pub(super) fn apply_migration_sql(
     transaction: &Transaction<'_>,
     version: u32,
 ) -> Result<(), StoreError> {

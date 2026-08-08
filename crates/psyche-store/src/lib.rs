@@ -3,6 +3,9 @@
 mod connection;
 mod error;
 mod execution_bindings;
+#[cfg(feature = "test-fault-injection")]
+#[doc(hidden)]
+pub mod migration_test_support;
 mod migrations;
 mod quarantine;
 mod records;

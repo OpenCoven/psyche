@@ -7,7 +7,7 @@ use psyche_core::contracts::{
 };
 use psyche_core::digest::{Sha256Digest, canonical_bytes, digest};
 use psyche_core::id::RecordId;
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use time::format_description::well_known::Rfc3339;
 
 use crate::records::InsertStatus;
@@ -43,6 +43,20 @@ pub(crate) fn insert(
     connection: &mut Connection,
     binding: &ExecutionBinding,
 ) -> Result<InsertStatus, StoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let status = insert_in_transaction(&transaction, binding)?;
+    transaction.commit()?;
+    Ok(status)
+}
+
+/// Package-private production primitive for appending within an immediate transaction.
+///
+/// The caller owns begin/commit; validation and ledger semantics are shared with `insert`.
+pub(crate) fn insert_in_transaction(
+    transaction: &Transaction<'_>,
+    binding: &ExecutionBinding,
+) -> Result<InsertStatus, StoreError> {
+    binding.validate()?;
     let canonical_json = canonical_bytes(binding)?;
     let revision_digest = digest(binding)?;
     let sql_revision = sql_revision(binding.revision)?;
@@ -50,8 +64,7 @@ pub(crate) fn insert(
         .revision_created_at
         .format(&Rfc3339)
         .map_err(|_| StoreError::Contract(ContractError::CanonicalizationFailed))?;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let stored = load_stored_revisions(&transaction, &binding.attempt_id)?;
+    let stored = load_stored_revisions(transaction, &binding.attempt_id)?;
     let history = validate_revision_chain(stored, &binding.attempt_id)?;
 
     if let Some(existing) = history
@@ -59,7 +72,6 @@ pub(crate) fn insert(
         .find(|revision| revision.binding.revision == binding.revision)
     {
         if existing.canonical_json == canonical_json {
-            transaction.commit()?;
             return Ok(InsertStatus::AlreadyPresent);
         }
         return Err(revision_conflict(binding));
@@ -92,7 +104,6 @@ pub(crate) fn insert(
             created_at,
         ],
     )?;
-    transaction.commit()?;
     Ok(InsertStatus::Inserted)
 }
 

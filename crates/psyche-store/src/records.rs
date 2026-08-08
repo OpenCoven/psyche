@@ -138,36 +138,53 @@ impl Store {
     ) -> Result<InsertStatus, StoreError> {
         document.validate()?;
         let kind = document.schema_version().kind;
-        let id = document
+        document
             .persistable_record_id()
             .ok_or(StoreError::NonPersistableKind { kind })?;
         if let CanonicalDocument::ExecutionBinding(binding) = document {
             return execution_bindings::insert(&mut self.connection, binding);
         }
 
-        let bytes = canonical_bytes(document)?;
-        let record_digest = digest(document)?;
-        let schema_version = document.schema_version().to_string();
-        let created_at = time::OffsetDateTime::now_utc()
-            .format(&Rfc3339)
-            .map_err(|_| StoreError::Contract(ContractError::CanonicalizationFailed))?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(stored) = stored_canonical_record(&transaction, kind, id)? {
-            validate_stored_canonical_record(&stored, kind, id)?;
-            if stored.canonical_json == bytes {
-                transaction.commit()?;
-                return Ok(InsertStatus::AlreadyPresent);
-            }
-            return Err(StoreError::RecordConflict {
-                kind,
-                record_id: id.clone(),
-            });
-        }
+        let status = insert_canonical_in_transaction(&transaction, document)?;
+        transaction.commit()?;
+        Ok(status)
+    }
+}
 
-        transaction.execute(
-            "
+/// Package-private production primitive for canonical insertion in an owned transaction.
+///
+/// The caller owns begin/commit so compound production operations can remain atomic.
+pub(crate) fn insert_canonical_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    document: &CanonicalDocument,
+) -> Result<InsertStatus, StoreError> {
+    document.validate()?;
+    let kind = document.schema_version().kind;
+    let id = document
+        .persistable_record_id()
+        .ok_or(StoreError::NonPersistableKind { kind })?;
+    let bytes = canonical_bytes(document)?;
+    let record_digest = digest(document)?;
+    let schema_version = document.schema_version().to_string();
+    let created_at = time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .map_err(|_| StoreError::Contract(ContractError::CanonicalizationFailed))?;
+    if let Some(stored) = stored_canonical_record(transaction, kind, id)? {
+        validate_stored_canonical_record(&stored, kind, id)?;
+        if stored.canonical_json == bytes {
+            return Ok(InsertStatus::AlreadyPresent);
+        }
+        return Err(StoreError::RecordConflict {
+            kind,
+            record_id: id.clone(),
+        });
+    }
+
+    transaction.execute(
+        "
             INSERT INTO canonical_records (
                 kind,
                 record_id,
@@ -178,18 +195,16 @@ impl Store {
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ",
-            params![
-                kind_key(kind),
-                id.as_str(),
-                schema_version,
-                record_digest.as_str(),
-                bytes,
-                created_at,
-            ],
-        )?;
-        transaction.commit()?;
-        Ok(InsertStatus::Inserted)
-    }
+        params![
+            kind_key(kind),
+            id.as_str(),
+            schema_version,
+            record_digest.as_str(),
+            bytes,
+            created_at,
+        ],
+    )?;
+    Ok(InsertStatus::Inserted)
 }
 
 fn stored_canonical_record(
