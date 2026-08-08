@@ -1,4 +1,21 @@
 //! Versioned schema identifiers. Unknown versions are denied, never coerced.
+//!
+//! This module gates exactly one thing: the on-disk `psyched` configuration
+//! file's own `schema_version` field. It is a separate authority from
+//! [`crate::contracts::SchemaVersion`] on purpose, not a duplicate one:
+//! `crate::contracts` is the registry for the sixteen *domain contract*
+//! kinds (`psyche.intent.v1`, `psyche.graph.v1`, and so on) that Psyche's
+//! records and documents declare, and `"psyche.config.v1"` deliberately does
+//! not appear in that registry's [`crate::contracts::SchemaKind`] — config
+//! loading is not a contract record. Both authorities share the same
+//! `psyche.<name>.v<n>` spelling convention and the same "deny, never
+//! coerce" policy, but they gate different files for different consumers
+//! (`psyche-config` here; the store and runtime for the contracts registry),
+//! so unifying them into one enum would either grow the contract registry
+//! with a kind that is never stored, or make the config loader depend on
+//! every future contract kind. If a config-schema-shaped kind is ever added
+//! to the contracts registry, that is a deliberate, reviewed decision to
+//! make here — not an accidental side effect of adding a contract kind.
 
 /// The only configuration schema this build accepts.
 pub const CONFIG_SCHEMA_VERSION: &str = "psyche.config.v1";

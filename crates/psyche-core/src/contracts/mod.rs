@@ -1,0 +1,473 @@
+//! Canonical contract primitives: record kinds and schema versions.
+//!
+//! This module is the sole authority mapping a [`SchemaKind`] to the
+//! [`RecordKind`] it produces (if any), and the sole authority for which
+//! `psyche.<kind>.v<major>` strings this build accepts as a [`SchemaVersion`].
+//! Task 2 stops at these primitives: no `records`, no `CanonicalDocument`, no
+//! store validation, and no `QuarantineId` — those are store-owned and land
+//! in later tasks (`QuarantineId` explicitly in Task 7).
+use std::fmt;
+
+/// Reasons a contract primitive failed to validate.
+///
+/// Every variant is deliberately payload-light: an invalid `RecordId`,
+/// `RequestId`, `Sha256Digest`, or `SchemaVersion` is untrusted input, and the
+/// error carries only what a caller needs to react to — not enough to
+/// reconstruct the rejected value.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ContractError {
+    /// A `psyche.<kind>.v<n>` string named a kind this build does not define.
+    #[error("unknown schema kind in {found:?}")]
+    UnknownSchema {
+        /// The rejected string, verbatim.
+        found: String,
+    },
+    /// The kind is known but this build does not accept the declared major.
+    #[error("unsupported schema major in {found:?}")]
+    UnsupportedMajor {
+        /// The rejected string, verbatim.
+        found: String,
+    },
+    /// A record identifier did not carry the exact prefix its requested
+    /// `RecordKind` requires. The required prefix is [`RecordKind::prefix`],
+    /// not stored redundantly on this error.
+    #[error("record id does not have the {kind:?} prefix {:?}", kind.prefix())]
+    WrongRecordPrefix {
+        /// The kind whose prefix was required.
+        kind: RecordKind,
+    },
+    /// An identifier was not shaped as `<prefix><26-character ULID>`, either
+    /// because of a wrong-length suffix or trailing data after it.
+    #[error("identifier is not shaped as <prefix> followed by a 26-character ULID")]
+    MalformedIdentifier,
+    /// The ULID suffix was not a canonical uppercase Crockford Base32 ULID.
+    #[error("identifier suffix is not a canonical uppercase ULID")]
+    InvalidUlid,
+    /// A digest did not begin with the required `sha256:` prefix.
+    #[error("digest does not start with \"sha256:\"")]
+    UnsupportedDigestPrefix,
+    /// A digest was not exactly 64 lowercase hex characters after the prefix.
+    #[error("digest is not exactly 64 lowercase hex characters")]
+    MalformedDigest,
+    /// The value could not be serialized into canonical JSON — e.g. a
+    /// non-string map key, or a number requiring more than double precision.
+    /// The nested reason describes the *shape* problem `serde_json` found,
+    /// never the value's own field content.
+    #[error("value could not be canonicalized: {reason}")]
+    CanonicalizationFailed {
+        /// `serde_json`'s description of the shape problem.
+        reason: String,
+    },
+}
+
+/// The fifteen kinds of record this build persists, each identified by a
+/// stable four-character prefix baked into every [`crate::id::RecordId`] of
+/// that kind.
+///
+/// `ExecutionBinding` is deliberately absent: [`SchemaKind::ExecutionBinding`]
+/// maps onto `RecordKind::Attempt` (an execution binding *is* an attempt
+/// record), so adding a separate variant here would give one record shape two
+/// competing identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RecordKind {
+    /// `ids_` — a snapshot of an identity at a point in time.
+    IdentitySnapshot,
+    /// `int_` — a user or system intent.
+    Intent,
+    /// `grf_` — a graph of nodes.
+    Graph,
+    /// `nod_` — a single node within a graph.
+    GraphNode,
+    /// `att_` — an execution attempt (including execution bindings).
+    Attempt,
+    /// `dlg_` — a delegation of authority.
+    Delegation,
+    /// `bud_` — a budget allocation.
+    Budget,
+    /// `apr_` — an approval decision.
+    Approval,
+    /// `evd_` — evidence gathered in support of a decision.
+    Evidence,
+    /// `vrd_` — a verdict reached from evidence.
+    Verdict,
+    /// `rcv_` — a recovery action.
+    Recovery,
+    /// `adn_` — an addon registration.
+    Addon,
+    /// `sev_` — a surface event.
+    SurfaceEvent,
+    /// `sfx_` — a surface effect.
+    SurfaceEffect,
+    /// `del_` — a delivery record. Not to be confused with `dly_`, which this
+    /// build never accepts.
+    Delivery,
+}
+
+impl RecordKind {
+    /// Every [`RecordKind`] this build defines, in declaration order.
+    pub const ALL: [RecordKind; 15] = [
+        RecordKind::IdentitySnapshot,
+        RecordKind::Intent,
+        RecordKind::Graph,
+        RecordKind::GraphNode,
+        RecordKind::Attempt,
+        RecordKind::Delegation,
+        RecordKind::Budget,
+        RecordKind::Approval,
+        RecordKind::Evidence,
+        RecordKind::Verdict,
+        RecordKind::Recovery,
+        RecordKind::Addon,
+        RecordKind::SurfaceEvent,
+        RecordKind::SurfaceEffect,
+        RecordKind::Delivery,
+    ];
+
+    /// The stable four-character prefix every `RecordId` of this kind begins
+    /// with.
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            RecordKind::IdentitySnapshot => "ids_",
+            RecordKind::Intent => "int_",
+            RecordKind::Graph => "grf_",
+            RecordKind::GraphNode => "nod_",
+            RecordKind::Attempt => "att_",
+            RecordKind::Delegation => "dlg_",
+            RecordKind::Budget => "bud_",
+            RecordKind::Approval => "apr_",
+            RecordKind::Evidence => "evd_",
+            RecordKind::Verdict => "vrd_",
+            RecordKind::Recovery => "rcv_",
+            RecordKind::Addon => "adn_",
+            RecordKind::SurfaceEvent => "sev_",
+            RecordKind::SurfaceEffect => "sfx_",
+            RecordKind::Delivery => "del_",
+        }
+    }
+}
+
+/// The sixteen record/document shapes this build's schema registry knows
+/// about, one of which (`Error`) never round-trips through a `RecordKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SchemaKind {
+    /// `psyche.identity_snapshot.vN`
+    IdentitySnapshot,
+    /// `psyche.intent.vN`
+    Intent,
+    /// `psyche.surface_event.vN`
+    SurfaceEvent,
+    /// `psyche.graph.vN`
+    Graph,
+    /// `psyche.graph_node.vN`
+    GraphNode,
+    /// `psyche.delegation.vN`
+    Delegation,
+    /// `psyche.budget.vN`
+    Budget,
+    /// `psyche.approval.vN`
+    Approval,
+    /// `psyche.execution_binding.vN` — maps to [`RecordKind::Attempt`].
+    ExecutionBinding,
+    /// `psyche.evidence.vN`
+    Evidence,
+    /// `psyche.verdict.vN`
+    Verdict,
+    /// `psyche.recovery.vN`
+    Recovery,
+    /// `psyche.addon.vN`
+    Addon,
+    /// `psyche.surface_effect.vN`
+    SurfaceEffect,
+    /// `psyche.delivery.vN`
+    Delivery,
+    /// `psyche.error.vN` — an error document. Never a stored record, so it
+    /// has no corresponding `RecordKind`.
+    Error,
+}
+
+impl SchemaKind {
+    /// All sixteen kinds, in the order their canonical strings are listed in
+    /// the registry.
+    const ALL: [SchemaKind; 16] = [
+        SchemaKind::IdentitySnapshot,
+        SchemaKind::Intent,
+        SchemaKind::SurfaceEvent,
+        SchemaKind::Graph,
+        SchemaKind::GraphNode,
+        SchemaKind::Delegation,
+        SchemaKind::Budget,
+        SchemaKind::Approval,
+        SchemaKind::ExecutionBinding,
+        SchemaKind::Evidence,
+        SchemaKind::Verdict,
+        SchemaKind::Recovery,
+        SchemaKind::Addon,
+        SchemaKind::SurfaceEffect,
+        SchemaKind::Delivery,
+        SchemaKind::Error,
+    ];
+
+    /// The `<kind>` segment of this kind's canonical `psyche.<kind>.vN`
+    /// string.
+    const fn name(self) -> &'static str {
+        match self {
+            SchemaKind::IdentitySnapshot => "identity_snapshot",
+            SchemaKind::Intent => "intent",
+            SchemaKind::SurfaceEvent => "surface_event",
+            SchemaKind::Graph => "graph",
+            SchemaKind::GraphNode => "graph_node",
+            SchemaKind::Delegation => "delegation",
+            SchemaKind::Budget => "budget",
+            SchemaKind::Approval => "approval",
+            SchemaKind::ExecutionBinding => "execution_binding",
+            SchemaKind::Evidence => "evidence",
+            SchemaKind::Verdict => "verdict",
+            SchemaKind::Recovery => "recovery",
+            SchemaKind::Addon => "addon",
+            SchemaKind::SurfaceEffect => "surface_effect",
+            SchemaKind::Delivery => "delivery",
+            SchemaKind::Error => "error",
+        }
+    }
+
+    /// The kind named by a `psyche.<kind>.vN` string's `<kind>` segment, if
+    /// this build recognises it.
+    fn from_name(name: &str) -> Option<SchemaKind> {
+        SchemaKind::ALL.into_iter().find(|k| k.name() == name)
+    }
+
+    /// The [`RecordKind`] this schema kind is stored as, or `None` for
+    /// [`SchemaKind::Error`], which is never a stored record.
+    ///
+    /// This is the *sole* mapping from schema kind to record kind: nothing
+    /// else in this crate re-derives it, so there is exactly one place that
+    /// can disagree with itself.
+    pub const fn record_kind(self) -> Option<RecordKind> {
+        match self {
+            SchemaKind::IdentitySnapshot => Some(RecordKind::IdentitySnapshot),
+            SchemaKind::Intent => Some(RecordKind::Intent),
+            SchemaKind::SurfaceEvent => Some(RecordKind::SurfaceEvent),
+            SchemaKind::Graph => Some(RecordKind::Graph),
+            SchemaKind::GraphNode => Some(RecordKind::GraphNode),
+            SchemaKind::Delegation => Some(RecordKind::Delegation),
+            SchemaKind::Budget => Some(RecordKind::Budget),
+            SchemaKind::Approval => Some(RecordKind::Approval),
+            SchemaKind::ExecutionBinding => Some(RecordKind::Attempt),
+            SchemaKind::Evidence => Some(RecordKind::Evidence),
+            SchemaKind::Verdict => Some(RecordKind::Verdict),
+            SchemaKind::Recovery => Some(RecordKind::Recovery),
+            SchemaKind::Addon => Some(RecordKind::Addon),
+            SchemaKind::SurfaceEffect => Some(RecordKind::SurfaceEffect),
+            SchemaKind::Delivery => Some(RecordKind::Delivery),
+            SchemaKind::Error => None,
+        }
+    }
+}
+
+/// The major version this build accepts for every [`SchemaKind`] today.
+///
+/// A single constant, not a per-kind table: every kind in the registry is
+/// presently at major 1, and a kind reaching major 2 is a deliberate,
+/// reviewed change to this file rather than a silent range extension.
+const SUPPORTED_MAJOR: u16 = 1;
+
+/// A validated `psyche.<kind>.v<major>` contract schema version.
+///
+/// Fields are public and directly constructible: unlike [`crate::id::RecordId`]
+/// there is no encoded invariant beyond "this kind and this major are both
+/// individually meaningful values", so a caller building a schema version to
+/// serialize (e.g. `SchemaVersion { kind: SchemaKind::Graph, major: 1 }`) does
+/// not need to round-trip through string parsing to do it. [`SchemaVersion::parse`]
+/// and the `serde` implementation are what enforce that the *string form* is
+/// one this build's registry actually accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SchemaVersion {
+    /// Which of the sixteen registry kinds this version names.
+    pub kind: SchemaKind,
+    /// The major version declared. This build only accepts `1`.
+    pub major: u16,
+}
+
+impl SchemaVersion {
+    /// Parses a `psyche.<kind>.v<major>` string against the registry.
+    ///
+    /// An unrecognised `<kind>` segment is [`ContractError::UnknownSchema`].
+    /// A recognised kind whose major is not the one this build supports —
+    /// including a malformed major segment, such as a leading zero or
+    /// non-digit content — is [`ContractError::UnsupportedMajor`]: the
+    /// registry has exactly two failure modes, and a garbled major on an
+    /// otherwise-known kind is a version problem, not an unknown-kind one.
+    pub fn parse(value: &str) -> Result<Self, ContractError> {
+        let unknown = || ContractError::UnknownSchema {
+            found: value.to_string(),
+        };
+        let segments: Vec<&str> = value.split('.').collect();
+        let [namespace, kind_segment, major_segment] = segments.as_slice() else {
+            return Err(unknown());
+        };
+        if *namespace != "psyche" {
+            return Err(unknown());
+        }
+        let kind = SchemaKind::from_name(kind_segment).ok_or_else(unknown)?;
+
+        let unsupported_major = || ContractError::UnsupportedMajor {
+            found: value.to_string(),
+        };
+        let digits = major_segment
+            .strip_prefix('v')
+            .ok_or_else(unsupported_major)?;
+        // Reject a leading zero on a multi-digit major ("v01"): it parses to
+        // the same integer as "v1" but is not the canonical string, and the
+        // registry only accepts the canonical form.
+        if digits.is_empty()
+            || (digits.len() > 1 && digits.starts_with('0'))
+            || !digits.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(unsupported_major());
+        }
+        let major: u16 = digits.parse().map_err(|_| unsupported_major())?;
+        if major != SUPPORTED_MAJOR {
+            return Err(unsupported_major());
+        }
+        Ok(SchemaVersion { kind, major })
+    }
+}
+
+impl fmt::Display for SchemaVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "psyche.{}.v{}", self.kind.name(), self.major)
+    }
+}
+
+impl TryFrom<String> for SchemaVersion {
+    type Error = ContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<SchemaVersion> for String {
+    fn from(value: SchemaVersion) -> Self {
+        value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_kind_all_has_exactly_fifteen_entries() {
+        assert_eq!(RecordKind::ALL.len(), 15);
+    }
+
+    #[test]
+    fn execution_binding_maps_to_attempt_only() {
+        assert_eq!(
+            SchemaKind::ExecutionBinding.record_kind(),
+            Some(RecordKind::Attempt)
+        );
+        assert_eq!(RecordKind::Attempt.prefix(), "att_");
+    }
+
+    #[test]
+    fn schema_kind_error_has_no_record_kind() {
+        assert_eq!(SchemaKind::Error.record_kind(), None);
+    }
+
+    #[test]
+    fn schema_version_accepts_exactly_the_sixteen_known_strings() {
+        for known in [
+            "psyche.identity_snapshot.v1",
+            "psyche.intent.v1",
+            "psyche.surface_event.v1",
+            "psyche.graph.v1",
+            "psyche.graph_node.v1",
+            "psyche.delegation.v1",
+            "psyche.budget.v1",
+            "psyche.approval.v1",
+            "psyche.execution_binding.v1",
+            "psyche.evidence.v1",
+            "psyche.verdict.v1",
+            "psyche.recovery.v1",
+            "psyche.addon.v1",
+            "psyche.surface_effect.v1",
+            "psyche.delivery.v1",
+            "psyche.error.v1",
+        ] {
+            let parsed = SchemaVersion::parse(known).unwrap_or_else(|err| {
+                panic!("expected {known:?} to parse, got {err:?}");
+            });
+            assert_eq!(parsed.to_string(), known);
+        }
+    }
+
+    #[test]
+    fn schema_version_rejects_an_unknown_kind() {
+        let err = SchemaVersion::parse("psyche.unknown_kind.v1").unwrap_err();
+        assert!(matches!(err, ContractError::UnknownSchema { .. }));
+    }
+
+    #[test]
+    fn schema_version_rejects_a_known_kind_with_the_wrong_major() {
+        let err = SchemaVersion::parse("psyche.intent.v2").unwrap_err();
+        assert!(matches!(err, ContractError::UnsupportedMajor { .. }));
+    }
+
+    #[test]
+    fn schema_version_try_from_string_validates() {
+        let ok = SchemaVersion::try_from("psyche.intent.v1".to_string()).unwrap();
+        assert_eq!(ok.kind, SchemaKind::Intent);
+        assert_eq!(ok.major, 1);
+        assert!(SchemaVersion::try_from("psyche.intent.v9".to_string()).is_err());
+    }
+
+    #[test]
+    fn schema_version_serde_round_trips_and_rejects() {
+        let json =
+            serde_json::to_string(&SchemaVersion::parse("psyche.graph.v1").unwrap()).unwrap();
+        assert_eq!(json, "\"psyche.graph.v1\"");
+        let back: SchemaVersion = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.to_string(), "psyche.graph.v1");
+
+        assert!(serde_json::from_str::<SchemaVersion>("\"psyche.graph.v2\"").is_err());
+        assert!(serde_json::from_str::<SchemaVersion>("\"psyche.nope.v1\"").is_err());
+    }
+
+    // Mirrors schema.rs's denies_near_misses and secret.rs's rejects_near_misses:
+    // without these, someone "helpfully" adding .trim(), case-insensitive
+    // matching, or leading-zero tolerance would break registry strictness
+    // silently.
+    #[test]
+    fn schema_version_denies_near_misses() {
+        for (near, expect_unknown) in [
+            ("", true),
+            ("psyche.intent", true),       // missing major segment
+            ("psyche.intent.v1.v2", true), // extra segment
+            ("Psyche.intent.v1", true),    // wrong namespace case
+            ("psyche.Intent.v1", true),    // wrong kind case
+            ("psyche.intent.V1", false),   // wrong major case: known kind, bad major
+            (" psyche.intent.v1", true),   // leading whitespace on namespace
+            ("psyche.intent.v1 ", false),  // trailing whitespace: known kind, bad major
+            ("psyche.intent.v01", false),  // leading zero: known kind, bad major
+            ("psyche.intent.v", false),    // empty digits: known kind, bad major
+            ("psyche.intent.v1x", false),  // trailing junk: known kind, bad major
+            ("psyche.intent.v-1", false),  // negative: known kind, bad major
+        ] {
+            let err = SchemaVersion::parse(near).unwrap_err();
+            if expect_unknown {
+                assert!(
+                    matches!(err, ContractError::UnknownSchema { .. }),
+                    "expected UnknownSchema for {near:?}, got {err:?}"
+                );
+            } else {
+                assert!(
+                    matches!(err, ContractError::UnsupportedMajor { .. }),
+                    "expected UnsupportedMajor for {near:?}, got {err:?}"
+                );
+            }
+        }
+    }
+}
