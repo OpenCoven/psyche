@@ -7,7 +7,7 @@ pub use coven::{
     BeforeTerminate, CovenConformanceCase, CovenConformanceFixture, CovenConformanceObservations,
     CovenFaultPoint, CovenScriptReturn, CovenScriptStep, DurableDispositionKind,
     DurableDispositionObservation, FakeBuildError, FakeCoven, FakeCovenBuilder, FakeError,
-    FakeOperation, FixtureAvailability, StoreTerminationPersistence,
+    FakeOperation, FixtureAvailability, FixtureControlError, StoreTerminationPersistence,
 };
 pub use surface::{
     FakeSurface, FakeSurfaceBuilder, SurfaceFakeBuildError, SurfaceFakeCall, SurfaceScriptReturn,

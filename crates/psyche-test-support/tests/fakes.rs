@@ -1,7 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, missing_docs)]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
+use std::time::Duration;
 
 use psyche_core::contracts::execution::{
     AdoptionState, CancellationAcknowledgementEvidence, CancellationAcknowledgementKind,
@@ -21,10 +23,10 @@ use psyche_coven::{
 use psyche_store::{Store, StoreError};
 use psyche_surfaces::{DeliveryDisposition, SurfaceAcceptance, SurfacePort};
 use psyche_test_support::{
-    CovenConformanceFixture, CovenConformanceObservations, CovenFaultPoint, CovenScriptReturn,
-    CovenScriptStep, DurableDispositionKind, DurableDispositionObservation, FakeBuildError,
-    FakeCoven, FakeOperation, FakeSurface, StoreTerminationPersistence, SurfaceScriptReturn,
-    SurfaceScriptStep,
+    CovenConformanceCase, CovenConformanceFixture, CovenConformanceObservations, CovenFaultPoint,
+    CovenScriptReturn, CovenScriptStep, DurableDispositionKind, DurableDispositionObservation,
+    FakeBuildError, FakeCoven, FakeOperation, FakeSurface, FixtureAvailability,
+    FixtureControlError, StoreTerminationPersistence, SurfaceScriptReturn, SurfaceScriptStep,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -628,6 +630,69 @@ async fn conformance_observations_are_redacted_and_follow_restart_reset_semantic
 }
 
 #[tokio::test]
+async fn observations_follow_reconciliation_commit_order_across_restart() {
+    let mut high_input: serde_json::Value = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
+    high_input["request_id"] = serde_json::json!("req_01J00000000000000000000001");
+    let high = AdoptionRequest::new(serde_json::from_value(high_input).unwrap())
+        .unwrap()
+        .correlation();
+    let low = AdoptionRequest::new(serde_json::from_slice(LAUNCH_GOLDEN).unwrap())
+        .unwrap()
+        .correlation();
+    let high_request = ReconciliationRequest {
+        correlation: high.clone(),
+        ambiguity_digest: digest_of('e'),
+        reason_code: "adoption_unknown".to_owned(),
+    };
+    let low_request = ReconciliationRequest {
+        correlation: low.clone(),
+        ambiguity_digest: digest_of('f'),
+        reason_code: "adoption_unknown".to_owned(),
+    };
+    let high_disposition = ReconciliationDisposition::Returned {
+        disposition_id: "committed-first".to_owned(),
+        session_id: "session-high".to_owned(),
+        correlation: high,
+        ambiguity_digest: high_request.ambiguity_digest.clone(),
+        recorded_at: high_request.correlation.valid_until,
+    };
+    let low_disposition = ReconciliationDisposition::Returned {
+        disposition_id: "committed-last".to_owned(),
+        session_id: "session-low".to_owned(),
+        correlation: low,
+        ambiguity_digest: low_request.ambiguity_digest.clone(),
+        recorded_at: low_request.correlation.valid_until,
+    };
+    let mut fake = FakeCoven::builder()
+        .reconciliation(high_disposition)
+        .reconciliation(low_disposition)
+        .build()
+        .unwrap();
+
+    fake.reconcile(high_request).await.unwrap();
+    fake.reconcile(low_request).await.unwrap();
+    assert_eq!(
+        fake.observations()
+            .await
+            .durable_reconciliation
+            .unwrap()
+            .disposition_id,
+        "committed-last"
+    );
+    CovenConformanceFixture::restart(&mut fake).await;
+    assert_eq!(
+        fake.observations()
+            .await
+            .durable_reconciliation
+            .unwrap()
+            .disposition_id,
+        "committed-last"
+    );
+    CovenConformanceFixture::reset(&mut fake).await;
+    assert!(fake.observations().await.durable_reconciliation.is_none());
+}
+
+#[tokio::test]
 async fn conformance_fault_controls_are_object_safe_and_resettable() {
     let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
     let correlation = AdoptionRequest::new(input).unwrap().correlation();
@@ -642,7 +707,10 @@ async fn conformance_fault_controls_are_object_safe_and_resettable() {
         .unwrap();
     let fixture: &mut dyn CovenConformanceFixture = &mut fake;
 
-    fixture.select_fault(CovenFaultPoint::ReconcileStall).await;
+    fixture
+        .select_fault(CovenFaultPoint::ReconcileStall)
+        .await
+        .unwrap();
     assert!(matches!(
         fixture.port().reconcile(request.clone()).await,
         Err(PortError::Stalled)
@@ -661,6 +729,80 @@ async fn conformance_fault_controls_are_object_safe_and_resettable() {
     assert_eq!(
         fixture.observations().await,
         CovenConformanceObservations::default()
+    );
+}
+
+#[tokio::test]
+async fn conformance_fixture_truthfully_reports_cases_and_fault_support() {
+    let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
+    let correlation = AdoptionRequest::new(input).unwrap().correlation();
+    let request = ReconciliationRequest {
+        correlation,
+        ambiguity_digest: digest_of('e'),
+        reason_code: "adoption_unknown".to_owned(),
+    };
+    let mut fake = FakeCoven::builder()
+        .reconciliation(ReconciliationDisposition::Unresolved)
+        .build()
+        .unwrap();
+    let fixture: &mut dyn CovenConformanceFixture = &mut fake;
+
+    for case in [
+        CovenConformanceCase::C_S1,
+        CovenConformanceCase::C_S2,
+        CovenConformanceCase::C_S3,
+        CovenConformanceCase::C_S4,
+        CovenConformanceCase::C_S5,
+        CovenConformanceCase::C_S6,
+        CovenConformanceCase::C_S7,
+        CovenConformanceCase::C_S8,
+        CovenConformanceCase::C_S9,
+        CovenConformanceCase::C_S10,
+        CovenConformanceCase::C_S11,
+        CovenConformanceCase::C_S12,
+    ] {
+        assert!(matches!(
+            fixture.availability(case),
+            FixtureAvailability::ExpectedUnsupported { .. }
+        ));
+    }
+
+    let supported = [
+        CovenFaultPoint::ReconcileBeforeDisposition,
+        CovenFaultPoint::ReconcileAfterDisposition,
+        CovenFaultPoint::ReconcileStall,
+    ];
+    let unsupported = [
+        CovenFaultPoint::AdoptionBeforeCommit,
+        CovenFaultPoint::AdoptionAfterCommit,
+        CovenFaultPoint::InputBeforeCommit,
+        CovenFaultPoint::InputAfterCommit,
+        CovenFaultPoint::LookupBeforeRead,
+        CovenFaultPoint::LookupAfterRead,
+        CovenFaultPoint::CursorBeforePage,
+        CovenFaultPoint::CursorAfterPage,
+        CovenFaultPoint::CancellationBeforeAcknowledgement,
+        CovenFaultPoint::CancellationAfterAcknowledgement,
+        CovenFaultPoint::TerminalBeforePersistence,
+        CovenFaultPoint::ResultBeforePersistence,
+        CovenFaultPoint::ArtifactBeforePersistence,
+    ];
+    for point in supported {
+        assert!(fixture.supports(point), "{point:?}");
+    }
+    for point in unsupported {
+        assert!(!fixture.supports(point), "{point:?}");
+    }
+
+    assert_eq!(
+        fixture
+            .select_fault(CovenFaultPoint::AdoptionBeforeCommit)
+            .await,
+        Err(FixtureControlError::UnsupportedFault)
+    );
+    assert_eq!(
+        fixture.port().reconcile(request).await.unwrap(),
+        ReconciliationDisposition::Unresolved
     );
 }
 
@@ -1493,6 +1635,62 @@ async fn termination_after_commit_disconnect_replays_durable_acknowledgement() {
             .unwrap(),
         disposition
     );
+    assert_eq!(revisions(&path, &requested.attempt_id).len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_identical_termination_calls_share_one_scripted_commit() {
+    let (_dir, path) = create_store();
+    let requested = seed(&path);
+    let disposition = TerminationDisposition::Acknowledged {
+        evidence: acknowledgement_for(&requested),
+    };
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let first = Arc::new(AtomicBool::new(true));
+    let fake = FakeCoven::builder()
+        .before_terminate({
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let first = Arc::clone(&first);
+            Arc::new(move |_| {
+                if first.swap(false, Ordering::SeqCst) {
+                    entered.wait();
+                    release.wait();
+                }
+                Ok(())
+            })
+        })
+        .acknowledge_termination(acknowledgement_for(&requested))
+        .build()
+        .unwrap();
+
+    let first_call = {
+        let fake = fake.clone();
+        let path = path.clone();
+        let requested = requested.clone();
+        tokio::spawn(async move {
+            persist_then_terminate(&mut persistence(&path), &fake, requested).await
+        })
+    };
+    entered.wait();
+    let mut second_call = {
+        let fake = fake.clone();
+        let path = path.clone();
+        let requested = requested.clone();
+        tokio::spawn(async move {
+            persist_then_terminate(&mut persistence(&path), &fake, requested).await
+        })
+    };
+
+    let early_second = tokio::time::timeout(Duration::from_millis(100), &mut second_call).await;
+    release.wait();
+    assert!(
+        early_second.is_err(),
+        "same-key caller bypassed the in-flight durable commit"
+    );
+    assert_eq!(first_call.await.unwrap().unwrap(), disposition);
+    assert_eq!(second_call.await.unwrap().unwrap(), disposition);
     assert_eq!(revisions(&path, &requested.attempt_id).len(), 3);
 }
 

@@ -15,6 +15,7 @@ use psyche_coven::{
     TerminationPersistence, TerminationPersistenceFailure, TerminationRequest,
 };
 use psyche_store::{Store, StoreError};
+use tokio::sync::Mutex as AsyncMutex;
 
 /// Redacted Coven operation identity used by scripts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +194,17 @@ pub enum FixtureAvailability {
     },
 }
 
+/// A payload-free conformance fixture control failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FixtureControlError {
+    /// The fixture does not implement the selected fault point.
+    #[error("fixture fault point is unsupported")]
+    UnsupportedFault,
+    /// The fixture control state could not be accessed.
+    #[error("fixture control state is unavailable")]
+    Unavailable,
+}
+
 /// Adapter-neutral controls and observations for reusable Coven conformance tests.
 #[async_trait::async_trait]
 pub trait CovenConformanceFixture {
@@ -202,11 +214,14 @@ pub trait CovenConformanceFixture {
     /// Reports whether the fixture can execute a case.
     fn availability(&self, case: CovenConformanceCase) -> FixtureAvailability;
 
+    /// Reports whether the fixture implements a fault point.
+    fn supports(&self, point: CovenFaultPoint) -> bool;
+
     /// Restarts the fixture while retaining its durable state.
     async fn restart(&mut self);
 
     /// Selects one deterministic transport or persistence fault.
-    async fn select_fault(&mut self, point: CovenFaultPoint);
+    async fn select_fault(&mut self, point: CovenFaultPoint) -> Result<(), FixtureControlError>;
 
     /// Clears the selected fault.
     async fn clear_fault(&mut self);
@@ -316,10 +331,13 @@ struct FakeState {
     calls: Vec<FakeCall>,
     selected_fault: Option<CovenFaultPoint>,
     adoptions: BTreeMap<String, (Sha256Digest, Vec<u8>, AdoptionDisposition)>,
+    lookup_adoptions: BTreeMap<String, AdoptionDisposition>,
     sessions: BTreeMap<String, Vec<ExecutionCorrelation>>,
     reconciliations: BTreeMap<String, (ReconciliationRequest, ReconciliationDisposition)>,
+    latest_reconciliation: Option<String>,
     results: BTreeMap<String, ResultBundle>,
     terminations: BTreeMap<String, TerminationDisposition>,
+    termination_in_flight: BTreeMap<String, Arc<AsyncMutex<()>>>,
 }
 
 /// Honest, deterministic, thread-safe Coven fake.
@@ -407,6 +425,13 @@ impl FakeCoven {
             }
             return Err(PortError::IntentConflict);
         }
+        if state
+            .lookup_adoptions
+            .get(&key)
+            .is_some_and(|stored| stored != disposition)
+        {
+            return Err(PortError::IntentConflict);
+        }
         if let AdoptionDisposition::Adopted { session_id } = disposition {
             let correlation = request.correlation();
             let correlations = state.sessions.entry(session_id.clone()).or_default();
@@ -440,22 +465,44 @@ impl FakeCoven {
         }
     }
 
-    fn lookup_adoption(
+    fn store_lookup_adoption(
         &self,
         request_id: &RequestId,
         scripted: &AdoptionDisposition,
     ) -> Result<AdoptionDisposition, PortError> {
         scripted.validate()?;
-        let state = self.state.lock().map_err(|_| PortError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
         if let Some((_, _, stored)) = state.adoptions.get(request_id.as_str()) {
             if stored == scripted {
+                return Ok(stored.clone());
+            } else {
+                return Err(PortError::IntentConflict);
+            }
+        }
+        if let Some(stored) = state.lookup_adoptions.get(request_id.as_str()) {
+            return if stored == scripted {
                 Ok(stored.clone())
             } else {
                 Err(PortError::IntentConflict)
-            }
-        } else {
-            Ok(scripted.clone())
+            };
         }
+        state
+            .lookup_adoptions
+            .insert(request_id.as_str().to_owned(), scripted.clone());
+        Ok(scripted.clone())
+    }
+
+    fn replay_lookup_adoption(
+        &self,
+        request_id: &RequestId,
+    ) -> Result<Option<AdoptionDisposition>, PortError> {
+        let state = self.state.lock().map_err(|_| PortError::Unavailable)?;
+        Ok(state
+            .adoptions
+            .get(request_id.as_str())
+            .map(|(_, _, disposition)| disposition)
+            .or_else(|| state.lookup_adoptions.get(request_id.as_str()))
+            .cloned())
     }
 
     fn store_reconciliation(
@@ -487,7 +534,8 @@ impl FakeCoven {
         }
         state
             .reconciliations
-            .insert(key, (request.clone(), disposition.clone()));
+            .insert(key.clone(), (request.clone(), disposition.clone()));
+        state.latest_reconciliation = Some(key);
         Ok(disposition.clone())
     }
 
@@ -585,6 +633,16 @@ impl FakeCoven {
     fn replay_termination(&self, key: &str) -> Result<Option<TerminationDisposition>, PortError> {
         let state = self.state.lock().map_err(|_| PortError::Unavailable)?;
         Ok(state.terminations.get(key).cloned())
+    }
+
+    fn termination_lock(&self, key: &str) -> Result<Arc<AsyncMutex<()>>, PortError> {
+        let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
+        Ok(Arc::clone(
+            state
+                .termination_in_flight
+                .entry(key.to_owned())
+                .or_default(),
+        ))
     }
 }
 
@@ -850,26 +908,17 @@ impl CovenPort for FakeCoven {
     }
 
     async fn lookup(&self, request_id: &RequestId) -> Result<AdoptionDisposition, PortError> {
-        let durable = {
-            let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
-            let disposition = state
-                .adoptions
-                .get(request_id.as_str())
-                .map(|(_, _, disposition)| disposition.clone());
-            if disposition.is_some() {
-                state.calls.push(FakeCall::Lookup);
-            }
-            disposition
-        };
+        let durable = self.replay_lookup_adoption(request_id)?;
         if let Some(disposition) = durable {
+            self.record(FakeOperation::Lookup)?;
             return Ok(disposition);
         }
         match self.take(FakeOperation::Lookup)? {
             CovenScriptStep::Return(CovenScriptReturn::Lookup(disposition)) => {
-                self.lookup_adoption(request_id, &disposition)
+                self.store_lookup_adoption(request_id, &disposition)
             }
             CovenScriptStep::DisconnectAfterCommit(CovenScriptReturn::Lookup(disposition)) => {
-                self.lookup_adoption(request_id, &disposition)?;
+                self.store_lookup_adoption(request_id, &disposition)?;
                 Err(PortError::Unavailable)
             }
             CovenScriptStep::Error { error, .. } => Err(error),
@@ -994,6 +1043,8 @@ impl CovenPort for FakeCoven {
         request: TerminationRequest,
     ) -> Result<TerminationDisposition, PortError> {
         let key = Self::termination_key(&request)?;
+        let in_flight = self.termination_lock(&key)?;
+        let _guard = in_flight.lock().await;
         if let Some(stored) = self.replay_termination(&key)? {
             let scripted = {
                 let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
@@ -1057,17 +1108,34 @@ impl CovenConformanceFixture for FakeCoven {
     }
 
     fn availability(&self, _case: CovenConformanceCase) -> FixtureAvailability {
-        FixtureAvailability::Supported
+        FixtureAvailability::ExpectedUnsupported {
+            code: "task_9_conformance_case_not_implemented".to_owned(),
+        }
+    }
+
+    fn supports(&self, point: CovenFaultPoint) -> bool {
+        matches!(
+            point,
+            CovenFaultPoint::ReconcileBeforeDisposition
+                | CovenFaultPoint::ReconcileAfterDisposition
+                | CovenFaultPoint::ReconcileStall
+        )
     }
 
     async fn restart(&mut self) {
         *self = FakeCoven::restart(self);
     }
 
-    async fn select_fault(&mut self, point: CovenFaultPoint) {
-        if let Ok(mut state) = self.state.lock() {
-            state.selected_fault = Some(point);
+    async fn select_fault(&mut self, point: CovenFaultPoint) -> Result<(), FixtureControlError> {
+        if !self.supports(point) {
+            return Err(FixtureControlError::UnsupportedFault);
         }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| FixtureControlError::Unavailable)?;
+        state.selected_fault = Some(point);
+        Ok(())
     }
 
     async fn clear_fault(&mut self) {
@@ -1099,8 +1167,11 @@ impl CovenConformanceFixture for FakeCoven {
             )
             .unwrap_or(u64::MAX)
         };
-        let durable_reconciliation = state.reconciliations.values().next_back().and_then(
-            |(_, disposition)| match disposition {
+        let durable_reconciliation = state
+            .latest_reconciliation
+            .as_ref()
+            .and_then(|key| state.reconciliations.get(key))
+            .and_then(|(_, disposition)| match disposition {
                 ReconciliationDisposition::Returned {
                     disposition_id,
                     session_id,
@@ -1132,8 +1203,7 @@ impl CovenConformanceFixture for FakeCoven {
                     recorded_at: *recorded_at,
                 }),
                 ReconciliationDisposition::Unresolved => None,
-            },
-        );
+            });
         CovenConformanceObservations {
             adoption_calls: count(FakeCall::Adopt),
             reconciliation_calls: count(FakeCall::Reconcile),
