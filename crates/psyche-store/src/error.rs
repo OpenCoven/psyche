@@ -1,6 +1,12 @@
 /// A stable, payload-free store failure.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    /// The supplied path cannot safely name a persistent database.
+    #[error("store database path is invalid")]
+    InvalidDatabasePath,
+    /// SQLite did not retain every required durability setting.
+    #[error("required store database configuration is unavailable")]
+    ConfigurationUnavailable,
     /// The database's schema is newer than this build understands.
     #[error(
         "unsupported database version {found}; maximum supported version is {}",
@@ -23,6 +29,13 @@ pub enum StoreError {
         #[source]
         source: std::io::Error,
     },
+    /// Preparing the database file failed.
+    #[error("store file operation failed")]
+    FileOperation {
+        /// Underlying filesystem error, retained without rendering its payload.
+        #[source]
+        source: std::io::Error,
+    },
     /// Opening, configuring, or querying SQLite failed.
     #[error("store database operation failed")]
     DatabaseOperation {
@@ -35,6 +48,10 @@ pub enum StoreError {
 impl StoreError {
     pub(crate) fn directory_operation(source: std::io::Error) -> Self {
         Self::DirectoryOperation { source }
+    }
+
+    pub(crate) fn file_operation(source: std::io::Error) -> Self {
+        Self::FileOperation { source }
     }
 }
 
