@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 
 pub(super) const FOUNDATION_TABLES: [&str; 6] = [
     "audit_events",
@@ -15,18 +15,27 @@ pub(super) enum Fixture {
     Version0,
     Version1,
     Version99,
+    PartiallyAppliedV1,
     MigrationConflictV1,
 }
 
 pub(super) fn fixture_db(root: &Path, fixture: Fixture) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     let name = match fixture {
         Fixture::Version0 => "version-v0.sqlite3",
         Fixture::Version1 => "version-v1.sqlite3",
         Fixture::Version99 => "future-v99.sqlite3",
+        Fixture::PartiallyAppliedV1 => "partial-v1.sqlite3",
         Fixture::MigrationConflictV1 => "migration-conflict-v1.sqlite3",
     };
     let path = root.join(name);
-    let connection = Connection::open(&path).unwrap();
+    let mut connection = Connection::open(&path).unwrap();
 
     match fixture {
         Fixture::Version0 => connection
@@ -64,6 +73,33 @@ pub(super) fn fixture_db(root: &Path, fixture: Fixture) -> PathBuf {
                 ",
             )
             .unwrap(),
+        Fixture::PartiallyAppliedV1 => {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Exclusive)
+                .unwrap();
+            transaction
+                .execute_batch(
+                    "
+                    CREATE TABLE schema_migrations (
+                      version INTEGER PRIMARY KEY,
+                      applied_at TEXT NOT NULL
+                    ) STRICT;
+                    CREATE TABLE canonical_records (
+                      kind TEXT NOT NULL,
+                      record_id TEXT NOT NULL,
+                      schema_version TEXT NOT NULL,
+                      digest TEXT NOT NULL,
+                      canonical_json BLOB NOT NULL,
+                      created_at TEXT NOT NULL,
+                      PRIMARY KEY (kind, record_id),
+                      UNIQUE (kind, record_id, digest)
+                    ) STRICT;
+                    PRAGMA user_version = 1;
+                    ",
+                )
+                .unwrap();
+            drop(transaction);
+        }
         Fixture::MigrationConflictV1 => connection
             .execute_batch(
                 "
