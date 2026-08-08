@@ -494,7 +494,7 @@ impl From<Sha256Digest> for String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::contracts::ContractError;
+    use crate::contracts::{ContractError, MAX_SAFE_INTEGER};
     use crate::digest::{Sha256Digest, canonical_bytes, digest};
     use proptest::prelude::*;
     use serde::Serialize;
@@ -635,6 +635,63 @@ mod tests {
             String::from_utf8(canonical_bytes(&safe).unwrap()).unwrap(),
             r#"{"-9007199254740991":"minimum","9007199254740991":"maximum"}"#
         );
+    }
+
+    /// Both 9007199254740992 and 9007199254740993 round through f64 to the same
+    /// value (9007199254740992.0), so a map containing both would emit duplicate
+    /// JSON keys — silently discarding one entry. The validator must reject
+    /// either key before canonicalization reaches that point.
+    #[test]
+    fn map_key_collision_pair_rejected_before_f64_canonicalization() {
+        let mut map: BTreeMap<u64, &str> = BTreeMap::new();
+        map.insert(MAX_SAFE_INTEGER + 1, "first"); // 9007199254740992
+        map.insert(MAX_SAFE_INTEGER + 2, "second"); // 9007199254740993
+        assert_eq!(
+            canonical_bytes(&map),
+            Err(ContractError::NonInteroperableNumber),
+            "both collision-prone keys must be rejected before canonicalization"
+        );
+    }
+
+    /// The exact MAX_SAFE_INTEGER boundary is a valid u64 map key; one past it
+    /// must be rejected as NonInteroperableNumber.
+    #[test]
+    fn map_key_u64_boundary_accepted_and_one_over_rejected() {
+        let at_boundary: BTreeMap<u64, &str> = BTreeMap::from([(MAX_SAFE_INTEGER, "boundary")]);
+        assert!(
+            canonical_bytes(&at_boundary).is_ok(),
+            "u64 MAX_SAFE_INTEGER key must be accepted"
+        );
+
+        let one_over: BTreeMap<u64, &str> = BTreeMap::from([(MAX_SAFE_INTEGER + 1, "one-over")]);
+        assert_eq!(
+            canonical_bytes(&one_over),
+            Err(ContractError::NonInteroperableNumber),
+            "u64 key one past MAX_SAFE_INTEGER must be rejected"
+        );
+    }
+
+    /// Key validation must recurse into maps nested inside other structures.
+    #[test]
+    fn nested_map_unsafe_u64_keys_are_rejected() {
+        #[derive(Serialize)]
+        struct Outer<'a> {
+            inner: BTreeMap<u64, &'a str>,
+        }
+
+        let unsafe_outer = Outer {
+            inner: BTreeMap::from([(MAX_SAFE_INTEGER + 1, "unsafe")]),
+        };
+        assert_eq!(
+            canonical_bytes(&unsafe_outer),
+            Err(ContractError::NonInteroperableNumber),
+        );
+
+        // A nested map with a safe u64 key must be accepted.
+        let safe_outer = Outer {
+            inner: BTreeMap::from([(MAX_SAFE_INTEGER, "safe")]),
+        };
+        assert!(canonical_bytes(&safe_outer).is_ok());
     }
 
     #[test]
