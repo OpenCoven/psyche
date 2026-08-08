@@ -42,6 +42,25 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace --locked
+      - name: G2 state machine (fixed seed)
+        env:
+          PROPTEST_CASES: "2048"
+          PROPTEST_RNG_SEED: "00000000000000000000000000000000"
+        run: cargo test -p psyche-test-support --test state_machine
+      - name: G2 reusable conformance
+        run: cargo test -p psyche-test-support --test conformance
+      - name: G2 migrations
+        run: cargo test -p psyche-store --test migrations
+      - name: G2 crash recovery
+        run: cargo test -p psyche-store --features test-fault-injection --test crash
+      - name: G2 fault-injection clippy
+        run: cargo clippy -p psyche-store --all-targets --features test-fault-injection -- -D warnings
+      - name: G2 evidence checker unit tests
+        run: python3 scripts/check-g2-evidence-test.py
+      - name: G2 evidence relationships
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check-g2-evidence.py
 
   supply-chain:
     name: Dependency audit
