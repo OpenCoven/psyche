@@ -286,7 +286,12 @@ pub enum CovenScriptStep {
     /// Commits the carried response and then simulates a lost reply.
     DisconnectAfterCommit(CovenScriptReturn),
     /// Deliberately returns a response that conflicts with a durable replay.
-    ConflictingReplay(CovenScriptReturn),
+    ConflictingReplay {
+        /// Termination request identity that must already have a durable response.
+        expected_termination_request_id: RequestId,
+        /// Deliberately divergent termination disposition.
+        disposition: TerminationDisposition,
+    },
     /// Leaves durable state unchanged and returns a deterministic stalled error.
     Stall(FakeOperation),
 }
@@ -294,9 +299,8 @@ pub enum CovenScriptStep {
 impl CovenScriptStep {
     fn operation(&self) -> FakeOperation {
         match self {
-            Self::Return(response)
-            | Self::DisconnectAfterCommit(response)
-            | Self::ConflictingReplay(response) => response.operation(),
+            Self::Return(response) | Self::DisconnectAfterCommit(response) => response.operation(),
+            Self::ConflictingReplay { .. } => FakeOperation::Terminate,
             Self::Error { operation, .. }
             | Self::DisconnectBeforeCommit(operation)
             | Self::Stall(operation) => *operation,
@@ -404,6 +408,9 @@ impl FakeCoven {
             return Err(PortError::UnexpectedCall);
         };
         if step.operation() != operation {
+            return Err(PortError::UnexpectedCall);
+        }
+        if matches!(step, CovenScriptStep::ConflictingReplay { .. }) {
             return Err(PortError::UnexpectedCall);
         }
         state.script.pop_front().ok_or(PortError::UnexpectedCall)
@@ -793,10 +800,15 @@ impl FakeCovenBuilder {
 
     /// Scripts a deliberately divergent response for coordinator conflict tests.
     #[must_use]
-    pub fn conflicting_termination(mut self, disposition: TerminationDisposition) -> Self {
-        self.script.push_back(CovenScriptStep::ConflictingReplay(
-            CovenScriptReturn::Terminate(disposition),
-        ));
+    pub fn conflicting_termination(
+        mut self,
+        expected_termination_request_id: RequestId,
+        disposition: TerminationDisposition,
+    ) -> Self {
+        self.script.push_back(CovenScriptStep::ConflictingReplay {
+            expected_termination_request_id,
+            disposition,
+        });
         self
     }
 
@@ -902,7 +914,7 @@ impl CovenPort for FakeCoven {
             CovenScriptStep::Error { error, .. } => Err(error),
             CovenScriptStep::DisconnectBeforeCommit(_) => Err(PortError::Unavailable),
             CovenScriptStep::Stall(_) => Err(PortError::Stalled),
-            CovenScriptStep::ConflictingReplay(_) => Err(PortError::UnexpectedCall),
+            CovenScriptStep::ConflictingReplay { .. } => Err(PortError::UnexpectedCall),
             _ => Err(PortError::UnexpectedCall),
         }
     }
@@ -1046,12 +1058,14 @@ impl CovenPort for FakeCoven {
         let in_flight = self.termination_lock(&key)?;
         let _guard = in_flight.lock().await;
         if let Some(stored) = self.replay_termination(&key)? {
+            self.record(FakeOperation::Terminate)?;
             let scripted = {
                 let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
                 match state.script.front() {
-                    Some(CovenScriptStep::ConflictingReplay(CovenScriptReturn::Terminate(_)))
-                    | Some(CovenScriptStep::Return(CovenScriptReturn::Terminate(_))) => {
-                        state.calls.push(FakeCall::Terminate);
+                    Some(CovenScriptStep::ConflictingReplay {
+                        expected_termination_request_id,
+                        ..
+                    }) if expected_termination_request_id.as_str() == key => {
                         state.script.pop_front()
                     }
                     _ => None,
@@ -1061,27 +1075,12 @@ impl CovenPort for FakeCoven {
                 assertion(&request)?;
             }
             return match scripted {
-                Some(CovenScriptStep::ConflictingReplay(CovenScriptReturn::Terminate(
-                    disposition,
-                ))) => Ok(disposition),
-                Some(CovenScriptStep::Return(CovenScriptReturn::Terminate(disposition))) => {
-                    if disposition == stored {
-                        Ok(stored)
-                    } else {
-                        Err(PortError::IntentConflict)
-                    }
-                }
+                Some(CovenScriptStep::ConflictingReplay { disposition, .. }) => Ok(disposition),
                 Some(_) => Err(PortError::UnexpectedCall),
-                None => {
-                    self.record(FakeOperation::Terminate)?;
-                    Ok(stored)
-                }
+                None => Ok(stored),
             };
         }
         let step = self.take(FakeOperation::Terminate)?;
-        if let CovenScriptStep::ConflictingReplay(_) = step {
-            return Err(PortError::UnexpectedCall);
-        }
         if let Some(assertion) = &self.before_terminate {
             assertion(&request)?;
         }

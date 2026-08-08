@@ -1638,6 +1638,106 @@ async fn termination_after_commit_disconnect_replays_durable_acknowledgement() {
     assert_eq!(revisions(&path, &requested.attempt_id).len(), 3);
 }
 
+#[tokio::test]
+async fn termination_replay_does_not_consume_another_requests_response() {
+    let (_dir_a, path_a) = create_store();
+    let requested_a = seed(&path_a);
+    let disposition_a = TerminationDisposition::Acknowledged {
+        evidence: acknowledgement_for(&requested_a),
+    };
+    let (_dir_b, path_b) = create_store();
+    let mut requested_b = seed(&path_b);
+    requested_b
+        .termination_request
+        .as_mut()
+        .unwrap()
+        .termination_request_id = RequestId::parse("req_01J00000000000000000000002").unwrap();
+    let disposition_b = TerminationDisposition::Acknowledged {
+        evidence: acknowledgement_for(&requested_b),
+    };
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fake = FakeCoven::builder()
+        .before_terminate({
+            let calls = Arc::clone(&calls);
+            Arc::new(move |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        })
+        .acknowledge_termination(acknowledgement_for(&requested_a))
+        .acknowledge_termination(acknowledgement_for(&requested_b))
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        persist_then_terminate(&mut persistence(&path_a), &fake, requested_a.clone())
+            .await
+            .unwrap(),
+        disposition_a
+    );
+    assert_eq!(
+        persist_then_terminate(&mut persistence(&path_a), &fake, requested_a)
+            .await
+            .unwrap(),
+        disposition_a
+    );
+    assert_eq!(
+        persist_then_terminate(&mut persistence(&path_b), &fake, requested_b)
+            .await
+            .unwrap(),
+        disposition_b
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn termination_replay_only_consumes_a_conflict_assertion_for_its_key() {
+    let (_dir_a, path_a) = create_store();
+    let requested_a = seed(&path_a);
+    let disposition_a = TerminationDisposition::Acknowledged {
+        evidence: acknowledgement_for(&requested_a),
+    };
+    let (_dir_b, path_b) = create_store();
+    let mut requested_b = seed(&path_b);
+    requested_b
+        .termination_request
+        .as_mut()
+        .unwrap()
+        .termination_request_id = RequestId::parse("req_01J00000000000000000000002").unwrap();
+    let key_b = requested_b
+        .termination_request
+        .as_ref()
+        .unwrap()
+        .termination_request_id
+        .clone();
+    let conflicting_b = TerminationDisposition::Unresolved {
+        evidence: unresolved_for(&requested_b),
+    };
+    let fake = FakeCoven::builder()
+        .acknowledge_termination(acknowledgement_for(&requested_a))
+        .acknowledge_termination(acknowledgement_for(&requested_b))
+        .conflicting_termination(key_b, conflicting_b)
+        .build()
+        .unwrap();
+
+    persist_then_terminate(&mut persistence(&path_a), &fake, requested_a.clone())
+        .await
+        .unwrap();
+    persist_then_terminate(&mut persistence(&path_b), &fake, requested_b.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        persist_then_terminate(&mut persistence(&path_a), &fake, requested_a)
+            .await
+            .unwrap(),
+        disposition_a
+    );
+    assert!(matches!(
+        persist_then_terminate(&mut persistence(&path_b), &fake, requested_b).await,
+        Err(TerminationDispatchError::RevisionConflict(_))
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_identical_termination_calls_share_one_scripted_commit() {
     let (_dir, path) = create_store();
@@ -2046,9 +2146,17 @@ async fn termination_dispatch_rejects_conflicting_replay_response() {
     let requested = seed(&path);
     let fake = FakeCoven::builder()
         .acknowledge_termination(acknowledgement_for(&requested))
-        .conflicting_termination(TerminationDisposition::Unresolved {
-            evidence: unresolved_for(&requested),
-        })
+        .conflicting_termination(
+            requested
+                .termination_request
+                .as_ref()
+                .unwrap()
+                .termination_request_id
+                .clone(),
+            TerminationDisposition::Unresolved {
+                evidence: unresolved_for(&requested),
+            },
+        )
         .build()
         .unwrap();
     persist_then_terminate(&mut persistence(&path), &fake, requested.clone())
