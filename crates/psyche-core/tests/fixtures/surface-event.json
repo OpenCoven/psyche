@@ -1,0 +1,11 @@
+{
+  "schema_version": "psyche.surface_event.v1",
+  "surface_event_id": "sev_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "adapter_id": "telegram",
+  "account_id": "main",
+  "actor": {"type": "user", "id": "123"},
+  "locator": {"type": "message", "chat_id": "-100123", "message_id": "42"},
+  "adapter_event_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "received_at": "2026-08-01T00:00:00Z",
+  "content": {"type": "text", "text": "Please review this."}
+}

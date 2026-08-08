@@ -1,0 +1,30 @@
+{
+  "schema_version": "psyche.delivery.v1",
+  "delivery_id": "del_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "intent_id": "int_01BX5ZZKBKACTAV9WEVGEMMVRZ",
+  "action_class": "telegram.reply.send",
+  "account_id": "main",
+  "chat_id": "-1001234567890",
+  "topic": {"kind": "forum", "id": "42"},
+  "relationship": "reply_same_topic",
+  "effect": {
+    "schema_version": "psyche.telegram_effect.v1",
+    "type": "send_message",
+    "format": "html",
+    "text": "Review complete.",
+    "buttons": []
+  },
+  "effect_digest": "sha256:81fe163b620a8bedc0f7aa98ec44f1c04376ca649cf97e1161a6b7d2924cbeb2",
+  "surface_decision": {
+    "decision_id": "decision_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "request_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "policy_revision": "policy:sha256:0123456789abcdef",
+    "expires_at": "2026-08-01T00:05:00Z",
+    "state": "reserved"
+  },
+  "logical_response_id": "response_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "logical_part": 0,
+  "state": "ready",
+  "attempt_count": 0,
+  "telegram_message_id": null
+}
