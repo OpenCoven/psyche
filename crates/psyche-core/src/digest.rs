@@ -34,8 +34,7 @@ const MIN_SAFE_INTEGER_I128: i128 = -MAX_SAFE_INTEGER_I128;
 /// keys, before that representation is passed to the canonicalizer.
 pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, ContractError> {
     let collected = collect(value).map_err(validation_failed)?;
-    let canonicalizer_input = collected.into_json().map_err(validation_failed)?;
-    serde_json_canonicalizer::to_vec(&canonicalizer_input).map_err(canonicalization_failed)
+    serde_json_canonicalizer::to_vec(&collected).map_err(canonicalization_failed)
 }
 
 fn canonicalization_failed(_error: impl fmt::Display) -> ContractError {
@@ -59,22 +58,9 @@ pub(crate) fn validate_json_domain(value: &Value) -> Result<(), ContractError> {
 }
 
 fn validate_json_number(number: &Number) -> Result<(), ContractError> {
-    let interoperable = if let Some(value) = number.as_i64() {
-        value >= MIN_SAFE_INTEGER && value <= MAX_SAFE_INTEGER as i64
-    } else if let Some(value) = number.as_u64() {
-        value <= MAX_SAFE_INTEGER
-    } else if let Some(value) = number.as_f64() {
-        value.is_finite()
-            && (value.fract() != 0.0
-                || (value >= MIN_SAFE_INTEGER as f64 && value <= MAX_SAFE_INTEGER as f64))
-    } else {
-        false
-    };
-    if interoperable {
-        Ok(())
-    } else {
-        Err(ContractError::NonInteroperableNumber)
-    }
+    collect_number_text(number.as_str())
+        .map(|_| ())
+        .map_err(|_| ContractError::NonInteroperableNumber)
 }
 
 fn validate_float(value: f64) -> Result<(), ContractError> {
@@ -122,34 +108,22 @@ enum CollectedValue {
     Signed(i64),
     Unsigned(u64),
     Float(f64),
-    Number(Number),
     String(String),
     Array(Vec<Self>),
     Object(BTreeMap<String, Self>),
 }
 
-impl CollectedValue {
-    fn into_json(self) -> Result<Value, ValidationError> {
+impl Serialize for CollectedValue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Null => Ok(Value::Null),
-            Self::Bool(value) => Ok(Value::Bool(value)),
-            Self::Signed(value) => Ok(Value::Number(value.into())),
-            Self::Unsigned(value) => Ok(Value::Number(value.into())),
-            Self::Float(value) => Number::from_f64(value)
-                .map(Value::Number)
-                .ok_or(ValidationError::NonInteroperableNumber),
-            Self::Number(value) => Ok(Value::Number(value)),
-            Self::String(value) => Ok(Value::String(value)),
-            Self::Array(values) => values
-                .into_iter()
-                .map(Self::into_json)
-                .collect::<Result<Vec<_>, _>>()
-                .map(Value::Array),
-            Self::Object(values) => values
-                .into_iter()
-                .map(|(key, value)| Ok((key, value.into_json()?)))
-                .collect::<Result<serde_json::Map<_, _>, _>>()
-                .map(Value::Object),
+            Self::Null => serializer.serialize_unit(),
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::Signed(value) => serializer.serialize_i64(*value),
+            Self::Unsigned(value) => serializer.serialize_u64(*value),
+            Self::Float(value) => serializer.serialize_f64(*value),
+            Self::String(value) => serializer.serialize_str(value),
+            Self::Array(values) => values.serialize(serializer),
+            Self::Object(values) => values.serialize(serializer),
         }
     }
 }
@@ -289,10 +263,14 @@ impl Serializer for ValueCollector {
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
         self,
-        _name: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        collect(value)
+        if name == serde_json_number::TOKEN {
+            collect_private_number(value)
+        } else {
+            collect(value)
+        }
     }
 
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
@@ -344,7 +322,7 @@ impl Serializer for ValueCollector {
             if self.allow_private_number && length == 1 {
                 Ok(ObjectCollector::private_number())
             } else {
-                Err(ValidationError::SerializationFailed)
+                Ok(ObjectCollector::new(None))
             }
         } else {
             Ok(ObjectCollector::new(None))
@@ -383,10 +361,172 @@ fn collect_float(value: f64) -> Result<CollectedValue, ValidationError> {
     Ok(CollectedValue::Float(value))
 }
 
-fn singleton_object(key: &str, value: CollectedValue) -> Result<CollectedValue, ValidationError> {
-    if key == serde_json_number::TOKEN {
-        return Err(ValidationError::SerializationFailed);
+fn collect_private_number<T: ?Sized + Serialize>(
+    value: &T,
+) -> Result<CollectedValue, ValidationError> {
+    let text = value.serialize(PrivateNumberTextCollector)?;
+    collect_number_text(&text)
+}
+
+fn collect_number_text(text: &str) -> Result<CollectedValue, ValidationError> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let negative = if bytes.first() == Some(&b'-') {
+        index += 1;
+        true
+    } else {
+        false
+    };
+    let mut digits = Vec::with_capacity(bytes.len());
+
+    match bytes.get(index).copied() {
+        Some(b'0') => {
+            digits.push(b'0');
+            index += 1;
+            if bytes.get(index).is_some_and(u8::is_ascii_digit) {
+                return Err(ValidationError::NonInteroperableNumber);
+            }
+        }
+        Some(b'1'..=b'9') => {
+            while let Some(digit @ b'0'..=b'9') = bytes.get(index).copied() {
+                digits.push(digit);
+                index += 1;
+            }
+        }
+        _ => return Err(ValidationError::NonInteroperableNumber),
     }
+
+    let mut fractional_digits = 0;
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        let fraction_start = index;
+        while let Some(digit @ b'0'..=b'9') = bytes.get(index).copied() {
+            digits.push(digit);
+            index += 1;
+        }
+        fractional_digits = index - fraction_start;
+        if fractional_digits == 0 {
+            return Err(ValidationError::NonInteroperableNumber);
+        }
+    }
+
+    let mut exponent = Some(0_i128);
+    let mut exponent_is_negative = false;
+    if matches!(bytes.get(index), Some(b'e' | b'E')) {
+        index += 1;
+        match bytes.get(index) {
+            Some(b'+') => index += 1,
+            Some(b'-') => {
+                exponent_is_negative = true;
+                index += 1;
+            }
+            _ => {}
+        }
+        let exponent_start = index;
+        let mut magnitude = Some(0_i128);
+        while let Some(digit @ b'0'..=b'9') = bytes.get(index).copied() {
+            magnitude = magnitude.and_then(|value| {
+                value
+                    .checked_mul(10)
+                    .and_then(|value| value.checked_add(i128::from(digit - b'0')))
+            });
+            index += 1;
+        }
+        if index == exponent_start {
+            return Err(ValidationError::NonInteroperableNumber);
+        }
+        exponent = magnitude.map(|value| if exponent_is_negative { -value } else { value });
+    }
+
+    if index != bytes.len() {
+        return Err(ValidationError::NonInteroperableNumber);
+    }
+    if digits.iter().all(|digit| *digit == b'0') {
+        return Ok(CollectedValue::Unsigned(0));
+    }
+    let Some(exponent) = exponent else {
+        return if exponent_is_negative {
+            collect_number_float(text)
+        } else {
+            Err(ValidationError::NonInteroperableNumber)
+        };
+    };
+    let fractional_digits =
+        i128::try_from(fractional_digits).map_err(|_| ValidationError::NonInteroperableNumber)?;
+    let Some(scale) = exponent.checked_sub(fractional_digits) else {
+        return collect_number_float(text);
+    };
+    let trailing_zeros = digits
+        .iter()
+        .rev()
+        .take_while(|digit| **digit == b'0')
+        .count();
+    let trailing_zeros_i128 =
+        i128::try_from(trailing_zeros).map_err(|_| ValidationError::NonInteroperableNumber)?;
+    let effective_scale = scale
+        .checked_add(trailing_zeros_i128)
+        .ok_or(ValidationError::NonInteroperableNumber)?;
+
+    if effective_scale >= 0 {
+        collect_integral_number(&digits, trailing_zeros, effective_scale, negative)
+    } else {
+        collect_number_float(text)
+    }
+}
+
+fn collect_integral_number(
+    digits: &[u8],
+    trailing_zeros: usize,
+    effective_scale: i128,
+    negative: bool,
+) -> Result<CollectedValue, ValidationError> {
+    let significant_end = digits.len() - trailing_zeros;
+    let first_nonzero = digits
+        .iter()
+        .position(|digit| *digit != b'0')
+        .ok_or(ValidationError::NonInteroperableNumber)?;
+    let appended_zeros =
+        usize::try_from(effective_scale).map_err(|_| ValidationError::NonInteroperableNumber)?;
+    let total_digits = significant_end
+        .checked_sub(first_nonzero)
+        .and_then(|length| length.checked_add(appended_zeros))
+        .ok_or(ValidationError::NonInteroperableNumber)?;
+    if total_digits > 16 {
+        return Err(ValidationError::NonInteroperableNumber);
+    }
+
+    let mut magnitude = 0_u64;
+    for digit in &digits[first_nonzero..significant_end] {
+        magnitude = magnitude
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(u64::from(*digit - b'0')))
+            .ok_or(ValidationError::NonInteroperableNumber)?;
+    }
+    for _ in 0..appended_zeros {
+        magnitude = magnitude
+            .checked_mul(10)
+            .ok_or(ValidationError::NonInteroperableNumber)?;
+    }
+    if magnitude > MAX_SAFE_INTEGER {
+        return Err(ValidationError::NonInteroperableNumber);
+    }
+    if negative {
+        let magnitude =
+            i64::try_from(magnitude).map_err(|_| ValidationError::NonInteroperableNumber)?;
+        Ok(CollectedValue::Signed(-magnitude))
+    } else {
+        Ok(CollectedValue::Unsigned(magnitude))
+    }
+}
+
+fn collect_number_float(text: &str) -> Result<CollectedValue, ValidationError> {
+    let value = text
+        .parse::<f64>()
+        .map_err(|_| ValidationError::NonInteroperableNumber)?;
+    collect_float(value)
+}
+
+fn singleton_object(key: &str, value: CollectedValue) -> Result<CollectedValue, ValidationError> {
     Ok(CollectedValue::Object(BTreeMap::from([(
         key.to_owned(),
         value,
@@ -476,7 +616,7 @@ struct ObjectCollector {
     values: BTreeMap<String, CollectedValue>,
     next_key: Option<String>,
     variant: Option<&'static str>,
-    private_number: Option<Option<Number>>,
+    private_number: Option<Option<CollectedValue>>,
 }
 
 impl ObjectCollector {
@@ -499,10 +639,7 @@ impl ObjectCollector {
     }
 
     fn insert(&mut self, key: String, value: CollectedValue) -> Result<(), ValidationError> {
-        if self.private_number.is_some()
-            || key == serde_json_number::TOKEN
-            || self.values.insert(key, value).is_some()
-        {
+        if self.private_number.is_some() || self.values.insert(key, value).is_some() {
             Err(ValidationError::SerializationFailed)
         } else {
             Ok(())
@@ -514,9 +651,7 @@ impl ObjectCollector {
             return Err(ValidationError::SerializationFailed);
         }
         if let Some(number) = self.private_number {
-            return number
-                .map(CollectedValue::Number)
-                .ok_or(ValidationError::SerializationFailed);
+            return number.ok_or(ValidationError::SerializationFailed);
         }
         let value = CollectedValue::Object(self.values);
         match self.variant {
@@ -567,13 +702,7 @@ impl SerializeStruct for ObjectCollector {
             if key != serde_json_number::TOKEN || number.is_some() {
                 return Err(ValidationError::SerializationFailed);
             }
-            let CollectedValue::String(text) = collect(value)? else {
-                return Err(ValidationError::SerializationFailed);
-            };
-            let parsed = serde_json_number::parse_exact(&text)
-                .ok_or(ValidationError::SerializationFailed)?;
-            validate_json_number(&parsed).map_err(|_| ValidationError::NonInteroperableNumber)?;
-            *number = Some(parsed);
+            *number = Some(collect_private_number(value)?);
             Ok(())
         } else {
             self.insert(key.to_owned(), collect(value)?)
@@ -599,6 +728,180 @@ impl SerializeStructVariant for ObjectCollector {
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
         self.finish()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PrivateNumberTextCollector;
+
+impl Serializer for PrivateNumberTextCollector {
+    type Ok = String;
+    type Error = ValidationError;
+    type SerializeSeq = Impossible<String, ValidationError>;
+    type SerializeTuple = Impossible<String, ValidationError>;
+    type SerializeTupleStruct = Impossible<String, ValidationError>;
+    type SerializeTupleVariant = Impossible<String, ValidationError>;
+    type SerializeMap = Impossible<String, ValidationError>;
+    type SerializeStruct = Impossible<String, ValidationError>;
+    type SerializeStructVariant = Impossible<String, ValidationError>;
+
+    fn serialize_bool(self, _value: bool) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_i8(self, _value: i8) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_i16(self, _value: i16) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_i32(self, _value: i32) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_i64(self, _value: i64) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_i128(self, _value: i128) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_u8(self, _value: u8) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_u16(self, _value: u16) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_u32(self, _value: u32) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_u64(self, _value: u64) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_u128(self, _value: u128) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_f32(self, _value: f32) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_f64(self, _value: f64) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_char(self, _value: char) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_str(self, value: &str) -> Result<Self::Ok, Self::Error> {
+        Ok(value.to_owned())
+    }
+
+    fn serialize_bytes(self, _value: &[u8]) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_some<T: ?Sized + Serialize>(self, _value: &T) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_newtype_struct<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        _value: &T,
+    ) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_newtype_variant<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_seq(self, _length: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_tuple(self, _length: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _length: usize,
+    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _length: usize,
+    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_map(self, _length: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_struct(
+        self,
+        _name: &'static str,
+        _length: usize,
+    ) -> Result<Self::SerializeStruct, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _length: usize,
+    ) -> Result<Self::SerializeStructVariant, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn is_human_readable(&self) -> bool {
+        true
     }
 }
 
@@ -839,6 +1142,16 @@ impl Sha256Digest {
         Ok(Sha256Digest(value.to_string()))
     }
 
+    pub(crate) fn from_raw_bytes(bytes: &[u8]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        Self(format!(
+            "{}{}",
+            Self::PREFIX,
+            to_lower_hex(hasher.finalize().as_slice())
+        ))
+    }
+
     /// The full digest string, e.g. `"sha256:<64 lowercase hex chars>"`.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -949,29 +1262,77 @@ mod tests {
     }
 
     #[test]
-    fn private_number_marker_lookalikes_cannot_smuggle_numbers_or_objects() {
+    fn private_number_marker_lookalikes_remain_ordinary_objects() {
         const TOKEN: &str = "$serde_json::private::Number";
 
         #[derive(Serialize)]
         #[serde(rename = "$serde_json::private::Number")]
-        struct SpoofedNumber<'a> {
+        struct OrdinaryStruct<'a> {
             #[serde(rename = "$serde_json::private::Number")]
             text: &'a str,
         }
 
         assert_eq!(
-            canonical_bytes(&SpoofedNumber { text: "1.5" }),
-            Err(ContractError::CanonicalizationFailed)
+            canonical_bytes(&OrdinaryStruct { text: "1.5" }).unwrap(),
+            br#"{"$serde_json::private::Number":"1.5"}"#
         );
 
-        for lookalike in [
-            json!({TOKEN: "1.5"}),
-            json!({TOKEN: 1.5}),
-            json!({TOKEN: "1.5", "extra": true}),
+        for (lookalike, expected) in [
+            (
+                json!({TOKEN: "1.5"}),
+                r#"{"$serde_json::private::Number":"1.5"}"#,
+            ),
+            (
+                json!({TOKEN: 1.5}),
+                r#"{"$serde_json::private::Number":1.5}"#,
+            ),
+            (
+                json!({TOKEN: "1.5", "extra": true}),
+                r#"{"$serde_json::private::Number":"1.5","extra":true}"#,
+            ),
+        ] {
+            assert_eq!(canonical_bytes(&lookalike).unwrap(), expected.as_bytes());
+        }
+    }
+
+    #[test]
+    fn exact_private_number_newtypes_are_validated_and_normalized() {
+        #[derive(Serialize)]
+        #[serde(rename = "$serde_json::private::Number")]
+        struct PrivateNumber<'a>(&'a str);
+
+        for (source, expected) in [
+            ("-0", "0"),
+            ("1.2300", "1.23"),
+            ("1e3", "1000"),
+            ("9007199254740991000e-3", "9007199254740991"),
+            ("-9007199254740991000e-3", "-9007199254740991"),
         ] {
             assert_eq!(
-                canonical_bytes(&lookalike),
-                Err(ContractError::CanonicalizationFailed)
+                canonical_bytes(&PrivateNumber(source)).unwrap(),
+                expected.as_bytes(),
+                "{source}"
+            );
+        }
+
+        for source in [
+            "9007199254740992e0",
+            "9007199254740992000e-3",
+            "9.007199254740992e15",
+            "1e400",
+            "+1",
+            "01",
+            "1.",
+            ".1",
+            "NaN",
+            "Infinity",
+            "1e",
+            "1 trailing",
+        ] {
+            assert_eq!(
+                canonical_bytes(&PrivateNumber(source)),
+                Err(ContractError::NonInteroperableNumber),
+                "{source}"
             );
         }
     }

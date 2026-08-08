@@ -15,7 +15,7 @@ use psyche_core::contracts::surface::{
     Delivery, DeliverySurfaceDecision, SurfaceEffect, SurfaceEvent,
 };
 use psyche_core::contracts::{CanonicalDocument, ContractError, SchemaKind, decode_document};
-use psyche_core::digest::canonical_bytes;
+use psyche_core::digest::{canonical_bytes, digest};
 use psyche_core::id::{RecordId, RequestId};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -988,9 +988,6 @@ fn cancellation_binding_decode_maps_nested_wire_failures_to_evidence_mismatch() 
         ("acknowledgement timestamp", |value: &mut Value| {
             value["cancellation_acknowledgement"]["acknowledged_at"] = json!("tomorrow");
         }),
-        ("acknowledgement kind", |value: &mut Value| {
-            value["cancellation_acknowledgement"]["kind"] = json!("future_kind");
-        }),
         ("termination request id", |value: &mut Value| {
             value["termination_request"]["termination_request_id"] = json!("not-a-request");
         }),
@@ -1021,6 +1018,16 @@ fn cancellation_binding_decode_maps_nested_wire_failures_to_evidence_mismatch() 
             "{label}"
         );
     }
+
+    let mut unknown_kind = binding_value(CancellationState::AcknowledgedTerminated);
+    unknown_kind["cancellation_acknowledgement"]["kind"] = json!("future_kind");
+    assert!(matches!(
+        decode_document(&serde_json::to_vec(&unknown_kind).unwrap()),
+        Err(ContractError::UnknownEnumValue {
+            schema: SchemaKind::ExecutionBinding,
+            field: "cancellation_acknowledgement.kind",
+        })
+    ));
 
     let mut unknown = binding_value(CancellationState::TerminationRequested);
     unknown["cancellation_state"] = json!("cancelled");
@@ -1378,42 +1385,78 @@ fn decoded_document_rejects_nested_unsafe_integers() {
 }
 
 #[test]
-fn decoded_document_preserves_interoperable_arbitrary_precision_numbers() {
+fn decoded_and_direct_values_preserve_interoperable_arbitrary_precision_numbers() {
     let bytes = replace_fixture_once(
         "intent-local.json",
         r#""constraints": {}"#,
-        r#""constraints": {"safe": 9007199254740991, "fraction": 1.2300}"#,
+        r#""constraints": {"safe": 9007199254740991, "fraction": 1.2300, "exponent": 1e3}"#,
     );
+    let direct: Value =
+        serde_json::from_str(r#"{"safe":9007199254740991,"fraction":1.2300,"exponent":1e3}"#)
+            .unwrap();
 
     let CanonicalDocument::Intent(intent) = decode_document(&bytes).unwrap() else {
         panic!("expected intent");
     };
     assert_eq!(
         canonical_bytes(&intent.constraints).unwrap(),
-        br#"{"fraction":1.23,"safe":9007199254740991}"#
+        br#"{"exponent":1000,"fraction":1.23,"safe":9007199254740991}"#
+    );
+    assert_eq!(
+        canonical_bytes(&intent.constraints).unwrap(),
+        canonical_bytes(&direct).unwrap()
     );
 }
 
 #[test]
-fn decoded_document_rejects_private_number_marker_lookalikes() {
-    for constraints in [
-        r#"{"$serde_json::private::Number": "1.5"}"#,
-        r#"{"$serde_json::private::Number": 1.5}"#,
-        r#"{"$serde_json::private::Number": "1.5", "extra": true}"#,
+fn decoded_private_number_marker_lookalikes_remain_objects() {
+    for (constraints, expected) in [
+        (
+            r#"{"$serde_json::private::Number": "1.5"}"#,
+            r#"{"$serde_json::private::Number":"1.5"}"#,
+        ),
+        (
+            r#"{"$serde_json::private::Number": 1.5}"#,
+            r#"{"$serde_json::private::Number":1.5}"#,
+        ),
+        (
+            r#"{"$serde_json::private::Number": "1.5", "extra": true}"#,
+            r#"{"$serde_json::private::Number":"1.5","extra":true}"#,
+        ),
     ] {
         let bytes = replace_fixture_once(
             "intent-local.json",
             r#""constraints": {}"#,
             &format!(r#""constraints": {constraints}"#),
         );
-        assert!(matches!(
-            decode_document(&bytes),
-            Err(ContractError::InvalidShape {
-                schema: SchemaKind::Error,
-                field: "json",
-            })
-        ));
+        let CanonicalDocument::Intent(intent) = decode_document(&bytes).unwrap() else {
+            panic!("expected intent");
+        };
+        assert_eq!(
+            canonical_bytes(&intent.constraints).unwrap(),
+            expected.as_bytes()
+        );
     }
+}
+
+#[test]
+fn arbitrary_precision_effect_digests_are_stable_across_decode() {
+    let effect: Value =
+        serde_json::from_str(r#"{"safe":9007199254740991,"fraction":1.2300}"#).unwrap();
+    let expected_digest = digest(&effect).unwrap();
+    let bytes = mutate("surface-effect.json", |object| {
+        object.insert("effect".into(), effect.clone());
+        object.insert("effect_digest".into(), json!(expected_digest.as_str()));
+    });
+
+    let CanonicalDocument::SurfaceEffect(decoded) = decode_document(&bytes).unwrap() else {
+        panic!("expected surface effect");
+    };
+    assert_eq!(digest(&decoded.effect).unwrap(), expected_digest);
+    assert_eq!(
+        canonical_bytes(&decoded.effect).unwrap(),
+        canonical_bytes(&effect).unwrap()
+    );
 }
 
 fn assert_invalid_numeric_field(
