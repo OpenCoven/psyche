@@ -2,11 +2,17 @@ use std::{
     fs::{self, OpenOptions},
     io::ErrorKind,
     path::{Path, PathBuf},
+    thread,
+    time::{Duration, Instant},
 };
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, ErrorCode, OpenFlags};
 
 use crate::StoreError;
+
+const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
+const CONFIGURATION_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(50);
+const CONFIGURATION_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 pub(crate) fn open(path: &Path) -> Result<(Connection, PathBuf), StoreError> {
     validate_path(path)?;
@@ -18,6 +24,7 @@ pub(crate) fn open(path: &Path) -> Result<(Connection, PathBuf), StoreError> {
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
     let connection = Connection::open_with_flags(&open_path, flags)?;
+    connection.busy_timeout(BUSY_TIMEOUT)?;
     Ok((connection, open_path))
 }
 
@@ -43,16 +50,51 @@ pub(crate) fn enforce_database_permissions(path: &Path) -> Result<(), StoreError
     Ok(())
 }
 
+pub(crate) fn validate_sidecars(path: &Path) -> Result<(), StoreError> {
+    for sidecar in sqlite_sidecar_paths(path) {
+        match fs::symlink_metadata(sidecar) {
+            Ok(metadata) => validate_database_metadata(&metadata)?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(StoreError::file_operation(error)),
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn enforce_sidecar_permissions(path: &Path) -> Result<(), StoreError> {
+    for sidecar in sqlite_sidecar_paths(path) {
+        enforce_existing_sidecar_permissions(&sidecar)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn configure(connection: &Connection) -> Result<(), StoreError> {
-    connection.execute_batch(
-        "
-        PRAGMA busy_timeout = 5000;
-        PRAGMA foreign_keys = ON;
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = FULL;
-        PRAGMA secure_delete = ON;
-        ",
-    )?;
+    let deadline = Instant::now() + BUSY_TIMEOUT;
+    let mut last_contention: Option<rusqlite::Error> = None;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return match last_contention {
+                Some(error) => Err(error.into()),
+                None => Err(StoreError::ConfigurationUnavailable),
+            };
+        }
+        connection.busy_timeout(remaining.min(CONFIGURATION_ATTEMPT_TIMEOUT))?;
+
+        match configure_once(connection) {
+            Ok(()) => break,
+            Err(error) if is_lock_contention(&error) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(error.into());
+                }
+                last_contention = Some(error);
+                thread::sleep(remaining.min(CONFIGURATION_RETRY_DELAY));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    connection.busy_timeout(BUSY_TIMEOUT)?;
 
     let foreign_keys =
         connection.pragma_query_value(None, "foreign_keys", |row| row.get::<_, u32>(0))?;
@@ -75,6 +117,68 @@ pub(crate) fn configure(connection: &Connection) -> Result<(), StoreError> {
     } else {
         Err(StoreError::ConfigurationUnavailable)
     }
+}
+
+fn configure_once(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "
+        PRAGMA foreign_keys = ON;
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = FULL;
+        PRAGMA secure_delete = ON;
+        ",
+    )
+}
+
+fn is_lock_contention(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(sqlite_error, _)
+            if matches!(
+                sqlite_error.code,
+                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
+            )
+    )
+}
+
+fn sqlite_sidecar_paths(path: &Path) -> [PathBuf; 3] {
+    ["-journal", "-wal", "-shm"].map(|suffix| {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        PathBuf::from(sidecar)
+    })
+}
+
+fn enforce_existing_sidecar_permissions(path: &Path) -> Result<(), StoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => validate_database_metadata(&metadata)?,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(StoreError::file_operation(error)),
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        match fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(StoreError::file_operation(error)),
+        }
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(StoreError::file_operation(error)),
+        };
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.permissions().mode() & 0o777 != 0o600
+        {
+            return Err(StoreError::InvalidDatabasePath);
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_path(path: &Path) -> Result<(), StoreError> {

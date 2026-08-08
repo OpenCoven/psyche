@@ -10,6 +10,9 @@ pub enum StoreError {
     /// SQLite did not retain every required durability setting.
     #[error("required store database configuration is unavailable")]
     ConfigurationUnavailable,
+    /// Another initialization attempt panicked while holding the process lock.
+    #[error("store database initialization is unavailable")]
+    InitializationUnavailable,
     /// The database's schema is newer than this build understands.
     #[error(
         "unsupported database version {found}; maximum supported version is {}",

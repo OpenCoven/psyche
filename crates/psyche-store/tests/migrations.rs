@@ -10,6 +10,7 @@ use std::{
 };
 
 use psyche_store::{CURRENT_DATABASE_VERSION, Store, StoreError};
+use rusqlite::Connection;
 use support::{
     FOUNDATION_TABLES, Fixture, execute_batch, fixture_db, foundation_tables, journal_mode,
     scalar_text, schema_migrations, table_exists, user_version,
@@ -183,27 +184,145 @@ fn root_path_is_rejected_with_a_stable_error() {
 
 #[test]
 fn concurrent_first_open_applies_migration_once() {
+    const ROUNDS: usize = 8;
     const THREADS: usize = 8;
 
     let dir = tempfile::tempdir().unwrap();
-    let path = Arc::new(dir.path().join("psyche.sqlite3"));
-    let barrier = Arc::new(Barrier::new(THREADS));
-    let handles = (0..THREADS)
-        .map(|_| {
-            let path = Arc::clone(&path);
-            let barrier = Arc::clone(&barrier);
-            thread::spawn(move || {
-                barrier.wait();
-                let store = Store::open(&path)?;
-                store.schema_version()
+    for round in 0..ROUNDS {
+        let path = Arc::new(dir.path().join(format!("psyche-{round}.sqlite3")));
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles = (0..THREADS)
+            .map(|_| {
+                let path = Arc::clone(&path);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let store = Store::open(&path)?;
+                    store.schema_version()
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
 
-    for handle in handles {
-        assert_eq!(handle.join().unwrap().unwrap(), CURRENT_DATABASE_VERSION);
+        for handle in handles {
+            assert_eq!(handle.join().unwrap().unwrap(), CURRENT_DATABASE_VERSION);
+        }
+        assert_eq!(schema_migrations(&path).len(), 1);
     }
-    assert_eq!(schema_migrations(&path).len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_wal_sidecars_are_made_private_before_open_completes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture_db(dir.path(), Fixture::Version1);
+    let setup_connection = Connection::open(&path).unwrap();
+    setup_connection
+        .execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA wal_autocheckpoint = 0;
+            CREATE TABLE sidecar_marker (value TEXT NOT NULL) STRICT;
+            INSERT INTO sidecar_marker (value) VALUES ('keep-wal-open');
+            ",
+        )
+        .unwrap();
+
+    set_mode(&path, 0o644);
+    let sidecars = sqlite_sidecar_paths(&path);
+    assert!(sidecars[1].exists());
+    assert!(sidecars[2].exists());
+    for sidecar in &sidecars {
+        if sidecar.exists() {
+            set_mode(sidecar, 0o644);
+        }
+    }
+
+    let store = Store::open(&path).unwrap();
+
+    assert_private_file(&path);
+    for sidecar in &sidecars {
+        if sidecar.exists() {
+            assert_private_file(sidecar);
+        }
+    }
+    drop(store);
+    drop(setup_connection);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_wal_sidecar_is_rejected_before_migration_writes() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture_db(dir.path(), Fixture::Version0);
+    let target = dir.path().join("sidecar-target");
+    std::fs::write(&target, b"do-not-touch").unwrap();
+    let wal_path = sqlite_sidecar_paths(&path)[1].clone();
+    symlink(&target, &wal_path).unwrap();
+
+    assert_invalid_database_path(&path);
+
+    assert_eq!(std::fs::read(&target).unwrap(), b"do-not-touch");
+    std::fs::remove_file(wal_path).unwrap();
+    assert_eq!(user_version(&path), 0);
+    assert!(!table_exists(&path, "schema_migrations"));
+}
+
+#[cfg(unix)]
+#[test]
+fn non_regular_wal_sidecar_is_rejected_before_migration_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture_db(dir.path(), Fixture::Version0);
+    let wal_path = sqlite_sidecar_paths(&path)[1].clone();
+    std::fs::create_dir(&wal_path).unwrap();
+
+    assert_invalid_database_path(&path);
+
+    std::fs::remove_dir(wal_path).unwrap();
+    assert_eq!(user_version(&path), 0);
+    assert!(!table_exists(&path, "schema_migrations"));
+}
+
+#[cfg(unix)]
+#[test]
+fn future_database_sidecar_permissions_are_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture_db(dir.path(), Fixture::Version99);
+    let setup_connection = Connection::open(&path).unwrap();
+    setup_connection
+        .execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA wal_autocheckpoint = 0;
+            INSERT INTO future_owner (value) VALUES ('keep-sidecars-open');
+            ",
+        )
+        .unwrap();
+
+    set_mode(&path, 0o644);
+    let sidecars = sqlite_sidecar_paths(&path);
+    assert!(sidecars[1].exists());
+    assert!(sidecars[2].exists());
+    for sidecar in &sidecars {
+        if sidecar.exists() {
+            set_mode(sidecar, 0o644);
+        }
+    }
+
+    let error = Store::open(&path).unwrap_err();
+
+    assert!(matches!(
+        error,
+        StoreError::UnsupportedDatabaseVersion { found: 99, .. }
+    ));
+    assert_eq!(mode(&path), 0o644);
+    for sidecar in &sidecars {
+        if sidecar.exists() {
+            assert_eq!(mode(sidecar), 0o644);
+        }
+    }
+    drop(setup_connection);
 }
 
 #[cfg(unix)]
@@ -296,12 +415,10 @@ fn assert_invalid_database_path(path: &Path) {
 }
 
 fn sqlite_sidecar_state(path: &Path) -> Vec<(String, Option<Vec<u8>>)> {
-    ["-journal", "-wal", "-shm"]
+    sqlite_sidecar_paths(path)
         .into_iter()
-        .map(|suffix| {
-            let mut sidecar = path.as_os_str().to_owned();
-            sidecar.push(suffix);
-            let sidecar = PathBuf::from(sidecar);
+        .zip(["-journal", "-wal", "-shm"])
+        .map(|(sidecar, suffix)| {
             let contents = match std::fs::read(sidecar) {
                 Ok(contents) => Some(contents),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -310,6 +427,14 @@ fn sqlite_sidecar_state(path: &Path) -> Vec<(String, Option<Vec<u8>>)> {
             (suffix.to_owned(), contents)
         })
         .collect()
+}
+
+fn sqlite_sidecar_paths(path: &Path) -> [PathBuf; 3] {
+    ["-journal", "-wal", "-shm"].map(|suffix| {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        PathBuf::from(sidecar)
+    })
 }
 
 #[cfg(unix)]
