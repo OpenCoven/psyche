@@ -39,7 +39,7 @@ pub enum FakeOperation {
 
 /// Redacted call observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FakeCall {
+enum FakeCall {
     /// Contract negotiation.
     Negotiate,
     /// Stable request adoption.
@@ -71,6 +71,151 @@ impl From<FakeOperation> for FakeCall {
             FakeOperation::Terminate => Self::Terminate,
         }
     }
+}
+
+/// Adapter-neutral fault points used by Coven conformance fixtures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CovenFaultPoint {
+    /// Lose a launch adoption request before its durable write.
+    AdoptionBeforeCommit,
+    /// Lose a launch adoption response after its durable write.
+    AdoptionAfterCommit,
+    /// Lose an input adoption request before its durable write.
+    InputBeforeCommit,
+    /// Lose an input adoption response after its durable write.
+    InputAfterCommit,
+    /// Lose a stable-adoption lookup before reading it.
+    LookupBeforeRead,
+    /// Lose a stable-adoption lookup response after reading it.
+    LookupAfterRead,
+    /// Lose an event cursor request before reading its page.
+    CursorBeforePage,
+    /// Lose an event page response after reading it.
+    CursorAfterPage,
+    /// Lose a termination request before acknowledgement.
+    CancellationBeforeAcknowledgement,
+    /// Lose a termination response after acknowledgement.
+    CancellationAfterAcknowledgement,
+    /// Fail before durable terminal-state persistence.
+    TerminalBeforePersistence,
+    /// Fail before durable result persistence.
+    ResultBeforePersistence,
+    /// Fail before durable artifact persistence.
+    ArtifactBeforePersistence,
+    /// Lose reconciliation before its durable disposition.
+    ReconcileBeforeDisposition,
+    /// Lose reconciliation after its durable disposition.
+    ReconcileAfterDisposition,
+    /// Stall reconciliation without a durable disposition.
+    ReconcileStall,
+}
+
+/// Redacted kind-specific metadata for a durable reconciliation disposition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableDispositionKind {
+    /// The original session was authoritatively returned.
+    Returned {
+        /// Session that owns the original execution.
+        session_id: String,
+    },
+    /// Every resource for the ambiguous correlation was fenced.
+    Fenced {
+        /// Opaque authority-issued fence token.
+        fence_token: String,
+    },
+}
+
+/// Immutable, payload-free observation of one durable reconciliation disposition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableDispositionObservation {
+    /// Opaque durable disposition identity.
+    pub disposition_id: String,
+    /// Complete immutable execution correlation.
+    pub correlation: ExecutionCorrelation,
+    /// Digest of the durable ambiguity evidence.
+    pub ambiguity_digest: Sha256Digest,
+    /// Returned-session or fence metadata.
+    pub kind: DurableDispositionKind,
+    /// Authority-recorded disposition time.
+    pub recorded_at: time::OffsetDateTime,
+}
+
+/// Adapter-neutral, payload-free observations needed by Coven conformance tests.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CovenConformanceObservations {
+    /// Number of adoption calls that reached the fixture.
+    pub adoption_calls: u64,
+    /// Number of reconciliation calls that reached the fixture.
+    pub reconciliation_calls: u64,
+    /// Most recently committed durable reconciliation disposition.
+    pub durable_reconciliation: Option<DurableDispositionObservation>,
+}
+
+/// One reusable Coven conformance case.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CovenConformanceCase {
+    /// Contract negotiation.
+    C_S1,
+    /// Session lifecycle.
+    C_S2,
+    /// Snapshot attempt binding.
+    C_S3,
+    /// Stable adoption.
+    C_S4,
+    /// Durable non-adoption proof.
+    C_S5,
+    /// Ambiguity fencing.
+    C_S6,
+    /// Ordered cursors.
+    C_S7,
+    /// Terminal authority.
+    C_S8,
+    /// Cancellation acknowledgement.
+    C_S9,
+    /// Result and artifact binding.
+    C_S10,
+    /// Restart persistence.
+    C_S11,
+    /// Structured denials.
+    C_S12,
+}
+
+/// Whether a fixture can execute a conformance case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixtureAvailability {
+    /// The case is supported.
+    Supported,
+    /// The negotiated adapter contract does not support the case.
+    ExpectedUnsupported {
+        /// Stable structured denial code.
+        code: String,
+    },
+}
+
+/// Adapter-neutral controls and observations for reusable Coven conformance tests.
+#[async_trait::async_trait]
+pub trait CovenConformanceFixture {
+    /// Returns the production behavior boundary under test.
+    fn port(&self) -> &dyn CovenPort;
+
+    /// Reports whether the fixture can execute a case.
+    fn availability(&self, case: CovenConformanceCase) -> FixtureAvailability;
+
+    /// Restarts the fixture while retaining its durable state.
+    async fn restart(&mut self);
+
+    /// Selects one deterministic transport or persistence fault.
+    async fn select_fault(&mut self, point: CovenFaultPoint);
+
+    /// Clears the selected fault.
+    async fn clear_fault(&mut self);
+
+    /// Restores the fixture to its initial clean state and script.
+    async fn reset(&mut self);
+
+    /// Returns an immutable, payload-free observation snapshot.
+    async fn observations(&self) -> CovenConformanceObservations;
 }
 
 /// Typed response carried by a successful fake script step.
@@ -169,6 +314,7 @@ pub type BeforeTerminate =
 struct FakeState {
     script: VecDeque<CovenScriptStep>,
     calls: Vec<FakeCall>,
+    selected_fault: Option<CovenFaultPoint>,
     adoptions: BTreeMap<String, (Sha256Digest, Vec<u8>, AdoptionDisposition)>,
     sessions: BTreeMap<String, Vec<ExecutionCorrelation>>,
     reconciliations: BTreeMap<String, (ReconciliationRequest, ReconciliationDisposition)>,
@@ -183,6 +329,7 @@ pub struct FakeCoven {
     capabilities: BTreeSet<String>,
     current_time: time::OffsetDateTime,
     state: Arc<Mutex<FakeState>>,
+    initial_script: Arc<VecDeque<CovenScriptStep>>,
     before_terminate: Option<BeforeTerminate>,
 }
 
@@ -198,22 +345,6 @@ impl FakeCoven {
         FakeCovenBuilder::default()
     }
 
-    /// Returns a redacted call log.
-    pub fn calls(&self) -> Vec<FakeCall> {
-        self.state
-            .lock()
-            .map(|state| state.calls.clone())
-            .unwrap_or_default()
-    }
-
-    /// Number of script steps not yet consumed.
-    pub fn remaining_steps(&self) -> usize {
-        self.state
-            .lock()
-            .map(|state| state.script.len())
-            .unwrap_or_default()
-    }
-
     /// Simulates process restart while preserving only fake-owned durable state.
     pub fn restart(&self) -> Self {
         Self {
@@ -221,6 +352,7 @@ impl FakeCoven {
             capabilities: self.capabilities.clone(),
             current_time: self.current_time,
             state: Arc::clone(&self.state),
+            initial_script: Arc::clone(&self.initial_script),
             before_terminate: self.before_terminate.clone(),
         }
     }
@@ -232,6 +364,7 @@ impl FakeCoven {
             capabilities: self.capabilities.clone(),
             current_time,
             state: Arc::clone(&self.state),
+            initial_script: Arc::clone(&self.initial_script),
             before_terminate: self.before_terminate.clone(),
         }
     }
@@ -243,8 +376,12 @@ impl FakeCoven {
     }
 
     fn take(&self, operation: FakeOperation) -> Result<CovenScriptStep, PortError> {
+        self.record(operation)?;
+        self.take_script(operation)
+    }
+
+    fn take_script(&self, operation: FakeOperation) -> Result<CovenScriptStep, PortError> {
         let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
-        state.calls.push(operation.into());
         let Some(step) = state.script.front() else {
             return Err(PortError::UnexpectedCall);
         };
@@ -635,6 +772,7 @@ impl FakeCovenBuilder {
                 });
             }
         }
+        let initial_script = Arc::new(self.script.clone());
         Ok(FakeCoven {
             contract: self.contract,
             capabilities: self
@@ -647,6 +785,7 @@ impl FakeCovenBuilder {
                 script: self.script,
                 ..FakeState::default()
             })),
+            initial_script,
             before_terminate: self.before_terminate,
         })
     }
@@ -745,13 +884,32 @@ impl CovenPort for FakeCoven {
         request: ReconciliationRequest,
     ) -> Result<ReconciliationDisposition, PortError> {
         request.validate()?;
+        self.record(FakeOperation::Reconcile)?;
+        let selected_fault = self
+            .state
+            .lock()
+            .map_err(|_| PortError::Unavailable)?
+            .selected_fault;
+        match selected_fault {
+            Some(CovenFaultPoint::ReconcileBeforeDisposition) => {
+                return Err(PortError::Unavailable);
+            }
+            Some(CovenFaultPoint::ReconcileStall) => {
+                return Err(PortError::Stalled);
+            }
+            _ => {}
+        }
         if let Some(disposition) = self.replay_reconciliation(&request)? {
-            self.record(FakeOperation::Reconcile)?;
             return Ok(disposition);
         }
-        match self.take(FakeOperation::Reconcile)? {
+        match self.take_script(FakeOperation::Reconcile)? {
             CovenScriptStep::Return(CovenScriptReturn::Reconcile(disposition)) => {
-                self.store_reconciliation(&request, &disposition)
+                let disposition = self.store_reconciliation(&request, &disposition)?;
+                if selected_fault == Some(CovenFaultPoint::ReconcileAfterDisposition) {
+                    Err(PortError::Unavailable)
+                } else {
+                    Ok(disposition)
+                }
             }
             CovenScriptStep::DisconnectAfterCommit(CovenScriptReturn::Reconcile(disposition)) => {
                 self.store_reconciliation(&request, &disposition)?;
@@ -888,6 +1046,98 @@ impl CovenPort for FakeCoven {
             CovenScriptStep::DisconnectBeforeCommit(_) => Err(PortError::Unavailable),
             CovenScriptStep::Stall(_) => Err(PortError::Stalled),
             _ => Err(PortError::UnexpectedCall),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CovenConformanceFixture for FakeCoven {
+    fn port(&self) -> &dyn CovenPort {
+        self
+    }
+
+    fn availability(&self, _case: CovenConformanceCase) -> FixtureAvailability {
+        FixtureAvailability::Supported
+    }
+
+    async fn restart(&mut self) {
+        *self = FakeCoven::restart(self);
+    }
+
+    async fn select_fault(&mut self, point: CovenFaultPoint) {
+        if let Ok(mut state) = self.state.lock() {
+            state.selected_fault = Some(point);
+        }
+    }
+
+    async fn clear_fault(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.selected_fault = None;
+        }
+    }
+
+    async fn reset(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = FakeState {
+                script: (*self.initial_script).clone(),
+                ..FakeState::default()
+            };
+        }
+    }
+
+    async fn observations(&self) -> CovenConformanceObservations {
+        let Ok(state) = self.state.lock() else {
+            return CovenConformanceObservations::default();
+        };
+        let count = |call| {
+            u64::try_from(
+                state
+                    .calls
+                    .iter()
+                    .filter(|candidate| **candidate == call)
+                    .count(),
+            )
+            .unwrap_or(u64::MAX)
+        };
+        let durable_reconciliation = state.reconciliations.values().next_back().and_then(
+            |(_, disposition)| match disposition {
+                ReconciliationDisposition::Returned {
+                    disposition_id,
+                    session_id,
+                    correlation,
+                    ambiguity_digest,
+                    recorded_at,
+                } => Some(DurableDispositionObservation {
+                    disposition_id: disposition_id.clone(),
+                    correlation: correlation.clone(),
+                    ambiguity_digest: ambiguity_digest.clone(),
+                    kind: DurableDispositionKind::Returned {
+                        session_id: session_id.clone(),
+                    },
+                    recorded_at: *recorded_at,
+                }),
+                ReconciliationDisposition::Fenced {
+                    disposition_id,
+                    fence_token,
+                    correlation,
+                    ambiguity_digest,
+                    recorded_at,
+                } => Some(DurableDispositionObservation {
+                    disposition_id: disposition_id.clone(),
+                    correlation: correlation.clone(),
+                    ambiguity_digest: ambiguity_digest.clone(),
+                    kind: DurableDispositionKind::Fenced {
+                        fence_token: fence_token.clone(),
+                    },
+                    recorded_at: *recorded_at,
+                }),
+                ReconciliationDisposition::Unresolved => None,
+            },
+        );
+        CovenConformanceObservations {
+            adoption_calls: count(FakeCall::Adopt),
+            reconciliation_calls: count(FakeCall::Reconcile),
+            durable_reconciliation,
         }
     }
 }

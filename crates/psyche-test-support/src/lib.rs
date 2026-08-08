@@ -4,8 +4,10 @@ pub mod coven;
 pub mod surface;
 
 pub use coven::{
-    BeforeTerminate, CovenScriptReturn, CovenScriptStep, FakeBuildError, FakeCall, FakeCoven,
-    FakeCovenBuilder, FakeError, FakeOperation, StoreTerminationPersistence,
+    BeforeTerminate, CovenConformanceCase, CovenConformanceFixture, CovenConformanceObservations,
+    CovenFaultPoint, CovenScriptReturn, CovenScriptStep, DurableDispositionKind,
+    DurableDispositionObservation, FakeBuildError, FakeCoven, FakeCovenBuilder, FakeError,
+    FakeOperation, FixtureAvailability, StoreTerminationPersistence,
 };
 pub use surface::{
     FakeSurface, FakeSurfaceBuilder, SurfaceFakeBuildError, SurfaceFakeCall, SurfaceScriptReturn,
