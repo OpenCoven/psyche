@@ -1433,6 +1433,42 @@ fn transition_append_requires_exact_version_and_prior_state() {
 }
 
 #[test]
+fn concurrent_transition_forks_have_one_durable_winner() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("private").join("psyche.sqlite3");
+    let mut first = Store::open(&path).unwrap();
+    first
+        .append_transition(&transition(1, None, "admitted"))
+        .unwrap();
+    let second = Store::open(&path).unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+
+    let left_barrier = Arc::clone(&barrier);
+    let left_thread = std::thread::spawn(move || {
+        let mut store = first;
+        left_barrier.wait();
+        store.append_transition(&transition(2, Some("admitted"), "running"))
+    });
+    let right_barrier = Arc::clone(&barrier);
+    let right_thread = std::thread::spawn(move || {
+        let mut store = second;
+        right_barrier.wait();
+        store.append_transition(&transition(2, Some("admitted"), "cancelled"))
+    });
+
+    let results = [left_thread.join().unwrap(), right_thread.join().unwrap()];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(StoreError::TransitionConflict { .. })))
+            .count(),
+        1
+    );
+    assert_eq!(Store::open(&path).unwrap().count_transitions().unwrap(), 2);
+}
+
+#[test]
 fn transition_contract_rejects_invalid_states_and_version_overflow_without_writing() {
     let (store, _dir) = test_store();
     let invalid = [
@@ -1450,6 +1486,14 @@ fn transition_contract_rejects_invalid_states_and_version_overflow_without_writi
             2,
             None,
             "running".to_owned(),
+            at("2026-08-05T12:00:00Z"),
+        ),
+        Transition::new(
+            SchemaKind::ExecutionBinding,
+            fixture_attempt_id(),
+            1,
+            Some("draft".to_owned()),
+            "admitted".to_owned(),
             at("2026-08-05T12:00:00Z"),
         ),
         Transition::new(
@@ -1701,7 +1745,7 @@ fn transition_exact_replay_is_idempotent_and_divergent_identity_conflicts() {
 }
 
 #[test]
-fn transition_exact_replay_compares_the_stored_digest() {
+fn transition_exact_replay_authenticates_the_stored_history() {
     let (mut store, _dir, path) = test_store_with_path();
     let original = transition(1, None, "admitted");
     store.append_transition(&original).unwrap();
@@ -1711,10 +1755,115 @@ fn transition_exact_replay_compares_the_stored_digest() {
             [fixture_other_digest().as_str()],
         )
         .unwrap();
-    assert!(matches!(
-        store.append_transition(&original),
-        Err(StoreError::TransitionConflict { .. })
-    ));
+    assert_database_corruption(store.append_transition(&original));
+    assert_eq!(store.count_transitions().unwrap(), 1);
+}
+
+#[test]
+fn transition_append_rejects_prior_digest_corruption_without_writing() {
+    let (mut store, _dir, path) = test_store_with_path();
+    store
+        .append_transition(&transition(1, None, "admitted"))
+        .unwrap();
+    raw_connection(&path)
+        .execute(
+            "UPDATE transitions SET transition_digest = ?1 WHERE record_version = 1",
+            [fixture_other_digest().as_str()],
+        )
+        .unwrap();
+
+    assert_database_corruption(store.append_transition(&transition(
+        2,
+        Some("admitted"),
+        "running",
+    )));
+    assert_eq!(store.count_transitions().unwrap(), 1);
+}
+
+#[test]
+fn transition_append_rejects_prior_state_corruption_without_writing() {
+    for (column, version, value, next) in [
+        (
+            "to_state",
+            1,
+            "queued",
+            transition(2, Some("admitted"), "running"),
+        ),
+        (
+            "from_state",
+            2,
+            "queued",
+            transition(3, Some("running"), "completed"),
+        ),
+    ] {
+        let (mut store, _dir, path) = test_store_with_path();
+        store
+            .append_transition(&transition(1, None, "admitted"))
+            .unwrap();
+        if version == 2 {
+            store
+                .append_transition(&transition(2, Some("admitted"), "running"))
+                .unwrap();
+        }
+        raw_connection(&path)
+            .execute(
+                &format!("UPDATE transitions SET {column} = ?1 WHERE record_version = ?2"),
+                rusqlite::params![value, version],
+            )
+            .unwrap();
+        let count = store.count_transitions().unwrap();
+
+        assert_database_corruption(store.append_transition(&next));
+        assert_eq!(store.count_transitions().unwrap(), count);
+    }
+}
+
+#[test]
+fn transition_append_rejects_stored_version_gap_without_writing() {
+    let (mut store, _dir, path) = test_store_with_path();
+    store
+        .append_transition(&transition(1, None, "admitted"))
+        .unwrap();
+    store
+        .append_transition(&transition(2, Some("admitted"), "running"))
+        .unwrap();
+    raw_connection(&path)
+        .execute(
+            "UPDATE transitions SET record_version = 3 WHERE record_version = 2",
+            [],
+        )
+        .unwrap();
+
+    assert_database_corruption(store.append_transition(&transition(
+        4,
+        Some("running"),
+        "completed",
+    )));
+    assert_eq!(store.count_transitions().unwrap(), 2);
+}
+
+#[test]
+fn transition_append_rejects_noncanonical_stored_timestamp_without_writing() {
+    let (mut store, _dir, path) = test_store_with_path();
+    store
+        .append_transition(&transition(1, None, "admitted"))
+        .unwrap();
+    raw_connection(&path)
+        .execute(
+            "
+            UPDATE transitions
+            SET created_at = '2026-08-05T12:00:01+00:00'
+            WHERE record_version = 1
+            ",
+            [],
+        )
+        .unwrap();
+
+    assert_database_corruption(store.append_transition(&transition(
+        2,
+        Some("admitted"),
+        "running",
+    )));
     assert_eq!(store.count_transitions().unwrap(), 1);
 }
 

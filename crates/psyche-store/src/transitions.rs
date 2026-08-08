@@ -1,7 +1,7 @@
 use psyche_core::contracts::{ContractError, SchemaKind};
 use psyche_core::digest::{Sha256Digest, digest};
 use psyche_core::id::RecordId;
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use rusqlite::{TransactionBehavior, params};
 use time::format_description::well_known::Rfc3339;
 
 use crate::{Store, StoreError, records};
@@ -120,7 +120,7 @@ impl Transition {
         if self.record_version == 0 {
             return Err(invalid(self.kind, "record_version"));
         }
-        if self.record_version > 1 && self.from_state.is_none() {
+        if (self.record_version == 1) != self.from_state.is_none() {
             return Err(invalid(self.kind, "from_state"));
         }
         if let Some(from_state) = &self.from_state {
@@ -151,78 +151,26 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing: Option<StoredTransition> = transaction
-            .query_row(
-                "
-                    SELECT
-                        kind,
-                        record_id,
-                        from_state,
-                        to_state,
-                        record_version,
-                        transition_digest,
-                        created_at
-                    FROM transitions
-                    WHERE kind = ?1 AND record_id = ?2 AND record_version = ?3
-                    ",
-                params![
-                    records::kind_key(transition.kind),
-                    transition.record_id.as_str(),
-                    sql_version,
-                ],
-                |row| {
-                    Ok(StoredTransition {
-                        kind: row.get(0)?,
-                        record_id: row.get(1)?,
-                        from_state: row.get(2)?,
-                        to_state: row.get(3)?,
-                        record_version: row.get(4)?,
-                        transition_digest: row.get(5)?,
-                        created_at: row.get(6)?,
-                    })
-                },
-            )
-            .optional()?;
-        if let Some(stored) = existing {
-            if stored.kind == records::kind_key(transition.kind)
-                && stored.record_id == transition.record_id.as_str()
-                && stored.from_state == transition.from_state
-                && stored.to_state == transition.to_state
-                && stored.record_version == sql_version
-                && stored.transition_digest == transition.transition_digest.as_str()
-                && stored.created_at == created_at
-            {
+        let history = authenticated_history(&transaction, transition.kind, &transition.record_id)?;
+        if let Some(stored) = history
+            .iter()
+            .find(|stored| stored.record_version == transition.record_version)
+        {
+            if stored == transition {
                 transaction.commit()?;
                 return Ok(());
             }
             return Err(transition_conflict(transition));
         }
 
-        let latest: Option<(i64, String)> = transaction
-            .query_row(
-                "
-                SELECT record_version, to_state
-                FROM transitions
-                WHERE kind = ?1 AND record_id = ?2
-                ORDER BY record_version DESC
-                LIMIT 1
-                ",
-                params![
-                    records::kind_key(transition.kind),
-                    transition.record_id.as_str()
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let valid_position = match latest {
+        let valid_position = match history.last() {
             None => transition.record_version == 1,
-            Some((previous_version, previous_state)) => {
-                let previous_version =
-                    u64::try_from(previous_version).map_err(|_| StoreError::DatabaseCorruption)?;
-                previous_version
+            Some(previous) => {
+                previous
+                    .record_version
                     .checked_add(1)
                     .is_some_and(|next| next == transition.record_version)
-                    && transition.from_state.as_deref() == Some(previous_state.as_str())
+                    && transition.from_state.as_deref() == Some(previous.to_state.as_str())
             }
         };
         if !valid_position {
@@ -263,6 +211,100 @@ impl Store {
                 .query_row("SELECT COUNT(*) FROM transitions", [], |row| row.get(0))?;
         count.try_into().map_err(|_| StoreError::DatabaseOperation)
     }
+}
+
+fn authenticated_history(
+    connection: &rusqlite::Connection,
+    kind: SchemaKind,
+    record_id: &RecordId,
+) -> Result<Vec<Transition>, StoreError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT
+            kind,
+            record_id,
+            from_state,
+            to_state,
+            record_version,
+            transition_digest,
+            created_at
+        FROM transitions
+        WHERE kind = ?1 AND record_id = ?2
+        ORDER BY record_version ASC
+        ",
+    )?;
+    let stored = statement
+        .query_map(
+            params![records::kind_key(kind), record_id.as_str()],
+            |row| {
+                Ok(StoredTransition {
+                    kind: row.get(0)?,
+                    record_id: row.get(1)?,
+                    from_state: row.get(2)?,
+                    to_state: row.get(3)?,
+                    record_version: row.get(4)?,
+                    transition_digest: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|_| StoreError::DatabaseCorruption)?;
+
+    authenticate_stored_history(stored, kind, record_id)
+}
+
+fn authenticate_stored_history(
+    stored: Vec<StoredTransition>,
+    expected_kind: SchemaKind,
+    expected_id: &RecordId,
+) -> Result<Vec<Transition>, StoreError> {
+    let mut history = Vec::with_capacity(stored.len());
+    let mut expected_version = 1_u64;
+
+    for row in stored {
+        let record_version =
+            u64::try_from(row.record_version).map_err(|_| StoreError::DatabaseCorruption)?;
+        let created_at = time::OffsetDateTime::parse(&row.created_at, &Rfc3339)
+            .map_err(|_| StoreError::DatabaseCorruption)?;
+        let reconstructed = Transition::new(
+            expected_kind,
+            expected_id.clone(),
+            record_version,
+            row.from_state.clone(),
+            row.to_state.clone(),
+            created_at,
+        )
+        .map_err(|_| StoreError::DatabaseCorruption)?;
+        let canonical_created_at = reconstructed
+            .created_at
+            .format(&Rfc3339)
+            .map_err(|_| StoreError::DatabaseCorruption)?;
+
+        if row.kind != records::kind_key(reconstructed.kind)
+            || row.record_id != reconstructed.record_id.as_str()
+            || row.from_state != reconstructed.from_state
+            || row.to_state != reconstructed.to_state
+            || row.record_version
+                != i64::try_from(reconstructed.record_version)
+                    .map_err(|_| StoreError::DatabaseCorruption)?
+            || row.transition_digest != reconstructed.transition_digest.as_str()
+            || row.created_at != canonical_created_at
+            || reconstructed.record_version != expected_version
+            || history.last().is_some_and(|previous: &Transition| {
+                reconstructed.from_state.as_deref() != Some(previous.to_state.as_str())
+            })
+        {
+            return Err(StoreError::DatabaseCorruption);
+        }
+
+        expected_version = expected_version
+            .checked_add(1)
+            .ok_or(StoreError::DatabaseCorruption)?;
+        history.push(reconstructed);
+    }
+
+    Ok(history)
 }
 
 fn validate_state(
