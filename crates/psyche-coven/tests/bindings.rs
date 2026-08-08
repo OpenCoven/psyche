@@ -137,10 +137,10 @@ fn content_reference_rejects_digest_size_media_type_and_lifetime_mismatch() {
     zero.size_bytes = 0;
     assert!(zero.validate().is_err());
     let mut oversized = reference.clone();
-    oversized.size_bytes = (i64::MAX as u64) + 1;
+    oversized.size_bytes = 9_007_199_254_740_992;
     assert!(oversized.validate().is_err());
     let mut maximum = reference.clone();
-    maximum.size_bytes = i64::MAX as u64;
+    maximum.size_bytes = 9_007_199_254_740_991;
     maximum.validate().unwrap();
     let maximum: ContentAddressedReference =
         serde_json::from_value(serde_json::to_value(maximum).unwrap()).unwrap();
@@ -238,7 +238,7 @@ fn content_reference_rejects_digest_size_media_type_and_lifetime_mismatch() {
 
     for pointer in ["/result/size_bytes", "/artifacts/0/content/size_bytes"] {
         let mut value: serde_json::Value = serde_json::from_slice(RESULT_GOLDEN).unwrap();
-        *value.pointer_mut(pointer).unwrap() = serde_json::json!(i64::MAX as u64);
+        *value.pointer_mut(pointer).unwrap() = serde_json::json!(9_007_199_254_740_991_u64);
         let bundle: ResultBundle = serde_json::from_value(value).unwrap();
         bundle.validate().unwrap();
     }

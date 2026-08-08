@@ -715,6 +715,7 @@ name = "psyche-test-support"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "proptest",
  "psyche-core",
  "psyche-coven",
  "psyche-store",

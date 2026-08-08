@@ -13,12 +13,13 @@ psyche-core = { workspace = true }
 psyche-coven = { workspace = true }
 psyche-store = { workspace = true }
 psyche-surfaces = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+proptest = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]
