@@ -28,7 +28,11 @@ pub(crate) enum DatabaseFileState {
 
 pub(crate) fn prepare(path: &Path) -> Result<(PathBuf, DatabaseFileState), StoreError> {
     validate_path(path)?;
-    prepare_parent_directory(path)?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    prepare_data_dir(parent)?;
     let state = prepare_database_file(path)?;
     let open_path = database_open_path(path)?;
     Ok((open_path, state))
@@ -393,22 +397,23 @@ fn validate_path(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn prepare_parent_directory(path: &Path) -> Result<(), StoreError> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-
-    match fs::symlink_metadata(parent) {
-        Ok(metadata) => validate_parent_metadata(&metadata)?,
-        Err(error) if error.kind() == ErrorKind::NotFound => create_parent_directory(parent)?,
+pub(crate) fn prepare_data_dir(path: &Path) -> Result<bool, StoreError> {
+    let existed = match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            validate_parent_metadata(&metadata)?;
+            true
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            create_parent_directory(path)?;
+            false
+        }
         Err(error) => return Err(StoreError::directory_operation(error)),
-    }
+    };
 
-    let metadata = fs::symlink_metadata(parent).map_err(StoreError::directory_operation)?;
+    let metadata = fs::symlink_metadata(path).map_err(StoreError::directory_operation)?;
     validate_parent_metadata(&metadata)?;
 
-    Ok(())
+    Ok(existed)
 }
 
 fn validate_parent_metadata(metadata: &fs::Metadata) -> Result<(), StoreError> {
@@ -420,7 +425,7 @@ fn validate_parent_metadata(metadata: &fs::Metadata) -> Result<(), StoreError> {
     {
         use std::os::unix::fs::PermissionsExt;
 
-        if metadata.permissions().mode() & 0o777 != 0o700 {
+        if metadata.permissions().mode() & 0o7777 != 0o700 {
             return Err(StoreError::InvalidDatabasePath);
         }
     }

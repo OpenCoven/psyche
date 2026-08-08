@@ -631,6 +631,7 @@ dependencies = [
  "predicates",
  "psyche-config",
  "psyche-runtime",
+ "psyche-store",
  "serde_json",
  "tempfile",
  "tokio",
@@ -681,6 +682,9 @@ name = "psyche-runtime"
 version = "0.0.0"
 dependencies = [
  "psyche-config",
+ "psyche-store",
+ "rusqlite",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

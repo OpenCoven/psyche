@@ -9,7 +9,7 @@ use std::{
     thread,
 };
 
-use psyche_store::{CURRENT_DATABASE_VERSION, Store, StoreError};
+use psyche_store::{CURRENT_DATABASE_VERSION, Store, StoreError, prepare_data_dir};
 use rusqlite::Connection;
 use support::{
     FOUNDATION_TABLES, Fixture, execute_batch, fixture_db, foundation_tables, journal_mode,
@@ -38,6 +38,53 @@ fn fresh_store_applies_v1_once_and_reopens() {
 
     assert_private_directory(&parent);
     assert_private_file(&path);
+}
+
+#[test]
+fn data_dir_initializer_creates_a_runtime_compatible_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("nested").join("psyche");
+
+    assert!(!prepare_data_dir(&data_dir).unwrap());
+    assert_private_directory(&data_dir);
+    assert!(prepare_data_dir(&data_dir).unwrap());
+
+    drop(Store::open(&data_dir.join("psyche.sqlite3")).unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn data_dir_initializer_rejects_an_existing_insecure_nonempty_directory_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("shared");
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::write(data_dir.join("operator-data"), b"preserve").unwrap();
+    set_mode(&data_dir, 0o755);
+
+    assert!(matches!(
+        prepare_data_dir(&data_dir),
+        Err(StoreError::InvalidDatabasePath)
+    ));
+    assert_eq!(mode(&data_dir), 0o755);
+    assert_eq!(
+        std::fs::read(data_dir.join("operator-data")).unwrap(),
+        b"preserve"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn data_dir_initializer_rejects_special_permission_bits_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("setuid");
+    std::fs::create_dir(&data_dir).unwrap();
+    set_mode(&data_dir, 0o1700);
+
+    assert!(matches!(
+        prepare_data_dir(&data_dir),
+        Err(StoreError::InvalidDatabasePath)
+    ));
+    assert_eq!(mode(&data_dir), 0o1700);
 }
 
 #[test]
@@ -744,7 +791,7 @@ fn assert_private_file(path: &Path) {
 fn mode(path: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
 
-    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
 #[cfg(unix)]

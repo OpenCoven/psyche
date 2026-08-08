@@ -29,6 +29,20 @@ pub use records::IngestOutcome;
 pub use retention::PruneReport;
 pub use transitions::Transition;
 
+/// Prepares a directory suitable for the durable store.
+///
+/// Missing directories are created with owner-only permissions on Unix.
+/// Existing directories are validated but never have their permissions
+/// changed. Returns whether the directory already existed.
+///
+/// # Errors
+///
+/// Returns [`StoreError`] when the path cannot be created or does not satisfy
+/// the store's directory safety requirements.
+pub fn prepare_data_dir(path: &Path) -> Result<bool, StoreError> {
+    connection::prepare_data_dir(path)
+}
+
 /// A configured connection to Psyche's durable SQLite substrate.
 #[derive(Debug)]
 pub struct Store {
