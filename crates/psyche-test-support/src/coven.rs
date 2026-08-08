@@ -195,13 +195,22 @@ pub enum FixtureAvailability {
     },
 }
 
-/// A payload-free conformance fixture control failure.
+/// Eligibility reported by the durable reconciliation authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedispatchEligibility {
+    /// Redispatch is forbidden because no durable fence exists.
+    Blocked,
+    /// A durable fence makes a separate redispatch decision eligible.
+    EligibleAfterFence,
+}
+
+/// Structured conformance-fixture control failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FixtureControlError {
-    /// The fixture does not implement the selected fault point.
+    /// The selected fault is not implemented by this fixture.
     #[error("fixture fault point is unsupported")]
     UnsupportedFault,
-    /// The fixture control state could not be accessed.
+    /// The fixture runtime control state is unavailable.
     #[error("fixture control state is unavailable")]
     Unavailable,
 }
@@ -215,9 +224,6 @@ pub trait CovenConformanceFixture {
     /// Reports whether the fixture can execute a case.
     fn availability(&self, case: CovenConformanceCase) -> FixtureAvailability;
 
-    /// Reports whether the fixture implements a fault point.
-    fn supports(&self, point: CovenFaultPoint) -> bool;
-
     /// Restarts the fixture while retaining its durable state.
     async fn restart(&mut self);
 
@@ -225,13 +231,19 @@ pub trait CovenConformanceFixture {
     async fn select_fault(&mut self, point: CovenFaultPoint) -> Result<(), FixtureControlError>;
 
     /// Clears the selected fault.
-    async fn clear_fault(&mut self);
+    async fn clear_fault(&mut self) -> Result<(), FixtureControlError>;
 
     /// Restores the fixture to its initial clean state and script.
     async fn reset(&mut self);
 
     /// Returns an immutable, payload-free observation snapshot.
     async fn observations(&self) -> CovenConformanceObservations;
+
+    /// Queries durable redispatch eligibility without dispatching work.
+    async fn redispatch_eligibility(
+        &self,
+        correlation: &ExecutionCorrelation,
+    ) -> Result<RedispatchEligibility, FixtureControlError>;
 }
 
 /// Typed response carried by a successful fake script step.
@@ -345,7 +357,19 @@ struct FakeState {
     termination_in_flight: BTreeMap<String, Arc<AsyncMutex<()>>>,
 }
 
-/// Honest, deterministic, thread-safe Coven fake.
+/// Honest, deterministic, thread-safe low-level Coven port fake.
+///
+/// `FakeCoven` deliberately is not a reusable conformance fixture; arbitrary
+/// scripts cannot truthfully advertise support for the complete mandatory
+/// fault matrix.
+///
+/// ```compile_fail
+/// use psyche_test_support::{CovenConformanceFixture, FakeCoven};
+///
+/// fn require_conformance_fixture(_: &dyn CovenConformanceFixture) {}
+/// let fake = FakeCoven::builder().build().unwrap();
+/// require_conformance_fixture(&fake);
+/// ```
 #[derive(Clone)]
 pub struct FakeCoven {
     contract: String,
@@ -1115,33 +1139,15 @@ impl CovenPort for FakeCoven {
     }
 }
 
-#[async_trait::async_trait]
-impl CovenConformanceFixture for FakeCoven {
-    fn port(&self) -> &dyn CovenPort {
-        self
-    }
-
-    fn availability(&self, _case: CovenConformanceCase) -> FixtureAvailability {
-        FixtureAvailability::ExpectedUnsupported {
-            code: "task_9_conformance_case_not_implemented".to_owned(),
-        }
-    }
-
-    fn supports(&self, point: CovenFaultPoint) -> bool {
-        matches!(
+impl FakeCoven {
+    /// Selects one of the low-level reconciliation faults implemented by this fake.
+    pub async fn select_fault(&self, point: CovenFaultPoint) -> Result<(), FixtureControlError> {
+        if !matches!(
             point,
             CovenFaultPoint::ReconcileBeforeDisposition
                 | CovenFaultPoint::ReconcileAfterDisposition
                 | CovenFaultPoint::ReconcileStall
-        )
-    }
-
-    async fn restart(&mut self) {
-        *self = FakeCoven::restart(self);
-    }
-
-    async fn select_fault(&mut self, point: CovenFaultPoint) -> Result<(), FixtureControlError> {
-        if !self.supports(point) {
+        ) {
             return Err(FixtureControlError::UnsupportedFault);
         }
         let mut state = self
@@ -1152,13 +1158,18 @@ impl CovenConformanceFixture for FakeCoven {
         Ok(())
     }
 
-    async fn clear_fault(&mut self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.selected_fault = None;
-        }
+    /// Clears the selected low-level reconciliation fault.
+    pub async fn clear_fault(&self) -> Result<(), FixtureControlError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| FixtureControlError::Unavailable)?;
+        state.selected_fault = None;
+        Ok(())
     }
 
-    async fn reset(&mut self) {
+    /// Restores the fake to its initial script and clears all recorded state.
+    pub async fn reset(&self) {
         if let Ok(mut state) = self.state.lock() {
             *state = FakeState {
                 script: (*self.initial_script).clone(),
@@ -1167,7 +1178,8 @@ impl CovenConformanceFixture for FakeCoven {
         }
     }
 
-    async fn observations(&self) -> CovenConformanceObservations {
+    /// Returns a redacted snapshot of low-level calls and durable reconciliation state.
+    pub async fn observations(&self) -> CovenConformanceObservations {
         let Ok(state) = self.state.lock() else {
             return CovenConformanceObservations::default();
         };
@@ -1223,6 +1235,34 @@ impl CovenConformanceFixture for FakeCoven {
             reconciliation_calls: count(FakeCall::Reconcile),
             durable_reconciliation,
         }
+    }
+
+    /// Reports whether a durable reconciliation fence permits a later redispatch decision.
+    pub async fn redispatch_eligibility(
+        &self,
+        correlation: &ExecutionCorrelation,
+    ) -> Result<RedispatchEligibility, FixtureControlError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| FixtureControlError::Unavailable)?;
+        Ok(
+            match state
+                .reconciliations
+                .get(correlation.request_id.as_str())
+                .filter(|(request, _)| request.correlation == *correlation)
+                .map(|(_, disposition)| disposition)
+            {
+                Some(ReconciliationDisposition::Fenced { .. }) => {
+                    RedispatchEligibility::EligibleAfterFence
+                }
+                Some(
+                    ReconciliationDisposition::Returned { .. }
+                    | ReconciliationDisposition::Unresolved,
+                )
+                | None => RedispatchEligibility::Blocked,
+            },
+        )
     }
 }
 

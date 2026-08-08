@@ -8,7 +8,8 @@ pub use coven::{
     BeforeTerminate, CovenConformanceCase, CovenConformanceFixture, CovenConformanceObservations,
     CovenFaultPoint, CovenScriptReturn, CovenScriptStep, DurableDispositionKind,
     DurableDispositionObservation, FakeBuildError, FakeCoven, FakeCovenBuilder, FakeError,
-    FakeOperation, FixtureAvailability, FixtureControlError, StoreTerminationPersistence,
+    FakeOperation, FixtureAvailability, FixtureControlError, RedispatchEligibility,
+    StoreTerminationPersistence,
 };
 pub use suites::{
     ConformanceOutcome, ScriptedG2Fixture, UnsupportedCovenFixture,

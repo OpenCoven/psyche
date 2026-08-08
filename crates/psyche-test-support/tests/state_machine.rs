@@ -22,7 +22,8 @@ use psyche_store::{
     QuarantineResolutionCode, ResolveQuarantineOutcome, Store, StoreError, Transition,
 };
 use psyche_test_support::{
-    CovenConformanceFixture, CovenFaultPoint, DurableDispositionKind, scripted_fixture,
+    CovenConformanceFixture, CovenFaultPoint, DurableDispositionKind, RedispatchEligibility,
+    scripted_fixture,
 };
 use serde_json::{Map, json};
 use tempfile::TempDir;
@@ -96,25 +97,20 @@ impl Arbitrary for FoundationOperation {
     }
 }
 
-impl FoundationOperation {
+impl OperationOutcome {
     fn must_preserve_logical_state(&self) -> bool {
         matches!(
             self,
-            Self::IdenticalReinsert { .. }
-                | Self::ConflictingReinsert { .. }
-                | Self::InvalidDirectInsertSchema { .. }
-                | Self::InvalidDirectInsertFieldId { .. }
-                | Self::ReplayBindingRevision { .. }
-                | Self::InvalidBindingRevision { .. }
-                | Self::AppendDuplicateVersion { .. }
-                | Self::InvalidTransitionDigest { .. }
-                | Self::InvalidTransitionKind { .. }
-                | Self::ResolveQuarantineReplay { .. }
-                | Self::ResolveQuarantineUnknown
-                | Self::ResolveQuarantineStale { .. }
-                | Self::ResolveQuarantineConflict { .. }
-                | Self::Checkpoint
-                | Self::Reopen
+            Self::AlreadyPresent
+                | Self::Conflict
+                | Self::Invalid
+                | Self::NoTarget
+                | Self::AlreadyResolved
+                | Self::NotFound
+                | Self::StaleResolution
+                | Self::ResolutionConflict
+                | Self::Checkpointed
+                | Self::Reopened
         )
     }
 }
@@ -373,7 +369,7 @@ impl FoundationModel {
         outcome: OperationOutcome,
     ) -> FoundationStep {
         let snapshot = self.snapshot();
-        if operation.must_preserve_logical_state() {
+        if outcome.must_preserve_logical_state() {
             assert_eq!(snapshot, before, "{operation:?}");
         }
         FoundationStep { outcome, snapshot }
@@ -758,7 +754,7 @@ fn store_step(
     outcome: OperationOutcome,
 ) -> FoundationStep {
     let snapshot = store_snapshot(harness);
-    if operation.must_preserve_logical_state() {
+    if outcome.must_preserve_logical_state() {
         assert_eq!(snapshot, before, "{operation:?}");
     }
     FoundationStep { outcome, snapshot }
@@ -1102,7 +1098,7 @@ impl Arbitrary for CovenRecoveryOperation {
     fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
         prop_oneof![
             4 => Just(Self::MarkAmbiguous),
-            5 => (any::<bool>(), 0_u8..3)
+            5 => (any::<bool>(), 0_u8..11)
                 .prop_map(|(fenced, mutation)| Self::Reconcile { fenced, mutation }),
             3 => (any::<bool>(), any::<bool>()).prop_map(|(fenced, stall)| {
                 Self::DisconnectBeforeDisposition { fenced, stall }
@@ -1165,8 +1161,18 @@ fn reconciliation_for(correlation: ExecutionCorrelation, fenced: bool) -> Reconc
 fn mutate_reconciliation(request: &ReconciliationRequest, mutation: u8) -> ReconciliationRequest {
     let mut changed = request.clone();
     match mutation {
-        1 => changed.correlation.project_id = "project:sha256:changed".to_owned(),
-        2 => changed.ambiguity_digest = digest_of('e'),
+        1 => changed.correlation.request_id = request_id(11),
+        2 => changed.correlation.request_digest = digest_of('a'),
+        3 => {
+            changed.correlation.familiar_snapshot_id = record_id(RecordKind::IdentitySnapshot, 11);
+        }
+        4 => changed.correlation.project_id = "project:sha256:changed".to_owned(),
+        5 => changed.correlation.graph_id = record_id(RecordKind::Graph, 11),
+        6 => changed.correlation.node_id = record_id(RecordKind::GraphNode, 11),
+        7 => changed.correlation.attempt_id = record_id(RecordKind::Attempt, 11),
+        8 => changed.correlation.created_at += Duration::seconds(1),
+        9 => changed.correlation.valid_until -= Duration::seconds(1),
+        10 => changed.ambiguity_digest = digest_of('e'),
         _ => {}
     }
     changed
@@ -1192,7 +1198,22 @@ async fn compare_c_s6_model_and_fixture(
                     fixture.port().adopt(adoption.clone()).await,
                     Err(PortError::Unavailable)
                 );
-                fixture.clear_fault().await;
+                fixture
+                    .clear_fault()
+                    .await
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                fixture
+                    .select_fault(CovenFaultPoint::LookupAfterRead)
+                    .await
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                prop_assert_eq!(
+                    fixture.port().lookup(&correlation.request_id).await,
+                    Err(PortError::Unavailable)
+                );
+                fixture
+                    .clear_fault()
+                    .await
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 model = CovenRecoveryModel {
                     state: RecoveryState::Ambiguous,
                     adoption_calls: 1,
@@ -1217,7 +1238,7 @@ async fn compare_c_s6_model_and_fixture(
                 };
                 let candidate = mutate_reconciliation(&candidate, mutation);
                 let changed = if model.state == RecoveryState::Ambiguous {
-                    mutation == 1
+                    (1..=9).contains(&mutation)
                 } else {
                     candidate != exact
                 };
@@ -1258,6 +1279,7 @@ async fn compare_c_s6_model_and_fixture(
                 };
                 prop_assert_eq!(fixture.port().reconcile(request).await, Err(expected));
                 fixture.restart().await;
+                model.adoption_calls = 0;
                 prop_assert!(
                     fixture
                         .observations()
@@ -1265,7 +1287,10 @@ async fn compare_c_s6_model_and_fixture(
                         .durable_reconciliation
                         .is_none()
                 );
-                fixture.clear_fault().await;
+                fixture
+                    .clear_fault()
+                    .await
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
             }
             CovenRecoveryOperation::DisconnectAfterDisposition { fenced }
                 if model.state == RecoveryState::Ambiguous =>
@@ -1285,22 +1310,54 @@ async fn compare_c_s6_model_and_fixture(
                     .durable_reconciliation
                     .ok_or_else(|| TestCaseError::fail("after-commit disposition was lost"))?;
                 fixture.restart().await;
-                fixture.clear_fault().await;
+                model.adoption_calls = 0;
+                fixture
+                    .clear_fault()
+                    .await
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let disposition = fixture
                     .port()
                     .reconcile(request.clone())
                     .await
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
-                prop_assert_eq!(
-                    committed.disposition_id.as_str(),
-                    match &disposition {
-                        ReconciliationDisposition::Returned { disposition_id, .. }
-                        | ReconciliationDisposition::Fenced { disposition_id, .. } => {
-                            disposition_id.as_str()
+                let expected_kind = match &disposition {
+                    ReconciliationDisposition::Returned {
+                        disposition_id,
+                        session_id,
+                        correlation,
+                        ambiguity_digest,
+                        recorded_at,
+                    } => {
+                        prop_assert_eq!(&committed.disposition_id, disposition_id);
+                        prop_assert_eq!(&committed.correlation, correlation);
+                        prop_assert_eq!(&committed.ambiguity_digest, ambiguity_digest);
+                        prop_assert_eq!(committed.recorded_at, *recorded_at);
+                        DurableDispositionKind::Returned {
+                            session_id: session_id.clone(),
                         }
-                        ReconciliationDisposition::Unresolved => "",
                     }
-                );
+                    ReconciliationDisposition::Fenced {
+                        disposition_id,
+                        fence_token,
+                        correlation,
+                        ambiguity_digest,
+                        recorded_at,
+                    } => {
+                        prop_assert_eq!(&committed.disposition_id, disposition_id);
+                        prop_assert_eq!(&committed.correlation, correlation);
+                        prop_assert_eq!(&committed.ambiguity_digest, ambiguity_digest);
+                        prop_assert_eq!(committed.recorded_at, *recorded_at);
+                        DurableDispositionKind::Fenced {
+                            fence_token: fence_token.clone(),
+                        }
+                    }
+                    ReconciliationDisposition::Unresolved => {
+                        return Err(TestCaseError::fail(
+                            "after-commit terminal replay became unresolved",
+                        ));
+                    }
+                };
+                prop_assert_eq!(committed.kind, expected_kind);
                 model.state = if fenced {
                     RecoveryState::Fenced
                 } else {
@@ -1309,7 +1366,10 @@ async fn compare_c_s6_model_and_fixture(
                 model.request = Some(request);
                 model.disposition = Some(disposition);
             }
-            CovenRecoveryOperation::Restart => fixture.restart().await,
+            CovenRecoveryOperation::Restart => {
+                fixture.restart().await;
+                model.adoption_calls = 0;
+            }
             CovenRecoveryOperation::AttemptRedispatch => {
                 let decision = match model.state {
                     RecoveryState::Fenced => RecoveryDispatchDecision::RedispatchEligible,
@@ -1324,9 +1384,16 @@ async fn compare_c_s6_model_and_fixture(
                     prop_assert_eq!(decision, RecoveryDispatchDecision::Rejected);
                 }
                 let before = fixture.observations().await.adoption_calls;
-                if decision == RecoveryDispatchDecision::RedispatchEligible {
-                    prop_assert_eq!(model.state, RecoveryState::Fenced);
-                }
+                let actual = fixture
+                    .redispatch_eligibility(&correlation)
+                    .await
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let expected = if decision == RecoveryDispatchDecision::RedispatchEligible {
+                    RedispatchEligibility::EligibleAfterFence
+                } else {
+                    RedispatchEligibility::Blocked
+                };
+                prop_assert_eq!(actual, expected);
                 prop_assert_eq!(fixture.observations().await.adoption_calls, before);
             }
             _ => {}
@@ -1372,7 +1439,7 @@ async fn compare_c_s6_model_and_fixture(
 #[derive(Debug, Clone)]
 enum RequestDigestOperation {
     ConstructRequest { input: bool },
-    ReplayRequest,
+    Replay,
     MutateRequestFieldRetainDigest { field: u8 },
     Restart,
 }
@@ -1384,7 +1451,7 @@ impl Arbitrary for RequestDigestOperation {
     fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
         prop_oneof![
             4 => any::<bool>().prop_map(|input| Self::ConstructRequest { input }),
-            3 => Just(Self::ReplayRequest),
+            3 => Just(Self::Replay),
             6 => any::<u8>().prop_map(|field| Self::MutateRequestFieldRetainDigest { field }),
             2 => Just(Self::Restart),
         ]
@@ -1440,9 +1507,10 @@ async fn compare_request_digest_model_and_fixture(
                 model.request = Some(request);
                 model.disposition = Some(disposition);
             }
-            RequestDigestOperation::ReplayRequest => {
+            RequestDigestOperation::Replay => {
                 if let (Some(request), Some(disposition)) = (&model.request, &model.disposition) {
                     fixture.restart().await;
+                    model.adoption_calls = 0;
                     prop_assert_eq!(
                         fixture.port().adopt(request.clone()).await,
                         Ok(disposition.clone())
@@ -1458,14 +1526,28 @@ async fn compare_request_digest_model_and_fixture(
                         fixture.port().adopt(forged.clone()).await,
                         Err(PortError::RequestDigestMismatch)
                     );
-                    prop_assert_eq!(fixture.observations().await, before);
+                    let after = fixture.observations().await;
+                    prop_assert_eq!(after.adoption_calls, before.adoption_calls);
+                    prop_assert_eq!(after.durable_reconciliation, before.durable_reconciliation);
+                    let forged_id = forged.correlation().request_id;
+                    if forged_id != request.correlation().request_id {
+                        prop_assert_ne!(
+                            fixture.port().lookup(&forged_id).await,
+                            Ok(AdoptionDisposition::Adopted {
+                                session_id: "session-1".to_owned(),
+                            })
+                        );
+                    }
                     prop_assert_eq!(
                         fixture.port().adopt(request.clone()).await,
                         Ok(model.disposition.clone().unwrap())
                     );
                 }
             }
-            RequestDigestOperation::Restart => fixture.restart().await,
+            RequestDigestOperation::Restart => {
+                fixture.restart().await;
+                model.adoption_calls = 0;
+            }
         }
         prop_assert_eq!(
             fixture.observations().await.adoption_calls,
@@ -1629,6 +1711,20 @@ proptest! {
     ) {
         runtime().block_on(compare_request_digest_model_and_fixture(operations))?;
     }
+}
+
+#[test]
+fn c_s6_fixture_reports_fence_eligibility_without_redispatch() {
+    runtime()
+        .block_on(compare_c_s6_model_and_fixture(vec![
+            CovenRecoveryOperation::MarkAmbiguous,
+            CovenRecoveryOperation::Reconcile {
+                fenced: true,
+                mutation: 0,
+            },
+            CovenRecoveryOperation::AttemptRedispatch,
+        ]))
+        .unwrap();
 }
 
 proptest! {

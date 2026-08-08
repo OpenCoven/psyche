@@ -23,10 +23,16 @@ use psyche_coven::{
 use psyche_store::{Store, StoreError};
 use psyche_surfaces::{DeliveryDisposition, SurfaceAcceptance, SurfacePort};
 use psyche_test_support::{
-    CovenConformanceCase, CovenConformanceFixture, CovenConformanceObservations, CovenFaultPoint,
+    ConformanceOutcome, CovenConformanceFixture, CovenConformanceObservations, CovenFaultPoint,
     CovenScriptReturn, CovenScriptStep, DurableDispositionKind, DurableDispositionObservation,
-    FakeBuildError, FakeCoven, FakeOperation, FakeSurface, FixtureAvailability,
-    FixtureControlError, StoreTerminationPersistence, SurfaceScriptReturn, SurfaceScriptStep,
+    FakeBuildError, FakeCoven, FakeOperation, FakeSurface, FixtureControlError,
+    StoreTerminationPersistence, SurfaceScriptReturn, SurfaceScriptStep,
+    assert_c_s1_contract_negotiation, assert_c_s2_session_lifecycle,
+    assert_c_s3_snapshot_attempt_binding, assert_c_s4_stable_adoption,
+    assert_c_s5_non_adoption_proof, assert_c_s6_ambiguity_fence, assert_c_s7_ordered_cursor,
+    assert_c_s8_terminal_authority, assert_c_s9_cancellation_acknowledgement,
+    assert_c_s10_result_artifact_binding, assert_c_s11_restart_persistence,
+    assert_c_s12_structured_denial, unsupported_fixture,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -39,6 +45,36 @@ const RESULT_GOLDEN: &[u8] = include_bytes!("../../psyche-coven/tests/fixtures/r
 
 fn at(value: &str) -> OffsetDateTime {
     OffsetDateTime::parse(value, &Rfc3339).unwrap()
+}
+
+#[tokio::test]
+async fn unsupported_coven_fixture_executes_every_structured_public_denial() {
+    macro_rules! assert_unsupported {
+        ($suite:path) => {{
+            let mut fixture = unsupported_fixture("CapabilityMissing");
+            let before = fixture.observations().await;
+            assert_eq!(
+                $suite(&mut fixture).await,
+                ConformanceOutcome::ExpectedUnsupported {
+                    code: "CapabilityMissing".to_owned(),
+                }
+            );
+            assert_eq!(fixture.observations().await, before);
+        }};
+    }
+
+    assert_unsupported!(assert_c_s1_contract_negotiation);
+    assert_unsupported!(assert_c_s2_session_lifecycle);
+    assert_unsupported!(assert_c_s3_snapshot_attempt_binding);
+    assert_unsupported!(assert_c_s4_stable_adoption);
+    assert_unsupported!(assert_c_s5_non_adoption_proof);
+    assert_unsupported!(assert_c_s6_ambiguity_fence);
+    assert_unsupported!(assert_c_s7_ordered_cursor);
+    assert_unsupported!(assert_c_s8_terminal_authority);
+    assert_unsupported!(assert_c_s9_cancellation_acknowledgement);
+    assert_unsupported!(assert_c_s10_result_artifact_binding);
+    assert_unsupported!(assert_c_s11_restart_persistence);
+    assert_unsupported!(assert_c_s12_structured_denial);
 }
 
 fn digest_of(character: char) -> Sha256Digest {
@@ -308,23 +344,22 @@ async fn reconcile_after_commit_replays_and_changed_correlation_conflicts() {
         ))
         .build()
         .unwrap();
-    let fixture: &mut dyn CovenConformanceFixture = &mut fake;
     assert!(matches!(
-        fixture.port().reconcile(request.clone()).await,
+        fake.reconcile(request.clone()).await,
         Err(PortError::Unavailable)
     ));
-    fixture.restart().await;
+    fake = fake.restart();
     assert!(matches!(
-        fixture.port().reconcile(request.clone()).await,
+        fake.reconcile(request.clone()).await,
         Ok(ReconciliationDisposition::Returned { .. })
     ));
     let mut changed = request;
     changed.correlation.request_digest = digest_of('f');
     assert!(matches!(
-        fixture.port().reconcile(changed).await,
+        fake.reconcile(changed).await,
         Err(PortError::IntentConflict)
     ));
-    assert_eq!(fixture.observations().await.reconciliation_calls, 3);
+    assert_eq!(fake.observations().await.reconciliation_calls, 3);
 }
 
 #[test]
@@ -435,17 +470,12 @@ async fn unresolved_reconciliation_remains_retryable_until_returned_or_fenced() 
             .reconciliation(resolution.clone())
             .build()
             .unwrap();
-        let fixture: &dyn CovenConformanceFixture = &fake;
-
         assert_eq!(
-            fixture.port().reconcile(request.clone()).await.unwrap(),
+            fake.reconcile(request.clone()).await.unwrap(),
             ReconciliationDisposition::Unresolved
         );
-        assert_eq!(
-            fixture.port().reconcile(request.clone()).await.unwrap(),
-            resolution
-        );
-        assert_eq!(fixture.observations().await.reconciliation_calls, 2);
+        assert_eq!(fake.reconcile(request.clone()).await.unwrap(), resolution);
+        assert_eq!(fake.observations().await.reconciliation_calls, 2);
     }
 }
 
@@ -473,24 +503,19 @@ async fn reconciliation_disconnect_before_and_stall_leave_ambiguity_retryable() 
         .reconciliation(returned.clone())
         .build()
         .unwrap();
-    let fixture: &mut dyn CovenConformanceFixture = &mut fake;
-
     assert!(matches!(
-        fixture.port().reconcile(request.clone()).await,
+        fake.reconcile(request.clone()).await,
         Err(PortError::Unavailable)
     ));
-    fixture.restart().await;
+    fake = fake.restart();
     assert!(matches!(
-        fixture.port().reconcile(request.clone()).await,
+        fake.reconcile(request.clone()).await,
         Err(PortError::Stalled)
     ));
-    assert_eq!(
-        fixture.port().reconcile(request.clone()).await.unwrap(),
-        returned
-    );
-    fixture.restart().await;
-    assert_eq!(fixture.port().reconcile(request).await.unwrap(), returned);
-    assert_eq!(fixture.observations().await.reconciliation_calls, 4);
+    assert_eq!(fake.reconcile(request.clone()).await.unwrap(), returned);
+    fake = fake.restart();
+    assert_eq!(fake.reconcile(request).await.unwrap(), returned);
+    assert_eq!(fake.observations().await.reconciliation_calls, 4);
 }
 
 #[tokio::test]
@@ -515,28 +540,23 @@ async fn fenced_reconciliation_survives_after_commit_disconnect_and_restart() {
         ))
         .build()
         .unwrap();
-    let fixture: &mut dyn CovenConformanceFixture = &mut fake;
-
     assert!(matches!(
-        fixture.port().reconcile(request.clone()).await,
+        fake.reconcile(request.clone()).await,
         Err(PortError::Unavailable)
     ));
-    fixture.restart().await;
-    assert_eq!(
-        fixture.port().reconcile(request.clone()).await.unwrap(),
-        fenced
-    );
+    fake = fake.restart();
+    assert_eq!(fake.reconcile(request.clone()).await.unwrap(), fenced);
 
     let mut changed = request;
     changed.ambiguity_digest = digest_of('f');
     assert!(matches!(
-        fixture.port().reconcile(changed).await,
+        fake.reconcile(changed).await,
         Err(PortError::IntentConflict)
     ));
 }
 
 #[tokio::test]
-async fn conformance_observations_match_through_concrete_and_trait_object_without_mutation() {
+async fn low_level_observations_are_repeatable_without_mutation() {
     let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
     let adoption = AdoptionRequest::new(input).unwrap();
     let correlation = adoption.correlation();
@@ -563,13 +583,10 @@ async fn conformance_observations_match_through_concrete_and_trait_object_withou
     fake.adopt(adoption).await.unwrap();
     fake.reconcile(request.clone()).await.unwrap();
 
-    let concrete = fake.observations().await;
-    let fixture: &dyn CovenConformanceFixture = &fake;
-    let through_trait = fixture.observations().await;
-    assert_eq!(concrete, through_trait);
-    assert_eq!(fixture.observations().await, through_trait);
+    let observations = fake.observations().await;
+    assert_eq!(fake.observations().await, observations);
     assert_eq!(
-        through_trait,
+        observations,
         CovenConformanceObservations {
             adoption_calls: 1,
             reconciliation_calls: 1,
@@ -614,7 +631,7 @@ async fn conformance_observations_are_redacted_and_follow_restart_reset_semantic
         Err(PortError::Unavailable)
     ));
     let before_restart = fake.observations().await;
-    CovenConformanceFixture::restart(&mut fake).await;
+    fake = fake.restart();
     assert_eq!(fake.observations().await, before_restart);
 
     let redacted = format!("{before_restart:?}");
@@ -622,7 +639,7 @@ async fn conformance_observations_are_redacted_and_follow_restart_reset_semantic
         assert!(!redacted.contains(raw_field), "{raw_field}");
     }
 
-    CovenConformanceFixture::reset(&mut fake).await;
+    fake.reset().await;
     assert_eq!(
         fake.observations().await,
         CovenConformanceObservations::default()
@@ -679,7 +696,7 @@ async fn observations_follow_reconciliation_commit_order_across_restart() {
             .disposition_id,
         "committed-last"
     );
-    CovenConformanceFixture::restart(&mut fake).await;
+    fake = fake.restart();
     assert_eq!(
         fake.observations()
             .await
@@ -688,12 +705,12 @@ async fn observations_follow_reconciliation_commit_order_across_restart() {
             .disposition_id,
         "committed-last"
     );
-    CovenConformanceFixture::reset(&mut fake).await;
+    fake.reset().await;
     assert!(fake.observations().await.durable_reconciliation.is_none());
 }
 
 #[tokio::test]
-async fn conformance_fault_controls_are_object_safe_and_resettable() {
+async fn low_level_reconciliation_fault_controls_are_resettable() {
     let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
     let correlation = AdoptionRequest::new(input).unwrap().correlation();
     let request = ReconciliationRequest {
@@ -705,35 +722,32 @@ async fn conformance_fault_controls_are_object_safe_and_resettable() {
         .reconciliation(ReconciliationDisposition::Unresolved)
         .build()
         .unwrap();
-    let fixture: &mut dyn CovenConformanceFixture = &mut fake;
-
-    fixture
-        .select_fault(CovenFaultPoint::ReconcileStall)
+    fake.select_fault(CovenFaultPoint::ReconcileStall)
         .await
         .unwrap();
     assert!(matches!(
-        fixture.port().reconcile(request.clone()).await,
+        fake.reconcile(request.clone()).await,
         Err(PortError::Stalled)
     ));
-    assert_eq!(fixture.observations().await.reconciliation_calls, 1);
+    assert_eq!(fake.observations().await.reconciliation_calls, 1);
 
-    fixture.clear_fault().await;
+    fake.clear_fault().await.unwrap();
     assert_eq!(
-        fixture.port().reconcile(request).await.unwrap(),
+        fake.reconcile(request).await.unwrap(),
         ReconciliationDisposition::Unresolved
     );
-    assert_eq!(fixture.observations().await.reconciliation_calls, 2);
+    assert_eq!(fake.observations().await.reconciliation_calls, 2);
 
-    fixture.reset().await;
-    fixture.restart().await;
+    fake.reset().await;
+    fake = fake.restart();
     assert_eq!(
-        fixture.observations().await,
+        fake.observations().await,
         CovenConformanceObservations::default()
     );
 }
 
 #[tokio::test]
-async fn conformance_fixture_truthfully_reports_cases_and_fault_support() {
+async fn low_level_fake_rejects_unimplemented_faults() {
     let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
     let correlation = AdoptionRequest::new(input).unwrap().correlation();
     let request = ReconciliationRequest {
@@ -741,67 +755,18 @@ async fn conformance_fixture_truthfully_reports_cases_and_fault_support() {
         ambiguity_digest: digest_of('e'),
         reason_code: "adoption_unknown".to_owned(),
     };
-    let mut fake = FakeCoven::builder()
+    let fake = FakeCoven::builder()
         .reconciliation(ReconciliationDisposition::Unresolved)
         .build()
         .unwrap();
-    let fixture: &mut dyn CovenConformanceFixture = &mut fake;
-
-    for case in [
-        CovenConformanceCase::C_S1,
-        CovenConformanceCase::C_S2,
-        CovenConformanceCase::C_S3,
-        CovenConformanceCase::C_S4,
-        CovenConformanceCase::C_S5,
-        CovenConformanceCase::C_S6,
-        CovenConformanceCase::C_S7,
-        CovenConformanceCase::C_S8,
-        CovenConformanceCase::C_S9,
-        CovenConformanceCase::C_S10,
-        CovenConformanceCase::C_S11,
-        CovenConformanceCase::C_S12,
-    ] {
-        assert!(matches!(
-            fixture.availability(case),
-            FixtureAvailability::ExpectedUnsupported { .. }
-        ));
-    }
-
-    let supported = [
-        CovenFaultPoint::ReconcileBeforeDisposition,
-        CovenFaultPoint::ReconcileAfterDisposition,
-        CovenFaultPoint::ReconcileStall,
-    ];
-    let unsupported = [
-        CovenFaultPoint::AdoptionBeforeCommit,
-        CovenFaultPoint::AdoptionAfterCommit,
-        CovenFaultPoint::InputBeforeCommit,
-        CovenFaultPoint::InputAfterCommit,
-        CovenFaultPoint::LookupBeforeRead,
-        CovenFaultPoint::LookupAfterRead,
-        CovenFaultPoint::CursorBeforePage,
-        CovenFaultPoint::CursorAfterPage,
-        CovenFaultPoint::CancellationBeforeAcknowledgement,
-        CovenFaultPoint::CancellationAfterAcknowledgement,
-        CovenFaultPoint::TerminalBeforePersistence,
-        CovenFaultPoint::ResultBeforePersistence,
-        CovenFaultPoint::ArtifactBeforePersistence,
-    ];
-    for point in supported {
-        assert!(fixture.supports(point), "{point:?}");
-    }
-    for point in unsupported {
-        assert!(!fixture.supports(point), "{point:?}");
-    }
 
     assert_eq!(
-        fixture
-            .select_fault(CovenFaultPoint::AdoptionBeforeCommit)
+        fake.select_fault(CovenFaultPoint::AdoptionBeforeCommit)
             .await,
         Err(FixtureControlError::UnsupportedFault)
     );
     assert_eq!(
-        fixture.port().reconcile(request).await.unwrap(),
+        fake.reconcile(request).await.unwrap(),
         ReconciliationDisposition::Unresolved
     );
 }
@@ -1378,8 +1343,7 @@ async fn changed_request_with_retained_digest_fails_before_adoption() {
                 fake.adopt(forged).await,
                 Err(PortError::RequestDigestMismatch)
             ));
-            let fixture: &dyn CovenConformanceFixture = &fake;
-            assert_eq!(fixture.observations().await.adoption_calls, 0);
+            assert_eq!(fake.observations().await.adoption_calls, 0);
         }
     }
 }
@@ -1485,8 +1449,7 @@ async fn input_request_digest_binds_every_artifact_field_order_and_content() {
             ),
             "{name}"
         );
-        let fixture: &dyn CovenConformanceFixture = &fake;
-        assert_eq!(fixture.observations().await.adoption_calls, 0, "{name}");
+        assert_eq!(fake.observations().await.adoption_calls, 0, "{name}");
     }
 }
 
@@ -1544,8 +1507,7 @@ async fn expired_new_adoption_fails_before_calls_but_durable_replay_survives() {
         expired.adopt(request.clone()).await,
         Err(PortError::InvalidRequest)
     ));
-    let fixture: &dyn CovenConformanceFixture = &expired;
-    assert_eq!(fixture.observations().await.adoption_calls, 0);
+    assert_eq!(expired.observations().await.adoption_calls, 0);
     assert!(
         expired
             .at_time(at("2026-08-05T14:04:00Z"))

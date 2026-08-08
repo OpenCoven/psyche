@@ -25,7 +25,7 @@ use super::ConformanceOutcome;
 use crate::coven::{
     CovenConformanceCase, CovenConformanceFixture, CovenConformanceObservations, CovenFaultPoint,
     DurableDispositionKind, DurableDispositionObservation, FixtureAvailability,
-    FixtureControlError,
+    FixtureControlError, RedispatchEligibility,
 };
 
 const CONTRACT: &str = "coven.daemon.v1";
@@ -57,7 +57,6 @@ struct DurableAdoption {
 #[derive(Debug, Clone, Default)]
 struct SessionState {
     correlations: Vec<ExecutionCorrelation>,
-    inspect_index: usize,
     authoritative_terminal: bool,
 }
 
@@ -73,9 +72,14 @@ struct DurableTermination {
     disposition: TerminationDisposition,
 }
 
+#[derive(Debug, Clone)]
+struct DurableTerminationAcknowledgement {
+    binding: ExecutionBinding,
+    disposition: TerminationDisposition,
+}
+
 #[derive(Debug, Default)]
-struct ScriptedState {
-    selected_fault: Option<CovenFaultPoint>,
+struct ScriptedDurableState {
     adoptions: BTreeMap<String, DurableAdoption>,
     lookup_dispositions: BTreeMap<String, AdoptionDisposition>,
     sessions: BTreeMap<String, SessionState>,
@@ -83,15 +87,24 @@ struct ScriptedState {
     latest_reconciliation: Option<String>,
     event_pages: BTreeMap<(String, u64), EventPage>,
     event_high_water: BTreeMap<String, u64>,
+    primary_results: BTreeMap<String, ContentAddressedReference>,
     results: BTreeMap<String, ResultBundle>,
+    termination_acknowledgements: BTreeMap<String, DurableTerminationAcknowledgement>,
     terminations: BTreeMap<String, DurableTermination>,
+}
+
+#[derive(Debug, Default)]
+struct ScriptedRuntimeState {
+    selected_fault: Option<CovenFaultPoint>,
+    inspect_indices: BTreeMap<String, usize>,
     adoption_calls: u64,
     reconciliation_calls: u64,
 }
 
 #[derive(Debug, Clone)]
 struct ScriptedG2Port {
-    state: Arc<Mutex<ScriptedState>>,
+    durable: Arc<Mutex<ScriptedDurableState>>,
+    runtime: Arc<Mutex<ScriptedRuntimeState>>,
 }
 
 /// Deterministic, restartable fixture used for the scripted G2 evidence rows.
@@ -104,25 +117,30 @@ pub struct ScriptedG2Fixture {
 pub fn scripted_fixture() -> ScriptedG2Fixture {
     ScriptedG2Fixture {
         port: ScriptedG2Port {
-            state: Arc::new(Mutex::new(ScriptedState::default())),
+            durable: Arc::new(Mutex::new(ScriptedDurableState::default())),
+            runtime: Arc::new(Mutex::new(ScriptedRuntimeState::default())),
         },
     }
 }
 
 impl ScriptedG2Port {
-    fn state(&self) -> Result<MutexGuard<'_, ScriptedState>, PortError> {
-        self.state.lock().map_err(|_| PortError::Unavailable)
+    fn durable(&self) -> Result<MutexGuard<'_, ScriptedDurableState>, PortError> {
+        self.durable.lock().map_err(|_| PortError::Unavailable)
     }
 
-    fn session_for_launch(state: &ScriptedState) -> String {
+    fn runtime(&self) -> Result<MutexGuard<'_, ScriptedRuntimeState>, PortError> {
+        self.runtime.lock().map_err(|_| PortError::Unavailable)
+    }
+
+    fn session_for_launch(state: &ScriptedDurableState) -> String {
         format!("session-{}", state.sessions.len().saturating_add(1))
     }
 
     fn adoption_fault(
-        state: &ScriptedState,
+        selected_fault: Option<CovenFaultPoint>,
         input: &ExecutionRequestInput,
     ) -> Option<CovenFaultPoint> {
-        match (input, state.selected_fault) {
+        match (input, selected_fault) {
             (
                 ExecutionRequestInput::Launch { .. },
                 Some(
@@ -147,6 +165,21 @@ impl ScriptedG2Port {
         } else {
             AdoptionDisposition::Unknown
         }
+    }
+
+    fn same_correlation_except_request_id(
+        stored: &ExecutionCorrelation,
+        candidate: &ExecutionCorrelation,
+    ) -> bool {
+        stored.request_id != candidate.request_id
+            && stored.request_digest == candidate.request_digest
+            && stored.familiar_snapshot_id == candidate.familiar_snapshot_id
+            && stored.project_id == candidate.project_id
+            && stored.graph_id == candidate.graph_id
+            && stored.node_id == candidate.node_id
+            && stored.attempt_id == candidate.attempt_id
+            && stored.created_at == candidate.created_at
+            && stored.valid_until == candidate.valid_until
     }
 
     fn result_for(
@@ -252,7 +285,25 @@ impl CovenPort for ScriptedG2Port {
         let canonical_input =
             canonical_bytes(request.input()).map_err(|_| PortError::InvalidRequest)?;
         let key = correlation.request_id.as_str().to_owned();
-        let mut state = self.state()?;
+        {
+            let state = self.durable()?;
+            if let Some(stored) = state.adoptions.get(&key) {
+                return if stored.request_digest == *request.request_digest()
+                    && stored.canonical_input == canonical_input
+                {
+                    Ok(stored.disposition.clone())
+                } else {
+                    Err(PortError::IntentConflict)
+                };
+            }
+        }
+        let selected_fault = {
+            let mut runtime = self.runtime()?;
+            runtime.adoption_calls = runtime.adoption_calls.saturating_add(1);
+            runtime.selected_fault
+        };
+        let mut state = self.durable()?;
+        // Recheck after acquiring the runtime observation in case another caller committed first.
         if let Some(stored) = state.adoptions.get(&key) {
             return if stored.request_digest == *request.request_digest()
                 && stored.canonical_input == canonical_input
@@ -263,8 +314,7 @@ impl CovenPort for ScriptedG2Port {
             };
         }
 
-        state.adoption_calls = state.adoption_calls.saturating_add(1);
-        let fault = Self::adoption_fault(&state, request.input());
+        let fault = Self::adoption_fault(selected_fault, request.input());
         if matches!(
             fault,
             Some(CovenFaultPoint::AdoptionBeforeCommit | CovenFaultPoint::InputBeforeCommit)
@@ -312,8 +362,9 @@ impl CovenPort for ScriptedG2Port {
     }
 
     async fn lookup(&self, request_id: &RequestId) -> Result<AdoptionDisposition, PortError> {
-        let mut state = self.state()?;
-        if state.selected_fault == Some(CovenFaultPoint::LookupBeforeRead) {
+        let selected_fault = self.runtime()?.selected_fault;
+        let mut state = self.durable()?;
+        if selected_fault == Some(CovenFaultPoint::LookupBeforeRead) {
             return Err(PortError::Unavailable);
         }
         let disposition = state
@@ -326,7 +377,7 @@ impl CovenPort for ScriptedG2Port {
             .lookup_dispositions
             .entry(request_id.as_str().to_owned())
             .or_insert_with(|| disposition.clone());
-        if state.selected_fault == Some(CovenFaultPoint::LookupAfterRead) {
+        if selected_fault == Some(CovenFaultPoint::LookupAfterRead) {
             Err(PortError::Unavailable)
         } else {
             Ok(disposition)
@@ -338,9 +389,13 @@ impl CovenPort for ScriptedG2Port {
         request: ReconciliationRequest,
     ) -> Result<ReconciliationDisposition, PortError> {
         request.validate()?;
-        let mut state = self.state()?;
-        state.reconciliation_calls = state.reconciliation_calls.saturating_add(1);
-        match state.selected_fault {
+        let selected_fault = {
+            let mut runtime = self.runtime()?;
+            runtime.reconciliation_calls = runtime.reconciliation_calls.saturating_add(1);
+            runtime.selected_fault
+        };
+        let mut state = self.durable()?;
+        match selected_fault {
             Some(CovenFaultPoint::ReconcileBeforeDisposition) => {
                 return Err(PortError::Unavailable);
             }
@@ -354,6 +409,11 @@ impl CovenPort for ScriptedG2Port {
             } else {
                 Err(PortError::IntentConflict)
             };
+        }
+        if state.adoptions.values().any(|stored| {
+            Self::same_correlation_except_request_id(&stored.correlation, &request.correlation)
+        }) {
+            return Err(PortError::IntentConflict);
         }
         let adoption = state.adoptions.get(&key).ok_or(PortError::Unavailable)?;
         if adoption.correlation != request.correlation {
@@ -393,7 +453,7 @@ impl CovenPort for ScriptedG2Port {
             },
         );
         state.latest_reconciliation = Some(key);
-        if state.selected_fault == Some(CovenFaultPoint::ReconcileAfterDisposition) {
+        if selected_fault == Some(CovenFaultPoint::ReconcileAfterDisposition) {
             Err(PortError::Unavailable)
         } else {
             Ok(disposition)
@@ -404,21 +464,28 @@ impl CovenPort for ScriptedG2Port {
         if session_id.is_empty() || session_id.len() > 255 {
             return Err(PortError::InvalidRequest);
         }
-        let mut state = self.state()?;
-        let session = state
-            .sessions
-            .get_mut(session_id)
-            .ok_or(PortError::NotFound)?;
-        let correlation = session
-            .correlations
-            .first()
-            .cloned()
-            .ok_or(PortError::InvalidResponse)?;
-        let terminal_state = if session.authoritative_terminal {
+        let (correlation, authoritative_terminal) = {
+            let state = self.durable()?;
+            let session = state.sessions.get(session_id).ok_or(PortError::NotFound)?;
+            (
+                session
+                    .correlations
+                    .first()
+                    .cloned()
+                    .ok_or(PortError::InvalidResponse)?,
+                session.authoritative_terminal,
+            )
+        };
+        let terminal_state = if authoritative_terminal {
             Some("authoritatively_terminated".to_owned())
         } else {
-            let status = RAW_LEDGER_STATES[session.inspect_index % RAW_LEDGER_STATES.len()];
-            session.inspect_index = session.inspect_index.saturating_add(1);
+            let mut runtime = self.runtime()?;
+            let inspect_index = runtime
+                .inspect_indices
+                .entry(session_id.to_owned())
+                .or_default();
+            let status = RAW_LEDGER_STATES[*inspect_index % RAW_LEDGER_STATES.len()];
+            *inspect_index = inspect_index.saturating_add(1);
             Some(status.to_owned())
         };
         Ok(SessionSnapshot {
@@ -430,16 +497,17 @@ impl CovenPort for ScriptedG2Port {
 
     async fn events(&self, cursor: EventCursor) -> Result<EventPage, PortError> {
         cursor.validate()?;
-        let mut state = self.state()?;
+        let selected_fault = self.runtime()?.selected_fault;
+        let mut state = self.durable()?;
         if !state.sessions.contains_key(&cursor.session_id) {
             return Err(PortError::CorrelationMismatch);
         }
-        if state.selected_fault == Some(CovenFaultPoint::CursorBeforePage) {
+        if selected_fault == Some(CovenFaultPoint::CursorBeforePage) {
             return Err(PortError::Unavailable);
         }
         let key = (cursor.session_id.clone(), cursor.after_sequence);
         if let Some(page) = state.event_pages.get(&key).cloned() {
-            return if state.selected_fault == Some(CovenFaultPoint::CursorAfterPage) {
+            return if selected_fault == Some(CovenFaultPoint::CursorAfterPage) {
                 Err(PortError::Unavailable)
             } else {
                 Ok(page)
@@ -483,7 +551,7 @@ impl CovenPort for ScriptedG2Port {
         state
             .event_high_water
             .insert(cursor.session_id.clone(), next);
-        if state.selected_fault == Some(CovenFaultPoint::CursorAfterPage) {
+        if selected_fault == Some(CovenFaultPoint::CursorAfterPage) {
             Err(PortError::Unavailable)
         } else {
             Ok(page)
@@ -494,18 +562,10 @@ impl CovenPort for ScriptedG2Port {
         if session_id.is_empty() || session_id.len() > 255 {
             return Err(PortError::InvalidRequest);
         }
-        let mut state = self.state()?;
+        let selected_fault = self.runtime()?.selected_fault;
+        let mut state = self.durable()?;
         if let Some(bundle) = state.results.get(session_id) {
             return Ok(bundle.clone());
-        }
-        if matches!(
-            state.selected_fault,
-            Some(
-                CovenFaultPoint::ResultBeforePersistence
-                    | CovenFaultPoint::ArtifactBeforePersistence
-            )
-        ) {
-            return Err(PortError::Unavailable);
         }
         let correlation = state
             .sessions
@@ -514,6 +574,24 @@ impl CovenPort for ScriptedG2Port {
             .cloned()
             .ok_or(PortError::NotFound)?;
         let bundle = Self::result_for(session_id, &correlation)?;
+        if !state.primary_results.contains_key(session_id) {
+            if selected_fault == Some(CovenFaultPoint::ResultBeforePersistence) {
+                return Err(PortError::Unavailable);
+            }
+            state
+                .primary_results
+                .insert(session_id.to_owned(), bundle.result.clone());
+        }
+        if state
+            .primary_results
+            .get(session_id)
+            .is_some_and(|result| result != &bundle.result)
+        {
+            return Err(PortError::IntentConflict);
+        }
+        if selected_fault == Some(CovenFaultPoint::ArtifactBeforePersistence) {
+            return Err(PortError::Unavailable);
+        }
         state.results.insert(session_id.to_owned(), bundle.clone());
         Ok(bundle)
     }
@@ -528,7 +606,8 @@ impl CovenPort for ScriptedG2Port {
             .as_ref()
             .ok_or(PortError::InvalidRequest)?;
         let key = termination.termination_request_id.as_str().to_owned();
-        let mut state = self.state()?;
+        let selected_fault = self.runtime()?.selected_fault;
+        let mut state = self.durable()?;
         if let Some(stored) = state.terminations.get(&key) {
             return if stored.binding == binding {
                 Ok(stored.disposition.clone())
@@ -547,16 +626,31 @@ impl CovenPort for ScriptedG2Port {
         }) {
             return Err(PortError::CorrelationMismatch);
         }
-        if matches!(
-            state.selected_fault,
-            Some(
-                CovenFaultPoint::CancellationBeforeAcknowledgement
-                    | CovenFaultPoint::TerminalBeforePersistence
-            )
-        ) {
+        let disposition = if let Some(stored) = state.termination_acknowledgements.get(&key) {
+            if stored.binding != binding {
+                return Err(PortError::IntentConflict);
+            }
+            stored.disposition.clone()
+        } else {
+            if selected_fault == Some(CovenFaultPoint::CancellationBeforeAcknowledgement) {
+                return Err(PortError::Unavailable);
+            }
+            let disposition = Self::termination_disposition(&binding)?;
+            state.termination_acknowledgements.insert(
+                key.clone(),
+                DurableTerminationAcknowledgement {
+                    binding: binding.clone(),
+                    disposition: disposition.clone(),
+                },
+            );
+            if selected_fault == Some(CovenFaultPoint::CancellationAfterAcknowledgement) {
+                return Err(PortError::Unavailable);
+            }
+            disposition
+        };
+        if selected_fault == Some(CovenFaultPoint::TerminalBeforePersistence) {
             return Err(PortError::Unavailable);
         }
-        let disposition = Self::termination_disposition(&binding)?;
         state.terminations.insert(
             key,
             DurableTermination {
@@ -569,11 +663,7 @@ impl CovenPort for ScriptedG2Port {
                 session.authoritative_terminal = true;
             }
         }
-        if state.selected_fault == Some(CovenFaultPoint::CancellationAfterAcknowledgement) {
-            Err(PortError::Unavailable)
-        } else {
-            Ok(disposition)
-        }
+        Ok(disposition)
     }
 }
 
@@ -587,36 +677,47 @@ impl CovenConformanceFixture for ScriptedG2Fixture {
         FixtureAvailability::Supported
     }
 
-    fn supports(&self, _point: CovenFaultPoint) -> bool {
-        true
+    async fn restart(&mut self) {
+        self.port = ScriptedG2Port {
+            durable: Arc::clone(&self.port.durable),
+            runtime: Arc::new(Mutex::new(ScriptedRuntimeState::default())),
+        };
     }
 
-    async fn restart(&mut self) {}
-
     async fn select_fault(&mut self, point: CovenFaultPoint) -> Result<(), FixtureControlError> {
-        let mut state = self
+        let mut runtime = self
             .port
-            .state
+            .runtime
             .lock()
             .map_err(|_| FixtureControlError::Unavailable)?;
-        state.selected_fault = Some(point);
+        runtime.selected_fault = Some(point);
         Ok(())
     }
 
-    async fn clear_fault(&mut self) {
-        if let Ok(mut state) = self.port.state.lock() {
-            state.selected_fault = None;
-        }
+    async fn clear_fault(&mut self) -> Result<(), FixtureControlError> {
+        let mut runtime = self
+            .port
+            .runtime
+            .lock()
+            .map_err(|_| FixtureControlError::Unavailable)?;
+        runtime.selected_fault = None;
+        Ok(())
     }
 
     async fn reset(&mut self) {
-        if let Ok(mut state) = self.port.state.lock() {
-            *state = ScriptedState::default();
+        if let Ok(mut state) = self.port.durable.lock() {
+            *state = ScriptedDurableState::default();
+        }
+        if let Ok(mut runtime) = self.port.runtime.lock() {
+            *runtime = ScriptedRuntimeState::default();
         }
     }
 
     async fn observations(&self) -> CovenConformanceObservations {
-        let Ok(state) = self.port.state.lock() else {
+        let Ok(state) = self.port.durable.lock() else {
+            return CovenConformanceObservations::default();
+        };
+        let Ok(runtime) = self.port.runtime.lock() else {
             return CovenConformanceObservations::default();
         };
         let durable_reconciliation = state
@@ -625,10 +726,38 @@ impl CovenConformanceFixture for ScriptedG2Fixture {
             .and_then(|key| state.reconciliations.get(key))
             .and_then(|stored| disposition_observation(&stored.disposition));
         CovenConformanceObservations {
-            adoption_calls: state.adoption_calls,
-            reconciliation_calls: state.reconciliation_calls,
+            adoption_calls: runtime.adoption_calls,
+            reconciliation_calls: runtime.reconciliation_calls,
             durable_reconciliation,
         }
+    }
+
+    async fn redispatch_eligibility(
+        &self,
+        correlation: &ExecutionCorrelation,
+    ) -> Result<RedispatchEligibility, FixtureControlError> {
+        let state = self
+            .port
+            .durable
+            .lock()
+            .map_err(|_| FixtureControlError::Unavailable)?;
+        Ok(
+            match state
+                .reconciliations
+                .get(correlation.request_id.as_str())
+                .filter(|stored| stored.request.correlation == *correlation)
+                .map(|stored| &stored.disposition)
+            {
+                Some(ReconciliationDisposition::Fenced { .. }) => {
+                    RedispatchEligibility::EligibleAfterFence
+                }
+                Some(
+                    ReconciliationDisposition::Returned { .. }
+                    | ReconciliationDisposition::Unresolved,
+                )
+                | None => RedispatchEligibility::Blocked,
+            },
+        )
     }
 }
 
@@ -750,22 +879,27 @@ impl CovenConformanceFixture for UnsupportedCovenFixture {
         }
     }
 
-    fn supports(&self, _point: CovenFaultPoint) -> bool {
-        false
-    }
-
     async fn restart(&mut self) {}
 
     async fn select_fault(&mut self, _point: CovenFaultPoint) -> Result<(), FixtureControlError> {
         Err(FixtureControlError::UnsupportedFault)
     }
 
-    async fn clear_fault(&mut self) {}
+    async fn clear_fault(&mut self) -> Result<(), FixtureControlError> {
+        Ok(())
+    }
 
     async fn reset(&mut self) {}
 
     async fn observations(&self) -> CovenConformanceObservations {
         CovenConformanceObservations::default()
+    }
+
+    async fn redispatch_eligibility(
+        &self,
+        _correlation: &ExecutionCorrelation,
+    ) -> Result<RedispatchEligibility, FixtureControlError> {
+        Ok(RedispatchEligibility::Blocked)
     }
 }
 
@@ -779,6 +913,20 @@ enum UnsupportedCall {
     Events,
     Result,
     Terminate,
+}
+
+async fn require_fault(fixture: &mut dyn CovenConformanceFixture, point: CovenFaultPoint) {
+    fixture
+        .select_fault(point)
+        .await
+        .unwrap_or_else(|error| panic!("{point:?} must be controllable: {error}"));
+}
+
+async fn require_clear_fault(fixture: &mut dyn CovenConformanceFixture) {
+    fixture
+        .clear_fault()
+        .await
+        .unwrap_or_else(|error| panic!("fixture fault must clear: {error}"));
 }
 
 async fn expected_unsupported(
@@ -795,10 +943,7 @@ async fn expected_unsupported(
     match call {
         UnsupportedCall::Negotiate => {
             assert_eq!(
-                fixture
-                    .port()
-                    .negotiate(NegotiateRequest::new(CONTRACT))
-                    .await,
+                fixture.port().negotiate(exact_negotiation_request()).await,
                 Err(expected)
             );
         }
@@ -889,24 +1034,10 @@ fn launch_input() -> ExecutionRequestInput {
     }
 }
 
-fn input_input() -> ExecutionRequestInput {
-    match serde_json::from_slice(INPUT_GOLDEN) {
-        Ok(input) => input,
-        Err(error) => panic!("canonical input fixture must decode: {error}"),
-    }
-}
-
 fn launch_request() -> AdoptionRequest {
     match AdoptionRequest::new(launch_input()) {
         Ok(request) => request,
         Err(error) => panic!("canonical launch fixture must validate: {error}"),
-    }
-}
-
-fn input_request() -> AdoptionRequest {
-    match AdoptionRequest::new(input_input()) {
-        Ok(request) => request,
-        Err(error) => panic!("canonical input fixture must validate: {error}"),
     }
 }
 
@@ -1130,6 +1261,9 @@ fn changed_correlations(
 ) -> Vec<(&'static str, ExecutionCorrelation)> {
     let mut changed = Vec::new();
     let mut candidate = correlation.clone();
+    candidate.request_id = request_id(11);
+    changed.push(("request_id", candidate));
+    let mut candidate = correlation.clone();
     candidate.request_digest = digest_of('a');
     changed.push(("request_digest", candidate));
     let mut candidate = correlation.clone();
@@ -1147,6 +1281,9 @@ fn changed_correlations(
     let mut candidate = correlation.clone();
     candidate.attempt_id = record_id(RecordKind::Attempt, 11);
     changed.push(("attempt_id", candidate));
+    let mut candidate = correlation.clone();
+    candidate.created_at += time::Duration::seconds(1);
+    changed.push(("created_at", candidate));
     let mut candidate = correlation.clone();
     candidate.valid_until -= time::Duration::seconds(1);
     changed.push(("validity_window", candidate));
@@ -1309,6 +1446,15 @@ pub async fn assert_c_s1_contract_negotiation(
             capabilities: capability_names(),
         }
     );
+    match fixture.port().adopt(launch_request()).await {
+        Ok(AdoptionDisposition::Adopted { .. }) => {}
+        Err(PortError::CapabilityMissing {}) => {
+            assert_eq!(fixture.observations().await, before);
+            panic!("stable_adoption was falsely advertised");
+        }
+        other => panic!("advertised stable_adoption method failed: {other:?}"),
+    }
+    fixture.reset().await;
 
     for unsupported in ["coven.daemon.v0", "coven.daemon.v2"] {
         assert_eq!(
@@ -1327,12 +1473,12 @@ pub async fn assert_c_s1_contract_negotiation(
         fixture.port().negotiate(missing).await,
         Err(PortError::CapabilityMissing {})
     );
-    let mut false_method = exact_negotiation_request();
-    false_method
+    let mut unknown_method_capability = exact_negotiation_request();
+    unknown_method_capability
         .required_capabilities
         .insert("falsely_advertised_method".to_owned());
     assert_eq!(
-        fixture.port().negotiate(false_method).await,
+        fixture.port().negotiate(unknown_method_capability).await,
         Err(PortError::CapabilityMissing {})
     );
     assert_eq!(fixture.observations().await, before);
@@ -1457,6 +1603,19 @@ pub async fn assert_c_s3_snapshot_attempt_binding(
         .unwrap_or_else(|error| panic!("snapshot must round-trip: {error}"));
     assert_eq!(snapshot.correlation, correlation);
     assert_eq!(snapshot.session_id, "session-1");
+    let valid_reconciliation = ReconciliationRequest {
+        correlation: correlation.clone(),
+        ambiguity_digest: digest_of('d'),
+        reason_code: "return_original".to_owned(),
+    };
+    let valid_disposition = fixture
+        .port()
+        .reconcile(valid_reconciliation.clone())
+        .await
+        .unwrap_or_else(|error| panic!("valid snapshot correlation must reconcile: {error}"));
+    valid_disposition
+        .validate_for(&valid_reconciliation)
+        .unwrap_or_else(|error| panic!("valid snapshot correlation must echo exactly: {error}"));
 
     let changed_correlations = changed_correlations(&correlation);
     let changed_count = u64::try_from(changed_correlations.len())
@@ -1475,8 +1634,11 @@ pub async fn assert_c_s3_snapshot_attempt_binding(
     }
     let observations = fixture.observations().await;
     assert_eq!(observations.adoption_calls, 1);
-    assert_eq!(observations.reconciliation_calls, changed_count);
-    assert!(observations.durable_reconciliation.is_none());
+    assert_eq!(observations.reconciliation_calls, changed_count + 1);
+    assert_eq!(
+        observations.durable_reconciliation,
+        disposition_observation(&valid_disposition)
+    );
     ConformanceOutcome::Verified
 }
 
@@ -1498,17 +1660,14 @@ pub async fn assert_c_s4_stable_adoption(
     request
         .validate_digest()
         .unwrap_or_else(|error| panic!("authority must recompute the canonical request: {error}"));
-    fixture
-        .select_fault(CovenFaultPoint::AdoptionAfterCommit)
-        .await
-        .unwrap_or_else(|error| panic!("adoption fault must be controllable: {error}"));
+    require_fault(fixture, CovenFaultPoint::AdoptionAfterCommit).await;
     assert_eq!(
         fixture.port().adopt(request.clone()).await,
         Err(PortError::Unavailable)
     );
     assert_eq!(fixture.observations().await.adoption_calls, 1);
     fixture.restart().await;
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
     let disposition = AdoptionDisposition::Adopted {
         session_id: "session-1".to_owned(),
     };
@@ -1516,11 +1675,11 @@ pub async fn assert_c_s4_stable_adoption(
         fixture.port().adopt(request.clone()).await,
         Ok(disposition.clone())
     );
-    assert_eq!(fixture.observations().await.adoption_calls, 1);
+    assert_eq!(fixture.observations().await.adoption_calls, 0);
     assert_eq!(fixture.port().adopt(request.clone()).await, Ok(disposition));
-    assert_eq!(fixture.observations().await.adoption_calls, 1);
+    assert_eq!(fixture.observations().await.adoption_calls, 0);
 
-    for typed in [request, input_request()] {
+    for typed in [request, session_input_request()] {
         for (field, forged) in stale_digest_mutations(&typed) {
             let before = fixture.observations().await;
             assert_eq!(
@@ -1632,10 +1791,7 @@ pub async fn assert_c_s6_ambiguity_fence(
         fixture.reset().await;
         let correlation = mark_ambiguous(fixture).await;
         let request = reconciliation_request(correlation, false);
-        fixture
-            .select_fault(point)
-            .await
-            .unwrap_or_else(|error| panic!("{point:?} must be controllable: {error}"));
+        require_fault(fixture, point).await;
         let expected_error = if point == CovenFaultPoint::ReconcileStall {
             PortError::Stalled
         } else {
@@ -1654,15 +1810,10 @@ pub async fn assert_c_s6_ambiguity_fence(
             }
         );
         fixture.restart().await;
-        assert_eq!(
-            fixture.port().reconcile(request.clone()).await,
-            Err(expected_error)
-        );
         let blocked = fixture.observations().await;
-        assert_eq!(blocked.adoption_calls, 1);
-        assert_eq!(blocked.reconciliation_calls, 2);
+        assert_eq!(blocked.adoption_calls, 0);
+        assert_eq!(blocked.reconciliation_calls, 0);
         assert!(blocked.durable_reconciliation.is_none());
-        fixture.clear_fault().await;
         let recovered = fixture
             .port()
             .reconcile(request)
@@ -1673,17 +1824,14 @@ pub async fn assert_c_s6_ambiguity_fence(
             ReconciliationDisposition::Returned { .. }
         ));
         let recovered_observations = fixture.observations().await;
-        assert_eq!(recovered_observations.adoption_calls, 1);
-        assert_eq!(recovered_observations.reconciliation_calls, 3);
+        assert_eq!(recovered_observations.adoption_calls, 0);
+        assert_eq!(recovered_observations.reconciliation_calls, 1);
     }
 
     fixture.reset().await;
     let correlation = mark_ambiguous(fixture).await;
     let request = reconciliation_request(correlation, true);
-    fixture
-        .select_fault(CovenFaultPoint::ReconcileAfterDisposition)
-        .await
-        .unwrap_or_else(|error| panic!("after-disposition fault must be controllable: {error}"));
+    require_fault(fixture, CovenFaultPoint::ReconcileAfterDisposition).await;
     assert_eq!(
         fixture.port().reconcile(request.clone()).await,
         Err(PortError::Unavailable)
@@ -1700,7 +1848,7 @@ pub async fn assert_c_s6_ambiguity_fence(
         DurableDispositionKind::Fenced { .. }
     ));
     fixture.restart().await;
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
     let replay = fixture
         .port()
         .reconcile(request)
@@ -1711,33 +1859,27 @@ pub async fn assert_c_s6_ambiguity_fence(
         Some(committed_observation)
     );
     let replayed = fixture.observations().await;
-    assert_eq!(replayed.adoption_calls, 1);
-    assert_eq!(replayed.reconciliation_calls, 2);
+    assert_eq!(replayed.adoption_calls, 0);
+    assert_eq!(replayed.reconciliation_calls, 1);
     ConformanceOutcome::Verified
 }
 
 async fn mark_ambiguous(fixture: &mut dyn CovenConformanceFixture) -> ExecutionCorrelation {
     let adoption = launch_request();
     let correlation = adoption.correlation();
-    fixture
-        .select_fault(CovenFaultPoint::AdoptionAfterCommit)
-        .await
-        .unwrap_or_else(|error| panic!("after-adoption fault must be controllable: {error}"));
+    require_fault(fixture, CovenFaultPoint::AdoptionAfterCommit).await;
     assert_eq!(
         fixture.port().adopt(adoption).await,
         Err(PortError::Unavailable)
     );
-    fixture.clear_fault().await;
-    fixture
-        .select_fault(CovenFaultPoint::LookupAfterRead)
-        .await
-        .unwrap_or_else(|error| panic!("after-lookup fault must be controllable: {error}"));
+    require_clear_fault(fixture).await;
+    require_fault(fixture, CovenFaultPoint::LookupAfterRead).await;
     let local_disposition = match fixture.port().lookup(&correlation.request_id).await {
         Err(PortError::Unavailable) => AdoptionDisposition::Unknown,
         other => panic!("lost lookup response must remain locally unknown: {other:?}"),
     };
     assert_eq!(local_disposition, AdoptionDisposition::Unknown);
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
     assert_eq!(fixture.observations().await.adoption_calls, 1);
     correlation
 }
@@ -1833,6 +1975,24 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
         disposition_observation(&disposition),
         Some(first_observation.clone())
     );
+    let adoption_calls_before_eligibility = fixture.observations().await.adoption_calls;
+    let eligibility = fixture
+        .redispatch_eligibility(&correlation)
+        .await
+        .unwrap_or_else(|error| panic!("redispatch eligibility must be observable: {error}"));
+    assert_eq!(
+        eligibility,
+        if fenced {
+            RedispatchEligibility::EligibleAfterFence
+        } else {
+            RedispatchEligibility::Blocked
+        }
+    );
+    assert_eq!(
+        fixture.observations().await.adoption_calls,
+        adoption_calls_before_eligibility,
+        "eligibility observation must not dispatch"
+    );
     fixture.restart().await;
     let replay = fixture
         .port()
@@ -1869,8 +2029,8 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
         "ambiguity_digest"
     );
     let observations = fixture.observations().await;
-    assert_eq!(observations.adoption_calls, 1);
-    assert_eq!(observations.reconciliation_calls, 3 + changed_count);
+    assert_eq!(observations.adoption_calls, 0);
+    assert_eq!(observations.reconciliation_calls, 2 + changed_count);
     assert_eq!(observations.durable_reconciliation, Some(first_observation));
 }
 
@@ -1902,16 +2062,13 @@ pub async fn assert_c_s7_ordered_cursor(
         session_id: "session-1".to_owned(),
         after_sequence: 0,
     };
-    fixture
-        .select_fault(CovenFaultPoint::CursorBeforePage)
-        .await
-        .unwrap_or_else(|error| panic!("before-page fault must be controllable: {error}"));
+    require_fault(fixture, CovenFaultPoint::CursorBeforePage).await;
     assert_eq!(
         fixture.port().events(initial.clone()).await,
         Err(PortError::Unavailable)
     );
     fixture.restart().await;
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
     let first = fixture
         .port()
         .events(initial.clone())
@@ -1981,16 +2138,13 @@ pub async fn assert_c_s7_ordered_cursor(
 
     fixture.reset().await;
     assert!(fixture.port().adopt(launch_request()).await.is_ok());
-    fixture
-        .select_fault(CovenFaultPoint::CursorAfterPage)
-        .await
-        .unwrap_or_else(|error| panic!("after-page fault must be controllable: {error}"));
+    require_fault(fixture, CovenFaultPoint::CursorAfterPage).await;
     assert_eq!(
         fixture.port().events(initial.clone()).await,
         Err(PortError::Unavailable)
     );
     fixture.restart().await;
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
     assert_eq!(
         fixture
             .port()
@@ -2011,7 +2165,7 @@ pub async fn assert_c_s8_terminal_authority(
     if let Some(outcome) = expected_unsupported(
         fixture,
         CovenConformanceCase::C_S8,
-        UnsupportedCall::Inspect,
+        UnsupportedCall::Terminate,
     )
     .await
     {
@@ -2052,10 +2206,7 @@ pub async fn assert_c_s8_terminal_authority(
     unproven.terminal_state = Some("disconnected".to_owned());
     assert!(unproven.validate().is_err());
 
-    fixture
-        .select_fault(CovenFaultPoint::TerminalBeforePersistence)
-        .await
-        .unwrap_or_else(|error| panic!("terminal persistence fault must be controllable: {error}"));
+    require_fault(fixture, CovenFaultPoint::TerminalBeforePersistence).await;
     let mut persistence = MemoryTerminationPersistence::default();
     assert!(matches!(
         persist_then_terminate(&mut persistence, fixture.port(), requested.clone(),).await,
@@ -2073,7 +2224,7 @@ pub async fn assert_c_s8_terminal_authority(
         still_raw.terminal_state.as_deref(),
         Some("authoritatively_terminated")
     );
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
     let acknowledged = persist_then_terminate(&mut persistence, fixture.port(), requested.clone())
         .await
         .unwrap_or_else(|error| panic!("durable terminal acknowledgement must succeed: {error}"));
@@ -2117,7 +2268,7 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
     assert!(fixture.port().adopt(launch.clone()).await.is_ok());
 
     let mut snapshot_states = Vec::new();
-    for _ in 0..6 {
+    for _ in 0..RAW_LEDGER_STATES.len() {
         snapshot_states.push(
             fixture
                 .port()
@@ -2128,16 +2279,18 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
                 .unwrap_or_else(|| panic!("scripted snapshot must name its raw state")),
         );
     }
-    assert_eq!(snapshot_states.last().map(String::as_str), Some("killed"));
+    assert_eq!(snapshot_states.last().map(String::as_str), Some("orphaned"));
     fixture.restart().await;
-    snapshot_states.push(
+    assert_eq!(
         fixture
             .port()
             .inspect("session-1")
             .await
             .unwrap_or_else(|error| panic!("restart snapshot must be readable: {error}"))
             .terminal_state
-            .unwrap_or_else(|| panic!("restart snapshot must remain raw")),
+            .as_deref(),
+        Some("created"),
+        "volatile raw-status cursor must restart"
     );
     assert_eq!(
         snapshot_states,
@@ -2180,12 +2333,7 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
     fixture.reset().await;
     assert!(fixture.port().adopt(launch.clone()).await.is_ok());
     let unresolved_requested = termination_requested_binding(&launch, "force_unresolved");
-    fixture
-        .select_fault(CovenFaultPoint::CancellationBeforeAcknowledgement)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("before-acknowledgement fault must be controllable: {error}")
-        });
+    require_fault(fixture, CovenFaultPoint::CancellationBeforeAcknowledgement).await;
     let mut unresolved_persistence = MemoryTerminationPersistence::default();
     assert!(matches!(
         persist_then_terminate(
@@ -2197,7 +2345,7 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
         Err(TerminationDispatchError::Port(PortError::Unavailable))
     ));
     fixture.restart().await;
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
     let unresolved = persist_then_terminate(
         &mut unresolved_persistence,
         fixture.port(),
@@ -2233,12 +2381,7 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
     fixture.reset().await;
     assert!(fixture.port().adopt(launch.clone()).await.is_ok());
     let acknowledged_requested = termination_requested_binding(&launch, "operator_request");
-    fixture
-        .select_fault(CovenFaultPoint::CancellationAfterAcknowledgement)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("after-acknowledgement fault must be controllable: {error}")
-        });
+    require_fault(fixture, CovenFaultPoint::CancellationAfterAcknowledgement).await;
     let mut acknowledged_persistence = MemoryTerminationPersistence::default();
     assert!(matches!(
         persist_then_terminate(
@@ -2250,7 +2393,19 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
         Err(TerminationDispatchError::Port(PortError::Unavailable))
     ));
     fixture.restart().await;
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
+    let mut conflicting_requested = acknowledged_requested.clone();
+    conflicting_requested.termination_reason_code = Some("policy_override".to_owned());
+    let mut conflicting_persistence = MemoryTerminationPersistence::default();
+    assert!(matches!(
+        persist_then_terminate(
+            &mut conflicting_persistence,
+            fixture.port(),
+            conflicting_requested,
+        )
+        .await,
+        Err(TerminationDispatchError::Port(PortError::IntentConflict))
+    ));
     let acknowledged = persist_then_terminate(
         &mut acknowledged_persistence,
         fixture.port(),
@@ -2379,11 +2534,7 @@ pub async fn assert_c_s10_result_artifact_binding(
     assert_complete_result(&actual, &expected)
         .unwrap_or_else(|field| panic!("complete result mismatch: {field}"));
 
-    let mut request_id_mismatch = expected.correlation.clone();
-    request_id_mismatch.request_id = request_id(11);
-    let mut correlations = vec![("request_id", request_id_mismatch)];
-    correlations.extend(changed_correlations(&expected.correlation));
-    for (field, correlation) in correlations {
+    for (field, correlation) in changed_correlations(&expected.correlation) {
         let mut bundle_changed = expected.clone();
         bundle_changed.correlation = correlation.clone();
         assert_complete_result_rejected(&bundle_changed, &expected, field);
@@ -2539,78 +2690,135 @@ fn mutate_artifact_expiry(bundle: &mut ResultBundle) {
     bundle.artifacts[0].content.expires_at -= time::Duration::seconds(1);
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FaultScenario {
+    Adoption,
+    Lookup,
+    Cursor,
+    Termination,
+    Result,
+    Reconciliation,
+}
+
+const MANDATORY_FAULTS: &[(CovenFaultPoint, FaultScenario)] = &[
+    (
+        CovenFaultPoint::AdoptionBeforeCommit,
+        FaultScenario::Adoption,
+    ),
+    (
+        CovenFaultPoint::AdoptionAfterCommit,
+        FaultScenario::Adoption,
+    ),
+    (CovenFaultPoint::InputBeforeCommit, FaultScenario::Adoption),
+    (CovenFaultPoint::InputAfterCommit, FaultScenario::Adoption),
+    (CovenFaultPoint::LookupBeforeRead, FaultScenario::Lookup),
+    (CovenFaultPoint::LookupAfterRead, FaultScenario::Lookup),
+    (CovenFaultPoint::CursorBeforePage, FaultScenario::Cursor),
+    (CovenFaultPoint::CursorAfterPage, FaultScenario::Cursor),
+    (
+        CovenFaultPoint::CancellationBeforeAcknowledgement,
+        FaultScenario::Termination,
+    ),
+    (
+        CovenFaultPoint::CancellationAfterAcknowledgement,
+        FaultScenario::Termination,
+    ),
+    (
+        CovenFaultPoint::TerminalBeforePersistence,
+        FaultScenario::Termination,
+    ),
+    (
+        CovenFaultPoint::ResultBeforePersistence,
+        FaultScenario::Result,
+    ),
+    (
+        CovenFaultPoint::ArtifactBeforePersistence,
+        FaultScenario::Result,
+    ),
+    (
+        CovenFaultPoint::ReconcileBeforeDisposition,
+        FaultScenario::Reconciliation,
+    ),
+    (
+        CovenFaultPoint::ReconcileAfterDisposition,
+        FaultScenario::Reconciliation,
+    ),
+    (
+        CovenFaultPoint::ReconcileStall,
+        FaultScenario::Reconciliation,
+    ),
+];
+
 /// Verifies durable-before/after semantics for every declared fixture fault.
 pub async fn assert_c_s11_restart_persistence(
     fixture: &mut dyn CovenConformanceFixture,
 ) -> ConformanceOutcome {
-    if let Some(outcome) =
-        expected_unsupported(fixture, CovenConformanceCase::C_S11, UnsupportedCall::Adopt).await
+    if let Some(outcome) = expected_unsupported(
+        fixture,
+        CovenConformanceCase::C_S11,
+        UnsupportedCall::Negotiate,
+    )
+    .await
     {
         return outcome;
     }
-    let every_fault = [
-        CovenFaultPoint::AdoptionBeforeCommit,
-        CovenFaultPoint::AdoptionAfterCommit,
-        CovenFaultPoint::InputBeforeCommit,
-        CovenFaultPoint::InputAfterCommit,
-        CovenFaultPoint::LookupBeforeRead,
-        CovenFaultPoint::LookupAfterRead,
-        CovenFaultPoint::CursorBeforePage,
-        CovenFaultPoint::CursorAfterPage,
-        CovenFaultPoint::CancellationBeforeAcknowledgement,
-        CovenFaultPoint::CancellationAfterAcknowledgement,
-        CovenFaultPoint::TerminalBeforePersistence,
-        CovenFaultPoint::ResultBeforePersistence,
-        CovenFaultPoint::ArtifactBeforePersistence,
-        CovenFaultPoint::ReconcileBeforeDisposition,
-        CovenFaultPoint::ReconcileAfterDisposition,
-        CovenFaultPoint::ReconcileStall,
-    ];
-    for point in every_fault {
-        assert!(fixture.supports(point), "{point:?}");
-    }
-
-    for point in [
-        CovenFaultPoint::AdoptionBeforeCommit,
-        CovenFaultPoint::AdoptionAfterCommit,
-        CovenFaultPoint::InputBeforeCommit,
-        CovenFaultPoint::InputAfterCommit,
-    ] {
-        assert_adoption_fault_recovery(fixture, point).await;
-    }
-    for point in [
-        CovenFaultPoint::LookupBeforeRead,
-        CovenFaultPoint::LookupAfterRead,
-    ] {
-        assert_lookup_fault_recovery(fixture, point).await;
-    }
-    for point in [
-        CovenFaultPoint::CursorBeforePage,
-        CovenFaultPoint::CursorAfterPage,
-    ] {
-        assert_cursor_fault_recovery(fixture, point).await;
-    }
-    for point in [
-        CovenFaultPoint::CancellationBeforeAcknowledgement,
-        CovenFaultPoint::CancellationAfterAcknowledgement,
-        CovenFaultPoint::TerminalBeforePersistence,
-    ] {
-        assert_termination_fault_recovery(fixture, point).await;
-    }
-    for point in [
-        CovenFaultPoint::ResultBeforePersistence,
-        CovenFaultPoint::ArtifactBeforePersistence,
-    ] {
-        assert_result_fault_recovery(fixture, point).await;
-    }
-    for point in [
-        CovenFaultPoint::ReconcileBeforeDisposition,
-        CovenFaultPoint::ReconcileAfterDisposition,
-        CovenFaultPoint::ReconcileStall,
-    ] {
-        assert_reconciliation_fault_recovery(fixture, point).await;
+    assert_restart_resets_runtime(fixture).await;
+    for &(point, scenario) in MANDATORY_FAULTS {
+        match scenario {
+            FaultScenario::Adoption => assert_adoption_fault_recovery(fixture, point).await,
+            FaultScenario::Lookup => assert_lookup_fault_recovery(fixture, point).await,
+            FaultScenario::Cursor => assert_cursor_fault_recovery(fixture, point).await,
+            FaultScenario::Termination => assert_termination_fault_recovery(fixture, point).await,
+            FaultScenario::Result => assert_result_fault_recovery(fixture, point).await,
+            FaultScenario::Reconciliation => {
+                assert_reconciliation_fault_recovery(fixture, point).await;
+            }
+        }
     }
     ConformanceOutcome::Verified
+}
+
+async fn assert_restart_resets_runtime(fixture: &mut dyn CovenConformanceFixture) {
+    fixture.reset().await;
+    let request = launch_request();
+    let request_id = request.correlation().request_id;
+    let adopted = fixture
+        .port()
+        .adopt(request)
+        .await
+        .unwrap_or_else(|error| panic!("restart setup must adopt: {error}"));
+    assert_eq!(
+        fixture
+            .port()
+            .inspect("session-1")
+            .await
+            .unwrap_or_else(|error| panic!("restart setup must inspect: {error}"))
+            .terminal_state
+            .as_deref(),
+        Some("created")
+    );
+    require_fault(fixture, CovenFaultPoint::LookupBeforeRead).await;
+    fixture.restart().await;
+    assert_eq!(
+        fixture.observations().await,
+        CovenConformanceObservations::default()
+    );
+    assert_eq!(
+        fixture.port().lookup(&request_id).await,
+        Ok(adopted),
+        "durable adoption must survive while the selected fault is cleared"
+    );
+    assert_eq!(
+        fixture
+            .port()
+            .inspect("session-1")
+            .await
+            .unwrap_or_else(|error| panic!("durable session must survive restart: {error}"))
+            .terminal_state
+            .as_deref(),
+        Some("created"),
+        "volatile inspection cursor must restart"
+    );
 }
 
 async fn assert_adoption_fault_recovery(
@@ -2630,22 +2838,39 @@ async fn assert_adoption_fault_recovery(
     } else {
         launch_request()
     };
-    fixture
-        .select_fault(point)
-        .await
-        .unwrap_or_else(|error| panic!("{point:?} must be controllable: {error}"));
+    require_fault(fixture, point).await;
     assert_eq!(
         fixture.port().adopt(request.clone()).await,
         Err(PortError::Unavailable)
     );
+    let calls_after_fault = fixture.observations().await.adoption_calls;
+    assert_eq!(calls_after_fault, 1 + u64::from(input_fault), "{point:?}");
     fixture.restart().await;
-    fixture.clear_fault().await;
+    let durable_lookup = fixture
+        .port()
+        .lookup(&request.correlation().request_id)
+        .await
+        .unwrap_or_else(|error| panic!("{point:?} lookup observation failed: {error}"));
+    let after_commit = matches!(
+        point,
+        CovenFaultPoint::AdoptionAfterCommit | CovenFaultPoint::InputAfterCommit
+    );
+    if after_commit {
+        assert!(matches!(
+            durable_lookup,
+            AdoptionDisposition::Adopted { .. }
+        ));
+    } else {
+        assert_eq!(durable_lookup, AdoptionDisposition::Unknown);
+    }
+    require_clear_fault(fixture).await;
     let recovered = fixture
         .port()
         .adopt(request.clone())
         .await
         .unwrap_or_else(|error| panic!("{point:?} must recover after restart: {error}"));
     let calls_after_recovery = fixture.observations().await.adoption_calls;
+    assert_eq!(calls_after_recovery, u64::from(!after_commit), "{point:?}");
     fixture.restart().await;
     assert_eq!(
         fixture
@@ -2655,11 +2880,7 @@ async fn assert_adoption_fault_recovery(
             .unwrap_or_else(|error| panic!("{point:?} must replay: {error}")),
         recovered
     );
-    assert_eq!(
-        fixture.observations().await.adoption_calls,
-        calls_after_recovery,
-        "{point:?}"
-    );
+    assert_eq!(fixture.observations().await.adoption_calls, 0, "{point:?}");
 }
 
 async fn assert_lookup_fault_recovery(
@@ -2674,16 +2895,13 @@ async fn assert_lookup_fault_recovery(
         .adopt(launch)
         .await
         .unwrap_or_else(|error| panic!("lookup setup must adopt: {error}"));
-    fixture
-        .select_fault(point)
-        .await
-        .unwrap_or_else(|error| panic!("{point:?} must be controllable: {error}"));
+    require_fault(fixture, point).await;
     assert_eq!(
         fixture.port().lookup(&request_id).await,
         Err(PortError::Unavailable)
     );
     fixture.restart().await;
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
     assert_eq!(
         fixture
             .port()
@@ -2704,16 +2922,39 @@ async fn assert_cursor_fault_recovery(
         session_id: "session-1".to_owned(),
         after_sequence: 0,
     };
-    fixture
-        .select_fault(point)
-        .await
-        .unwrap_or_else(|error| panic!("{point:?} must be controllable: {error}"));
+    require_fault(fixture, point).await;
     assert_eq!(
         fixture.port().events(cursor.clone()).await,
         Err(PortError::Unavailable)
     );
     fixture.restart().await;
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
+    let regression = EventCursor {
+        session_id: "session-1".to_owned(),
+        after_sequence: 1,
+    };
+    if point == CovenFaultPoint::CursorAfterPage {
+        assert_eq!(
+            fixture.port().events(regression).await,
+            Err(PortError::IntentConflict)
+        );
+    } else {
+        let probe = fixture
+            .port()
+            .events(regression)
+            .await
+            .unwrap_or_else(|error| panic!("before-page fault persisted a cursor: {error}"));
+        assert_eq!(
+            probe
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
+        fixture.reset().await;
+        assert!(fixture.port().adopt(launch_request()).await.is_ok());
+    }
     let recovered = fixture
         .port()
         .events(cursor.clone())
@@ -2739,19 +2980,33 @@ async fn assert_termination_fault_recovery(
     assert!(fixture.port().adopt(launch.clone()).await.is_ok());
     let requested = termination_requested_binding(&launch, "operator_request");
     let mut persistence = MemoryTerminationPersistence::default();
-    fixture
-        .select_fault(point)
-        .await
-        .unwrap_or_else(|error| panic!("{point:?} must be controllable: {error}"));
+    require_fault(fixture, point).await;
     assert!(matches!(
         persist_then_terminate(&mut persistence, fixture.port(), requested.clone(),).await,
         Err(TerminationDispatchError::Port(PortError::Unavailable))
     ));
     fixture.restart().await;
-    fixture.clear_fault().await;
-    let recovered = persist_then_terminate(&mut persistence, fixture.port(), requested.clone())
-        .await
-        .unwrap_or_else(|error| panic!("{point:?} termination must recover: {error}"));
+    let recovered = if point == CovenFaultPoint::CancellationBeforeAcknowledgement {
+        require_fault(fixture, CovenFaultPoint::CancellationBeforeAcknowledgement).await;
+        assert!(matches!(
+            persist_then_terminate(&mut persistence, fixture.port(), requested.clone()).await,
+            Err(TerminationDispatchError::Port(PortError::Unavailable))
+        ));
+        require_clear_fault(fixture).await;
+        persist_then_terminate(&mut persistence, fixture.port(), requested.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{point:?} termination must recover: {error}"))
+    } else {
+        require_fault(fixture, CovenFaultPoint::CancellationBeforeAcknowledgement).await;
+        let disposition =
+            persist_then_terminate(&mut persistence, fixture.port(), requested.clone())
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("{point:?} lost its durable acknowledgement: {error}")
+                });
+        require_clear_fault(fixture).await;
+        disposition
+    };
     fixture.restart().await;
     assert_eq!(
         persist_then_terminate(&mut persistence, fixture.port(), requested)
@@ -2767,21 +3022,33 @@ async fn assert_result_fault_recovery(
 ) {
     fixture.reset().await;
     assert!(fixture.port().adopt(launch_request()).await.is_ok());
-    fixture
-        .select_fault(point)
-        .await
-        .unwrap_or_else(|error| panic!("{point:?} must be controllable: {error}"));
+    require_fault(fixture, point).await;
     assert_eq!(
         fixture.port().result("session-1").await,
         Err(PortError::Unavailable)
     );
     fixture.restart().await;
-    fixture.clear_fault().await;
-    let recovered = fixture
-        .port()
-        .result("session-1")
-        .await
-        .unwrap_or_else(|error| panic!("{point:?} result must recover: {error}"));
+    require_fault(fixture, CovenFaultPoint::ResultBeforePersistence).await;
+    let recovered = if point == CovenFaultPoint::ResultBeforePersistence {
+        assert_eq!(
+            fixture.port().result("session-1").await,
+            Err(PortError::Unavailable)
+        );
+        require_clear_fault(fixture).await;
+        fixture
+            .port()
+            .result("session-1")
+            .await
+            .unwrap_or_else(|error| panic!("{point:?} result must recover: {error}"))
+    } else {
+        let bundle = fixture
+            .port()
+            .result("session-1")
+            .await
+            .unwrap_or_else(|error| panic!("artifact fault lost primary result: {error}"));
+        require_clear_fault(fixture).await;
+        bundle
+    };
     fixture.restart().await;
     assert_eq!(
         fixture
@@ -2800,10 +3067,7 @@ async fn assert_reconciliation_fault_recovery(
     fixture.reset().await;
     let correlation = mark_ambiguous(fixture).await;
     let request = reconciliation_request(correlation, true);
-    fixture
-        .select_fault(point)
-        .await
-        .unwrap_or_else(|error| panic!("{point:?} must be controllable: {error}"));
+    require_fault(fixture, point).await;
     let expected = if point == CovenFaultPoint::ReconcileStall {
         PortError::Stalled
     } else {
@@ -2820,7 +3084,7 @@ async fn assert_reconciliation_fault_recovery(
         assert!(committed_before_restart.is_none());
     }
     fixture.restart().await;
-    fixture.clear_fault().await;
+    require_clear_fault(fixture).await;
     let recovered = fixture
         .port()
         .reconcile(request.clone())
@@ -2845,7 +3109,7 @@ async fn assert_reconciliation_fault_recovery(
         fixture.observations().await.durable_reconciliation,
         Some(durable)
     );
-    assert_eq!(fixture.observations().await.adoption_calls, 1);
+    assert_eq!(fixture.observations().await.adoption_calls, 0);
 }
 
 /// Verifies stable typed denials for every public invalid-input class.
