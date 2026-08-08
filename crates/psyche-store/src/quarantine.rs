@@ -1,6 +1,6 @@
 use std::fmt;
 
-use psyche_core::contracts::{RejectedDocument, RejectionReason};
+use psyche_core::contracts::{RejectedDocument, RejectionReason, SchemaKind};
 use psyche_core::digest::{Sha256Digest, canonical_bytes, digest};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use time::format_description::well_known::Rfc3339;
@@ -102,6 +102,25 @@ impl QuarantineReasonCode {
             "unknown_enum_value" => Ok(Self::UnknownEnumValue),
             "invalid_shape" => Ok(Self::InvalidShape),
             _ => Err(StoreError::DatabaseCorruption),
+        }
+    }
+
+    fn rejection_reason(self) -> RejectionReason {
+        match self {
+            Self::TooLarge => RejectionReason::TooLarge,
+            Self::UnknownSchema => RejectionReason::UnknownSchema,
+            Self::UnsupportedMajor => RejectionReason::UnsupportedMajor {
+                found: 0,
+                supported: 0,
+            },
+            Self::UnknownEnumValue => RejectionReason::UnknownEnumValue {
+                schema: SchemaKind::Error,
+                field: "persisted",
+            },
+            Self::InvalidShape => RejectionReason::InvalidShape {
+                schema: SchemaKind::Error,
+                field: "persisted",
+            },
         }
     }
 }
@@ -345,12 +364,25 @@ impl Store {
         id: &QuarantineId,
     ) -> Result<Option<QuarantineRecord>, StoreError> {
         validate_typed_id(id)?;
-        let Some(stored) = stored_by_id(&self.connection, id.as_str())? else {
-            return Ok(None);
-        };
-        let record = validate_stored(stored)?;
-        validate_record_audit(&self.connection, &record)?;
-        Ok(Some(record))
+        let transaction = self.connection.unchecked_transaction()?;
+        let result = (|| {
+            let Some(stored) = stored_by_id(&transaction, id.as_str())? else {
+                return Ok(None);
+            };
+            let record = validate_stored(stored)?;
+            validate_record_audit(&transaction, &record)?;
+            Ok(Some(record))
+        })();
+        match result {
+            Ok(record) => {
+                transaction.commit()?;
+                Ok(record)
+            }
+            Err(error) => {
+                transaction.rollback()?;
+                Err(error)
+            }
+        }
     }
 
     /// Atomically establishes or exactly replays one quarantine resolution.
@@ -643,6 +675,15 @@ fn validate_stored(stored: StoredQuarantineRecord) -> Result<QuarantineRecord, S
     let payload_digest =
         Sha256Digest::parse(&stored.payload_digest).map_err(|_| StoreError::DatabaseCorruption)?;
     let reason = QuarantineReasonCode::parse(&stored.reason)?;
+    if stored.bounded_payload.len() < MAX_BOUNDED_PAYLOAD_BYTES {
+        let reconstructed =
+            RejectedDocument::from_bytes(&stored.bounded_payload, reason.rejection_reason());
+        if reconstructed.payload_digest != payload_digest
+            || reconstructed.schema_version != stored.schema_version
+        {
+            return Err(StoreError::DatabaseCorruption);
+        }
+    }
     let discovered_at = parse_canonical_utc(&stored.discovered_at)?;
 
     let resolution_columns = (

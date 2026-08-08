@@ -2,7 +2,10 @@
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Barrier};
+use std::sync::{
+    Arc, Barrier,
+    atomic::{AtomicBool, Ordering},
+};
 
 use psyche_core::contracts::execution::{AdoptionState, CancellationState, ExecutionBinding};
 use psyche_core::contracts::{
@@ -212,6 +215,80 @@ fn quarantine_is_bounded_idempotent_and_reason_sensitive() {
         RejectedDocument::from_bytes(&bytes, RejectionReason::UnknownSchema);
     let other_id = store.quarantine(same_payload_different_reason).unwrap();
     assert_ne!(other_id, id);
+}
+
+#[test]
+fn complete_persisted_quarantine_rejects_valid_format_payload_tampering() {
+    let (mut store, _dir, path) = test_store();
+    let id = quarantined_fixture(&mut store);
+    raw_connection(&path)
+        .execute(
+            "UPDATE quarantine_records SET bounded_payload = ?1 WHERE quarantine_id = ?2",
+            params![br#"{"schema_version":"psyche.other.v1"}"#, id.as_str()],
+        )
+        .unwrap();
+
+    assert_database_corruption(store.quarantine_record(&id));
+}
+
+#[test]
+fn complete_persisted_quarantine_rejects_valid_format_digest_tampering() {
+    let (mut store, _dir, path) = test_store();
+    let id = quarantined_fixture(&mut store);
+    raw_connection(&path)
+        .execute(
+            "UPDATE quarantine_records SET payload_digest = ?1 WHERE quarantine_id = ?2",
+            params![fixture_digest('d').as_str(), id.as_str()],
+        )
+        .unwrap();
+
+    assert_database_corruption(store.quarantine_record(&id));
+}
+
+#[test]
+fn complete_persisted_quarantine_rejects_valid_format_schema_tampering() {
+    let (mut store, _dir, path) = test_store();
+    let id = quarantined_fixture(&mut store);
+    raw_connection(&path)
+        .execute(
+            "UPDATE quarantine_records SET schema_version = ?1 WHERE quarantine_id = ?2",
+            params!["psyche.other.v1", id.as_str()],
+        )
+        .unwrap();
+
+    assert_database_corruption(store.quarantine_record(&id));
+}
+
+#[test]
+fn fully_bounded_persisted_quarantine_retains_shape_only_validation() {
+    for raw_len in [64 * 1024, 64 * 1024 + 1] {
+        let (mut store, _dir, path) = test_store();
+        let id = store
+            .quarantine(RejectedDocument::from_bytes(
+                &vec![b'x'; raw_len],
+                RejectionReason::UnknownSchema,
+            ))
+            .unwrap();
+        raw_connection(&path)
+            .execute(
+                "
+                UPDATE quarantine_records
+                SET payload_digest = ?1, schema_version = ?2
+                WHERE quarantine_id = ?3
+                ",
+                params![
+                    fixture_digest('e').as_str(),
+                    "psyche.future.v1",
+                    id.as_str()
+                ],
+            )
+            .unwrap();
+
+        let record = store.quarantine_record(&id).unwrap().unwrap();
+        assert_eq!(record.bounded_payload.len(), 64 * 1024);
+        assert_eq!(record.payload_digest, fixture_digest('e'));
+        assert_eq!(record.schema_version.as_deref(), Some("psyche.future.v1"));
+    }
 }
 
 #[test]
@@ -433,6 +510,71 @@ fn concurrent_quarantine_resolution_has_one_durable_winner() {
             .count(),
         1
     );
+}
+
+#[test]
+fn concurrent_quarantine_reads_observe_consistent_resolution_snapshots() {
+    const READER_COUNT: usize = 16;
+
+    let (mut creator, _dir, path) = test_store();
+    let id = quarantined_fixture(&mut creator);
+    let discovered_at = creator
+        .quarantine_record(&id)
+        .unwrap()
+        .unwrap()
+        .discovered_at;
+    drop(creator);
+
+    let mut resolver = Store::open(&path).unwrap();
+    let readers = (0..READER_COUNT)
+        .map(|_| Store::open(&path).unwrap())
+        .collect::<Vec<_>>();
+    let barrier = Arc::new(Barrier::new(READER_COUNT + 1));
+    let resolved = Arc::new(AtomicBool::new(false));
+    let handles = readers
+        .into_iter()
+        .map(|reader| {
+            let id = id.clone();
+            let barrier = Arc::clone(&barrier);
+            let resolved = Arc::clone(&resolved);
+            std::thread::spawn(move || -> Result<(), StoreError> {
+                reader.quarantine_record(&id)?;
+                barrier.wait();
+                while !resolved.load(Ordering::Acquire) {
+                    reader.quarantine_record(&id)?;
+                    std::thread::yield_now();
+                }
+                for _ in 0..32 {
+                    reader.quarantine_record(&id)?;
+                }
+                Ok(())
+            })
+        })
+        .collect::<Vec<_>>();
+
+    barrier.wait();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    resolver
+        .resolve_quarantine(
+            &id,
+            &resolution(
+                QuarantineResolutionCode::ConfirmedInvalid,
+                discovered_at + Duration::seconds(1),
+            ),
+        )
+        .unwrap();
+    resolved.store(true, Ordering::Release);
+
+    for handle in handles {
+        handle.join().unwrap().unwrap();
+    }
+    let final_record = resolver.quarantine_record(&id).unwrap().unwrap();
+    assert_eq!(
+        final_record.resolution_code,
+        Some(QuarantineResolutionCode::ConfirmedInvalid)
+    );
+    assert!(final_record.resolution_digest.is_some());
+    assert_eq!(resolver.audit_events().unwrap().len(), 1);
 }
 
 #[test]
