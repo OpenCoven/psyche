@@ -6,18 +6,27 @@ use psyche_runtime::{LifecycleState, Runtime, RuntimeError};
 use psyche_store::{CURRENT_DATABASE_VERSION, Store, StoreError};
 
 fn test_config(data_dir: &std::path::Path) -> Config {
+    let data_dir = serde_json::to_string(&data_dir.to_string_lossy()).unwrap();
     psyche_config::load_str(&format!(
         r#"
 schema_version = "psyche.config.v1"
-data_dir = "{}"
+data_dir = {data_dir}
 
 [coven]
 socket = "/run/coven.sock"
 required_api_version = "coven.daemon.v1"
-"#,
-        data_dir.display()
+"#
     ))
     .unwrap()
+}
+
+#[test]
+fn test_config_preserves_a_windows_style_data_directory() {
+    let data_dir = std::path::Path::new(r"C:\Users\Val\AppData\Local\Psyche");
+
+    let config = test_config(data_dir);
+
+    assert_eq!(config.data_dir, data_dir);
 }
 
 #[tokio::test]

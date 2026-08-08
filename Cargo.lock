@@ -684,6 +684,7 @@ dependencies = [
  "psyche-config",
  "psyche-store",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
