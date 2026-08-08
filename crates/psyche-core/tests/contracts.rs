@@ -1016,7 +1016,7 @@ fn cancellation_binding_decode_maps_nested_wire_failures_to_evidence_mismatch() 
 fn strict_probe_and_document_limit_fail_closed() {
     assert!(matches!(
         decode_document(br#"{"schema_version":"psyche.unknown.v1"}"#),
-        Err(ContractError::UnknownSchema { .. })
+        Err(ContractError::UnknownSchema)
     ));
     assert!(decode_document(&vec![b' '; 1_048_577]).is_err());
 }
@@ -1240,4 +1240,51 @@ fn typed_deserialization_cannot_bypass_validation() {
         );
     });
     assert!(serde_json::from_slice::<SurfaceEffect>(&mismatched_digest).is_err());
+}
+
+// Attacker-input-redaction tests via decode_document: nearly-1-MiB schema
+// strings must not appear in ContractError Debug or Display output.
+#[test]
+fn decode_document_unknown_schema_does_not_expose_attacker_input() {
+    let marker = "SENTINEL_DECODE_UNKNOWN";
+    let version = format!("psyche.{}{}.v1", marker, "a".repeat(900_000));
+    let json = format!(r#"{{"schema_version":{version:?}}}"#);
+    let err = decode_document(json.as_bytes()).unwrap_err();
+    let debug = format!("{err:?}");
+    let display = format!("{err}");
+    assert!(
+        !debug.contains(marker),
+        "Debug must not contain attacker marker (output len = {})",
+        debug.len()
+    );
+    assert!(
+        !display.contains(marker),
+        "Display must not contain attacker marker (output len = {})",
+        display.len()
+    );
+    assert!(debug.len() < 256);
+    assert!(display.len() < 256);
+}
+
+#[test]
+fn decode_document_unsupported_major_does_not_expose_attacker_input() {
+    let marker = "SENTINEL_DECODE_MAJOR";
+    // Known kind, non-digit marker in major segment → UnsupportedMajor
+    let version = format!("psyche.intent.v{}{}", marker, "9".repeat(900_000));
+    let json = format!(r#"{{"schema_version":{version:?}}}"#);
+    let err = decode_document(json.as_bytes()).unwrap_err();
+    let debug = format!("{err:?}");
+    let display = format!("{err}");
+    assert!(
+        !debug.contains(marker),
+        "Debug must not contain attacker marker (output len = {})",
+        debug.len()
+    );
+    assert!(
+        !display.contains(marker),
+        "Display must not contain attacker marker (output len = {})",
+        display.len()
+    );
+    assert!(debug.len() < 256);
+    assert!(display.len() < 256);
 }

@@ -75,17 +75,15 @@ pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ContractError {
     /// A `psyche.<kind>.v<n>` string named a kind this build does not define.
-    #[error("unknown schema kind in {found:?}")]
-    UnknownSchema {
-        /// The rejected string, verbatim.
-        found: String,
-    },
+    /// The rejected string is intentionally not retained: attacker-controlled
+    /// schema text must not propagate into error payloads or logs.
+    #[error("schema version names an unknown kind")]
+    UnknownSchema,
     /// The kind is known but this build does not accept the declared major.
-    #[error("unsupported schema major in {found:?}")]
-    UnsupportedMajor {
-        /// The rejected string, verbatim.
-        found: String,
-    },
+    /// The rejected string is intentionally not retained: attacker-controlled
+    /// schema text must not propagate into error payloads or logs.
+    #[error("schema version declares an unsupported major")]
+    UnsupportedMajor,
     /// A record identifier did not carry the exact prefix its requested
     /// `RecordKind` requires. The required prefix is [`RecordKind::prefix`],
     /// not stored redundantly on this error.
@@ -107,15 +105,11 @@ pub enum ContractError {
     /// A digest was not exactly 64 lowercase hex characters after the prefix.
     #[error("digest is not exactly 64 lowercase hex characters")]
     MalformedDigest,
-    /// The value could not be serialized into canonical JSON — e.g. because
-    /// it contains a non-string map key.
-    /// The nested reason describes the serialization *shape* problem, never
-    /// the value's own field content.
-    #[error("value could not be canonicalized: {reason}")]
-    CanonicalizationFailed {
-        /// The serializer's description of the shape problem.
-        reason: String,
-    },
+    /// The value could not be serialized into canonical JSON. Serializer error
+    /// text is intentionally not retained because custom serializers can emit
+    /// attacker-controlled messages.
+    #[error("value could not be canonicalized")]
+    CanonicalizationFailed,
     /// A JSON integer was outside the exact range interoperable with IEEE-754
     /// implementations under I-JSON.
     #[error("JSON number is outside the interoperable safe-integer range")]
@@ -383,9 +377,7 @@ impl SchemaVersion {
     /// registry has exactly two failure modes, and a garbled major on an
     /// otherwise-known kind is a version problem, not an unknown-kind one.
     pub fn parse(value: &str) -> Result<Self, ContractError> {
-        let unknown = || ContractError::UnknownSchema {
-            found: value.to_string(),
-        };
+        let unknown = || ContractError::UnknownSchema;
         let segments: Vec<&str> = value.split('.').collect();
         let [namespace, kind_segment, major_segment] = segments.as_slice() else {
             return Err(unknown());
@@ -396,9 +388,7 @@ impl SchemaVersion {
 
         let kind = SchemaKind::from_name(kind_segment).ok_or_else(unknown)?;
 
-        let unsupported_major = || ContractError::UnsupportedMajor {
-            found: value.to_string(),
-        };
+        let unsupported_major = || ContractError::UnsupportedMajor;
         let digits = major_segment
             .strip_prefix('v')
             .ok_or_else(unsupported_major)?;
@@ -738,6 +728,61 @@ pub(crate) fn reason_code(
 mod tests {
     use super::*;
 
+    // Attacker-input-redaction tests: these pin the payload-light contract for
+    // UnknownSchema and UnsupportedMajor. A nearly-1-MiB schema string with a
+    // unique control marker must NOT appear in Debug or Display output.
+    #[test]
+    fn unknown_schema_error_does_not_expose_attacker_input() {
+        let marker = "SENTINEL_UNKNOWN_XYZ";
+        // Large unknown kind segment with embedded control marker → UnknownSchema
+        let attacker = format!("psyche.{}{}.v1", marker, "a".repeat(900_000));
+        let err = SchemaVersion::parse(&attacker).unwrap_err();
+        assert!(
+            matches!(err, ContractError::UnknownSchema),
+            "expected UnknownSchema, got {err:?}"
+        );
+        let debug = format!("{err:?}");
+        let display = format!("{err}");
+        assert!(
+            !debug.contains(marker),
+            "Debug must not contain attacker marker (output len = {})",
+            debug.len()
+        );
+        assert!(
+            !display.contains(marker),
+            "Display must not contain attacker marker (output len = {})",
+            display.len()
+        );
+        assert!(debug.len() < 256);
+        assert!(display.len() < 256);
+    }
+
+    #[test]
+    fn unsupported_major_error_does_not_expose_attacker_input() {
+        let marker = "SENTINEL_MAJOR_XYZ";
+        // Known kind, non-digit marker in major segment → UnsupportedMajor
+        let attacker = format!("psyche.intent.v{}{}", marker, "9".repeat(900_000));
+        let err = SchemaVersion::parse(&attacker).unwrap_err();
+        assert!(
+            matches!(err, ContractError::UnsupportedMajor),
+            "expected UnsupportedMajor, got {err:?}"
+        );
+        let debug = format!("{err:?}");
+        let display = format!("{err}");
+        assert!(
+            !debug.contains(marker),
+            "Debug must not contain attacker marker (output len = {})",
+            debug.len()
+        );
+        assert!(
+            !display.contains(marker),
+            "Display must not contain attacker marker (output len = {})",
+            display.len()
+        );
+        assert!(debug.len() < 256);
+        assert!(display.len() < 256);
+    }
+
     #[test]
     fn record_kind_all_has_exactly_fifteen_entries() {
         assert_eq!(RecordKind::ALL.len(), 15);
@@ -787,13 +832,13 @@ mod tests {
     #[test]
     fn schema_version_rejects_an_unknown_kind() {
         let err = SchemaVersion::parse("psyche.unknown_kind.v1").unwrap_err();
-        assert!(matches!(err, ContractError::UnknownSchema { .. }));
+        assert!(matches!(err, ContractError::UnknownSchema));
     }
 
     #[test]
     fn schema_version_rejects_a_known_kind_with_the_wrong_major() {
         let err = SchemaVersion::parse("psyche.intent.v2").unwrap_err();
-        assert!(matches!(err, ContractError::UnsupportedMajor { .. }));
+        assert!(matches!(err, ContractError::UnsupportedMajor));
     }
 
     #[test]
@@ -839,12 +884,12 @@ mod tests {
             let err = SchemaVersion::parse(near).unwrap_err();
             if expect_unknown {
                 assert!(
-                    matches!(err, ContractError::UnknownSchema { .. }),
+                    matches!(err, ContractError::UnknownSchema),
                     "expected UnknownSchema for {near:?}, got {err:?}"
                 );
             } else {
                 assert!(
-                    matches!(err, ContractError::UnsupportedMajor { .. }),
+                    matches!(err, ContractError::UnsupportedMajor),
                     "expected UnsupportedMajor for {near:?}, got {err:?}"
                 );
             }
