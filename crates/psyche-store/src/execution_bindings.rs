@@ -2,7 +2,9 @@ use psyche_core::contracts::execution::{
     CancellationAcknowledgementEvidence, CancellationState, CancellationUnresolvedEvidence,
     TerminationRequestCorrelation,
 };
-use psyche_core::contracts::{CanonicalDocument, ContractError, ExecutionBinding, SchemaKind};
+use psyche_core::contracts::{
+    CanonicalDocument, ContractError, ExecutionBinding, RecordKind, SchemaKind,
+};
 use psyche_core::digest::{Sha256Digest, canonical_bytes, digest};
 use psyche_core::id::RecordId;
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -115,6 +117,27 @@ pub(crate) fn latest_canonical_bytes(
     Ok(validate_revision_chain(stored, attempt_id)?
         .pop()
         .map(|revision| revision.canonical_json))
+}
+
+pub(crate) fn validate_all(connection: &Connection) -> Result<(), StoreError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT DISTINCT attempt_id
+        FROM execution_binding_revisions
+        ORDER BY attempt_id
+        ",
+    )?;
+    let attempt_ids = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|_| StoreError::DatabaseCorruption)?;
+    for attempt_id in attempt_ids {
+        let attempt_id = RecordId::parse(RecordKind::Attempt, &attempt_id)
+            .map_err(|_| StoreError::DatabaseCorruption)?;
+        let stored = load_stored_revisions(connection, &attempt_id)?;
+        validate_revision_chain(stored, &attempt_id)?;
+    }
+    Ok(())
 }
 
 fn load_stored_revisions(

@@ -4,7 +4,9 @@ mod connection;
 mod error;
 mod execution_bindings;
 mod migrations;
+mod quarantine;
 mod records;
+mod retention;
 mod transitions;
 
 use std::{
@@ -16,7 +18,12 @@ use rusqlite::TransactionBehavior;
 
 pub use error::StoreError;
 pub use migrations::CURRENT_DATABASE_VERSION;
+pub use quarantine::{
+    AuditEvent, QuarantineId, QuarantineReasonCode, QuarantineRecord, QuarantineResolution,
+    QuarantineResolutionCode, ResolveQuarantineOutcome,
+};
 pub use records::IngestOutcome;
+pub use retention::PruneReport;
 pub use transitions::Transition;
 
 /// A configured connection to Psyche's durable SQLite substrate.

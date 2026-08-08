@@ -1,7 +1,10 @@
 use std::fmt;
 
 use psyche_core::contracts::{ContractError, SchemaKind};
+use psyche_core::digest::Sha256Digest;
 use psyche_core::id::RecordId;
+
+use crate::quarantine::QuarantineId;
 
 /// A stable, payload-free store failure.
 #[derive(thiserror::Error)]
@@ -66,6 +69,41 @@ pub enum StoreError {
         /// Conflicting one-based record version.
         record_version: u64,
     },
+    /// A quarantine identifier did not use the strict `qua_` ULID shape.
+    #[error("quarantine identifier is invalid")]
+    InvalidQuarantineId,
+    /// Caller-supplied quarantine metadata was not safely bounded or validated.
+    #[error("quarantine record is invalid")]
+    InvalidQuarantineRecord,
+    /// An existing digest/reason pair carried different retained metadata.
+    #[error("quarantine content conflicts with stored metadata")]
+    QuarantineConflict {
+        /// Complete raw-payload digest shared by the conflicting requests.
+        payload_digest: Sha256Digest,
+    },
+    /// No quarantine row has the requested validated identity.
+    #[error("quarantine record was not found")]
+    QuarantineNotFound {
+        /// Validated identity that was not found.
+        quarantine_id: QuarantineId,
+    },
+    /// A resolution timestamp was non-UTC or earlier than discovery.
+    #[error("quarantine resolution is invalid")]
+    InvalidQuarantineResolution {
+        /// Quarantine row the invalid resolution targeted.
+        quarantine_id: QuarantineId,
+    },
+    /// A quarantine row already has a different durable resolution.
+    #[error("quarantine resolution conflicts with stored resolution")]
+    QuarantineResolutionConflict {
+        /// Quarantine row that already has a winner.
+        quarantine_id: QuarantineId,
+        /// Digest of the competing resolution.
+        resolution_digest: Sha256Digest,
+    },
+    /// A retention cutoff was not expressed in UTC.
+    #[error("retention cutoff is invalid")]
+    InvalidRetentionCutoff,
     /// Persisted rows failed canonical or revision-chain integrity validation.
     #[error("stored database content failed integrity validation")]
     DatabaseCorruption,

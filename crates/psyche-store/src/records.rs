@@ -1,6 +1,5 @@
 use psyche_core::contracts::{
-    CanonicalDocument, ContractError, RejectedDocument, RejectionReason, SchemaKind,
-    decode_document,
+    CanonicalDocument, ContractError, RejectedDocument, SchemaKind, decode_document,
 };
 use psyche_core::digest::{canonical_bytes, digest};
 use psyche_core::id::RecordId;
@@ -17,14 +16,17 @@ struct StoredCanonicalRecord {
 }
 
 /// Result of ingesting bytes at the store boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngestOutcome {
     /// A new canonical record was persisted.
     Inserted,
     /// The exact canonical record was already present.
     AlreadyPresent,
     /// Unsupported bytes were retained only in quarantine.
-    Quarantined,
+    Quarantined {
+        /// Validated identity of the retained quarantine row.
+        quarantine_id: crate::QuarantineId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,8 +49,8 @@ impl Store {
                 | ContractError::UnknownEnumValue { .. }),
             ) => {
                 let rejected = RejectedDocument::from_decode_error(bytes, error);
-                self.quarantine_decode_rejection(&rejected)?;
-                Ok(IngestOutcome::Quarantined)
+                let quarantine_id = self.quarantine(rejected)?;
+                Ok(IngestOutcome::Quarantined { quarantine_id })
             }
             Err(error) => Err(StoreError::Contract(error)),
         }
@@ -182,52 +184,6 @@ impl Store {
         transaction.commit()?;
         Ok(InsertStatus::Inserted)
     }
-
-    fn quarantine_decode_rejection(
-        &mut self,
-        rejected: &RejectedDocument,
-    ) -> Result<(), StoreError> {
-        let reason = match rejected.reason {
-            RejectionReason::TooLarge => "too_large",
-            RejectionReason::UnknownSchema => "unknown_schema",
-            RejectionReason::UnsupportedMajor { .. } => "unsupported_major",
-            RejectionReason::UnknownEnumValue { .. } => "unknown_enum_value",
-            RejectionReason::InvalidShape { .. } => "invalid_shape",
-        };
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute(
-            "
-            INSERT INTO quarantine_records (
-                quarantine_id,
-                schema_version,
-                payload_digest,
-                bounded_payload,
-                reason,
-                discovered_at
-            )
-            VALUES (
-                ?1,
-                ?2,
-                ?3,
-                ?4,
-                ?5,
-                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-            )
-            ON CONFLICT(quarantine_id) DO NOTHING
-            ",
-            params![
-                rejected.payload_digest.as_str(),
-                rejected.schema_version.as_deref(),
-                rejected.payload_digest.as_str(),
-                &rejected.bounded_payload,
-                reason,
-            ],
-        )?;
-        transaction.commit()?;
-        Ok(())
-    }
 }
 
 fn stored_canonical_record(
@@ -299,6 +255,83 @@ pub(crate) fn kind_key(kind: SchemaKind) -> &'static str {
         SchemaKind::Delivery => "delivery",
         SchemaKind::Error => "error",
     }
+}
+
+pub(crate) fn parse_kind_key(value: &str) -> Result<SchemaKind, StoreError> {
+    match value {
+        "identity_snapshot" => Ok(SchemaKind::IdentitySnapshot),
+        "intent" => Ok(SchemaKind::Intent),
+        "surface_event" => Ok(SchemaKind::SurfaceEvent),
+        "graph" => Ok(SchemaKind::Graph),
+        "graph_node" => Ok(SchemaKind::GraphNode),
+        "delegation" => Ok(SchemaKind::Delegation),
+        "budget" => Ok(SchemaKind::Budget),
+        "approval" => Ok(SchemaKind::Approval),
+        "execution_binding" => Ok(SchemaKind::ExecutionBinding),
+        "evidence" => Ok(SchemaKind::Evidence),
+        "verdict" => Ok(SchemaKind::Verdict),
+        "recovery" => Ok(SchemaKind::Recovery),
+        "addon" => Ok(SchemaKind::Addon),
+        "surface_effect" => Ok(SchemaKind::SurfaceEffect),
+        "delivery" => Ok(SchemaKind::Delivery),
+        "error" => Ok(SchemaKind::Error),
+        _ => Err(StoreError::DatabaseCorruption),
+    }
+}
+
+pub(crate) fn schema_kind_for_id(id: &RecordId) -> SchemaKind {
+    use psyche_core::contracts::RecordKind;
+
+    match id.kind() {
+        RecordKind::IdentitySnapshot => SchemaKind::IdentitySnapshot,
+        RecordKind::Intent => SchemaKind::Intent,
+        RecordKind::Graph => SchemaKind::Graph,
+        RecordKind::GraphNode => SchemaKind::GraphNode,
+        RecordKind::Attempt => SchemaKind::ExecutionBinding,
+        RecordKind::Delegation => SchemaKind::Delegation,
+        RecordKind::Budget => SchemaKind::Budget,
+        RecordKind::Approval => SchemaKind::Approval,
+        RecordKind::Evidence => SchemaKind::Evidence,
+        RecordKind::Verdict => SchemaKind::Verdict,
+        RecordKind::Recovery => SchemaKind::Recovery,
+        RecordKind::Addon => SchemaKind::Addon,
+        RecordKind::SurfaceEvent => SchemaKind::SurfaceEvent,
+        RecordKind::SurfaceEffect => SchemaKind::SurfaceEffect,
+        RecordKind::Delivery => SchemaKind::Delivery,
+    }
+}
+
+pub(crate) fn validate_all(connection: &rusqlite::Connection) -> Result<(), StoreError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT kind, record_id, schema_version, digest, canonical_json
+        FROM canonical_records
+        ORDER BY kind, record_id
+        ",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(StoredCanonicalRecord {
+                kind: row.get(0)?,
+                record_id: row.get(1)?,
+                schema_version: row.get(2)?,
+                digest: row.get(3)?,
+                canonical_json: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|_| StoreError::DatabaseCorruption)?;
+    for row in rows {
+        let kind = parse_kind_key(&row.kind)?;
+        if kind == SchemaKind::ExecutionBinding {
+            return Err(StoreError::DatabaseCorruption);
+        }
+        let record_kind = kind.record_kind().ok_or(StoreError::DatabaseCorruption)?;
+        let id = RecordId::parse(record_kind, &row.record_id)
+            .map_err(|_| StoreError::DatabaseCorruption)?;
+        validate_stored_canonical_record(&row, kind, &id)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_kind_id(kind: SchemaKind, id: &RecordId) -> Result<(), StoreError> {

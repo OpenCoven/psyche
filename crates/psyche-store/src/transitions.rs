@@ -211,6 +211,36 @@ impl Store {
                 .query_row("SELECT COUNT(*) FROM transitions", [], |row| row.get(0))?;
         count.try_into().map_err(|_| StoreError::DatabaseOperation)
     }
+
+    /// Returns one record's validated immutable transition history.
+    pub fn transitions(&self, record_id: &RecordId) -> Result<Vec<Transition>, StoreError> {
+        let kind = records::schema_kind_for_id(record_id);
+        authenticated_history(&self.connection, kind, record_id)
+    }
+}
+
+pub(crate) fn validate_all(connection: &rusqlite::Connection) -> Result<(), StoreError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT DISTINCT kind, record_id
+        FROM transitions
+        ORDER BY kind, record_id
+        ",
+    )?;
+    let histories = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|_| StoreError::DatabaseCorruption)?;
+    for (kind, record_id) in histories {
+        let kind = records::parse_kind_key(&kind)?;
+        let record_kind = kind.record_kind().ok_or(StoreError::DatabaseCorruption)?;
+        let record_id =
+            RecordId::parse(record_kind, &record_id).map_err(|_| StoreError::DatabaseCorruption)?;
+        authenticated_history(connection, kind, &record_id)?;
+    }
+    Ok(())
 }
 
 fn authenticated_history(
