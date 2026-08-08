@@ -215,6 +215,44 @@ async fn unknown_contract_fails_before_adoption() {
 }
 
 #[tokio::test]
+async fn supported_negotiation_requires_and_consumes_a_matching_script_step() {
+    let unscripted = FakeCoven::builder().build().unwrap();
+    assert!(matches!(
+        unscripted
+            .negotiate(NegotiateRequest::new("coven.daemon.v1"))
+            .await,
+        Err(PortError::UnexpectedCall)
+    ));
+    assert_eq!(unscripted.calls(), vec![FakeCall::Negotiate]);
+
+    let profile = CapabilityProfile {
+        api_version: "coven.daemon.v1".to_owned(),
+        capabilities: [Capability::StableAdoption.as_str().to_owned()]
+            .into_iter()
+            .collect(),
+    };
+    let fake = FakeCoven::builder()
+        .capability(Capability::StableAdoption)
+        .step(CovenScriptStep::Return(CovenScriptReturn::Negotiate(
+            profile.clone(),
+        )))
+        .adoption(AdoptionDisposition::Adopted {
+            session_id: "session-1".to_owned(),
+        })
+        .build()
+        .unwrap();
+    let request = NegotiateRequest::new("coven.daemon.v1").requiring(Capability::StableAdoption);
+
+    assert_eq!(fake.negotiate(request.clone()).await.unwrap(), profile);
+    assert_eq!(fake.remaining_steps(), 1);
+    assert!(matches!(
+        fake.negotiate(request).await,
+        Err(PortError::UnexpectedCall)
+    ));
+    assert_eq!(fake.remaining_steps(), 1);
+}
+
+#[tokio::test]
 async fn explicit_script_steps_are_consumed_in_order() {
     let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
     let request = AdoptionRequest::new(input).unwrap();
@@ -900,6 +938,115 @@ async fn changed_request_with_retained_digest_fails_before_adoption() {
             ));
             assert!(fake.calls().is_empty());
         }
+    }
+}
+
+#[tokio::test]
+async fn input_request_digest_binds_every_artifact_field_order_and_content() {
+    let mut base: serde_json::Value = serde_json::from_slice(INPUT_GOLDEN).unwrap();
+    base["required_artifact_bindings"] = serde_json::json!([
+        {
+            "artifact_id":"artifact-1",
+            "digest":format!("sha256:{}", "c".repeat(64)),
+            "media_type":"text/plain",
+            "size":1
+        },
+        {
+            "artifact_id":"artifact-2",
+            "digest":format!("sha256:{}", "d".repeat(64)),
+            "media_type":"application/json",
+            "size":2
+        }
+    ]);
+    let baseline =
+        AdoptionRequest::new(serde_json::from_value(base.clone()).unwrap()).unwrap();
+    let retained_digest = serde_json::to_value(baseline.request_digest()).unwrap();
+    let mut mutations = Vec::new();
+
+    for (name, pointer, replacement) in [
+        (
+            "artifact_id",
+            "/required_artifact_bindings/0/artifact_id",
+            serde_json::json!("artifact-3"),
+        ),
+        (
+            "digest",
+            "/required_artifact_bindings/0/digest",
+            serde_json::json!(format!("sha256:{}", "e".repeat(64))),
+        ),
+        (
+            "media_type",
+            "/required_artifact_bindings/0/media_type",
+            serde_json::json!("application/octet-stream"),
+        ),
+        (
+            "size",
+            "/required_artifact_bindings/0/size",
+            serde_json::json!(3),
+        ),
+    ] {
+        let mut changed = base.clone();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        mutations.push((name, changed));
+    }
+
+    let mut reordered = base.clone();
+    reordered["required_artifact_bindings"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    mutations.push(("order", reordered));
+
+    let mut removed = base.clone();
+    removed["required_artifact_bindings"]
+        .as_array_mut()
+        .unwrap()
+        .remove(1);
+    mutations.push(("removed_content", removed));
+
+    let mut added = base;
+    added["required_artifact_bindings"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "artifact_id":"artifact-3",
+            "digest":format!("sha256:{}", "f".repeat(64)),
+            "media_type":"text/plain",
+            "size":3
+        }));
+    mutations.push(("added_content", added));
+
+    for (name, mutated_input) in mutations {
+        let rebuilt = AdoptionRequest::new(
+            serde_json::from_value(mutated_input.clone()).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(
+            serde_json::to_value(rebuilt.request_digest()).unwrap(),
+            retained_digest,
+            "{name}"
+        );
+
+        let forged: AdoptionRequest = serde_json::from_value(serde_json::json!({
+            "input": mutated_input,
+            "request_digest": retained_digest
+        }))
+        .unwrap();
+        let fake = FakeCoven::builder()
+            .adoption(AdoptionDisposition::Adopted {
+                session_id: "session-1".to_owned(),
+            })
+            .build()
+            .unwrap();
+        assert!(
+            matches!(
+                fake.adopt(forged).await,
+                Err(PortError::RequestDigestMismatch)
+            ),
+            "{name}"
+        );
+        assert!(fake.calls().is_empty(), "{name}");
+        assert_eq!(fake.remaining_steps(), 1, "{name}");
     }
 }
 

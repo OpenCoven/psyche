@@ -449,23 +449,6 @@ impl FakeCoven {
         let state = self.state.lock().map_err(|_| PortError::Unavailable)?;
         Ok(state.terminations.get(key).cloned())
     }
-
-    fn scripted_negotiation(&self) -> Result<Option<CovenScriptStep>, PortError> {
-        let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
-        if state
-            .script
-            .front()
-            .is_some_and(|step| step.operation() == FakeOperation::Negotiate)
-        {
-            state
-                .script
-                .pop_front()
-                .map(Some)
-                .ok_or(PortError::UnexpectedCall)
-        } else {
-            Ok(None)
-        }
-    }
 }
 
 /// Builder for [`FakeCoven`].
@@ -673,21 +656,19 @@ impl FakeCovenBuilder {
 impl CovenPort for FakeCoven {
     async fn negotiate(&self, request: NegotiateRequest) -> Result<CapabilityProfile, PortError> {
         request.validate()?;
-        self.record(FakeOperation::Negotiate)?;
         if request.required_api_version != self.contract {
+            self.record(FakeOperation::Negotiate)?;
             return Err(PortError::ContractUnsupported {});
         }
         if !request.required_capabilities.is_subset(&self.capabilities) {
+            self.record(FakeOperation::Negotiate)?;
             return Err(PortError::CapabilityMissing {});
         }
         let configured = CapabilityProfile {
             api_version: self.contract.clone(),
             capabilities: self.capabilities.clone(),
         };
-        let Some(step) = self.scripted_negotiation()? else {
-            return Ok(configured);
-        };
-        match step {
+        match self.take(FakeOperation::Negotiate)? {
             CovenScriptStep::Return(CovenScriptReturn::Negotiate(profile)) => {
                 profile.validate().map_err(|_| PortError::InvalidResponse)?;
                 if profile == configured {
