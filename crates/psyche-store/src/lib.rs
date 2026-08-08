@@ -32,20 +32,31 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let initialization_lock = INITIALIZATION_LOCK.get_or_init(|| Mutex::new(()));
         let _initialization_guard = initialization_guard(initialization_lock)?;
-        let (mut connection, database_path) = connection::open(path)?;
+        let (database_path, file_state) = connection::prepare(path)?;
+        connection::validate_sidecars(&database_path)?;
 
-        let found =
-            match connection.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0)) {
+        if file_state == connection::DatabaseFileState::Existing {
+            let preflight = connection::open_read_only(&database_path)?;
+            if let Some(found) = connection::file_user_version(&database_path)? {
+                if found > CURRENT_DATABASE_VERSION {
+                    return Err(StoreError::UnsupportedDatabaseVersion { found });
+                }
+            }
+            let found = match preflight
+                .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            {
                 Ok(found) => found,
                 Err(error) => {
                     connection::validate_sidecars(&database_path)?;
                     return Err(error.into());
                 }
             };
-        if found > CURRENT_DATABASE_VERSION {
-            return Err(StoreError::UnsupportedDatabaseVersion { found });
+            if found > CURRENT_DATABASE_VERSION {
+                return Err(StoreError::UnsupportedDatabaseVersion { found });
+            }
         }
 
+        let mut connection = connection::open_read_write(&database_path)?;
         connection::enforce_database_permissions(&database_path)?;
         connection::validate_sidecars(&database_path)?;
         connection::configure(&connection)?;
