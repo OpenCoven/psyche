@@ -89,6 +89,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.92"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -654,6 +665,16 @@ dependencies = [
 [[package]]
 name = "psyche-coven"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "psyche-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "time",
+ "tokio",
+]
 
 [[package]]
 name = "psyche-runtime"
@@ -683,10 +704,27 @@ dependencies = [
 [[package]]
 name = "psyche-surfaces"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "psyche-core",
+ "thiserror",
+]
 
 [[package]]
 name = "psyche-test-support"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "psyche-core",
+ "psyche-coven",
+ "psyche-store",
+ "psyche-surfaces",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+]
 
 [[package]]
 name = "quick-error"

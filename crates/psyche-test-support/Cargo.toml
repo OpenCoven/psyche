@@ -7,5 +7,19 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+async-trait = { workspace = true }
+psyche-core = { workspace = true }
+psyche-coven = { workspace = true }
+psyche-store = { workspace = true }
+psyche-surfaces = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
