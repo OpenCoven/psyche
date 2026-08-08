@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded, object,
-    require_id, require_schema, timestamp,
+    require_id, require_schema,
 };
 use crate::digest::{Sha256Digest, digest};
 use crate::id::RecordId;
@@ -20,7 +20,8 @@ validated_struct! {
         pub actor: Value,
         pub locator: Value,
         pub adapter_event_digest: Sha256Digest,
-        pub received_at: String,
+        #[serde(with = "time::serde::rfc3339")]
+        pub received_at: time::OffsetDateTime,
         pub content: Value,
     }
 }
@@ -40,7 +41,6 @@ impl SurfaceEvent {
         object(&self.actor, s, "actor", false)?;
         object(&self.locator, s, "locator", false)?;
         object(&self.content, s, "content", false)?;
-        timestamp(&self.received_at, s, "received_at")?;
         Ok(())
     }
 }
@@ -69,7 +69,8 @@ validated_struct! {
         pub locator: Value,
         pub effect: Value,
         pub effect_digest: Sha256Digest,
-        pub created_at: String,
+        #[serde(with = "time::serde::rfc3339")]
+        pub created_at: time::OffsetDateTime,
     }
 }
 
@@ -107,7 +108,6 @@ impl SurfaceEffect {
         if digest(&self.effect)? != self.effect_digest {
             return Err(super::invalid(s, "effect_digest"));
         }
-        timestamp(&self.created_at, s, "created_at")?;
         Ok(())
     }
 }
@@ -151,7 +151,8 @@ pub struct DeliverySurfaceDecision {
     pub decision_id: String,
     pub request_digest: Sha256Digest,
     pub policy_revision: String,
-    pub expires_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: time::OffsetDateTime,
     pub state: DeliveryDecisionState,
 }
 
@@ -222,12 +223,7 @@ impl Delivery {
         if digest(&self.effect)? != self.effect_digest {
             return Err(super::invalid(s, "effect_digest"));
         }
-        timestamp(
-            &self.surface_decision.expires_at,
-            s,
-            "surface_decision.expires_at",
-        )?;
-        if self.state == DeliveryState::Sent && self.telegram_message_id.is_none() {
+        if (self.state == DeliveryState::Sent) != self.telegram_message_id.is_some() {
             return Err(super::invalid(s, "telegram_message_id"));
         }
         Ok(())

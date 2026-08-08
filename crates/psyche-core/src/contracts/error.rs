@@ -3,12 +3,23 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::contracts::{
     ContractError, SchemaKind, SchemaVersion, bounded, invalid, require_schema,
 };
+
+/// Maximum UTF-8 bytes in a public error message.
+pub const MAX_ERROR_MESSAGE_BYTES: usize = 4096;
+/// Maximum UTF-8 bytes in a public error correlation identifier.
+pub const MAX_ERROR_CORRELATION_ID_BYTES: usize = 255;
+/// Maximum public classification entries in an error details map.
+pub const MAX_ERROR_DETAILS_ENTRIES: usize = 128;
+/// Maximum UTF-8 bytes in a nonempty error details key.
+pub const MAX_ERROR_DETAIL_KEY_BYTES: usize = 256;
+/// Maximum UTF-8 bytes in a nonempty error details value.
+pub const MAX_ERROR_DETAIL_VALUE_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
@@ -142,6 +153,13 @@ impl Serialize for ErrorCode {
     }
 }
 
+impl<'de> Deserialize<'de> for ErrorCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).ok_or_else(|| serde::de::Error::custom("unknown error code"))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ErrorBody {
     pub code: ErrorCode,
@@ -199,16 +217,19 @@ impl ErrorEnvelope {
     pub fn validate(&self) -> Result<(), ContractError> {
         let s = SchemaKind::Error;
         require_schema(self.schema_version, s)?;
-        bounded(&self.error.message, 4096, s, "message")?;
-        bounded(&self.error.correlation_id, 255, s, "correlation_id")?;
-        if self.error.details.len() > 128 {
+        bounded(&self.error.message, MAX_ERROR_MESSAGE_BYTES, s, "message")?;
+        bounded(
+            &self.error.correlation_id,
+            MAX_ERROR_CORRELATION_ID_BYTES,
+            s,
+            "correlation_id",
+        )?;
+        if self.error.details.len() > MAX_ERROR_DETAILS_ENTRIES {
             return Err(invalid(s, "details"));
         }
         for (key, value) in &self.error.details {
-            bounded(key, 256, s, "details.key")?;
-            if value.len() > 4096 {
-                return Err(invalid(s, "details.value"));
-            }
+            bounded(key, MAX_ERROR_DETAIL_KEY_BYTES, s, "details.key")?;
+            bounded(value, MAX_ERROR_DETAIL_VALUE_BYTES, s, "details.value")?;
         }
         Ok(())
     }

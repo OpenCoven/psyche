@@ -3,7 +3,7 @@
 
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded,
-    optional_bounded, require_id, require_schema, string_list, timestamp,
+    optional_bounded, require_id, require_schema, string_list,
 };
 use crate::digest::Sha256Digest;
 use crate::id::RecordId;
@@ -93,7 +93,8 @@ validated_struct! {
         pub node_id: RecordId,
         pub requester_principal_id: String,
         pub decision: Option<String>,
-        pub expires_at: String,
+        #[serde(with = "time::serde::rfc3339")]
+        pub expires_at: time::OffsetDateTime,
     }
 }
 
@@ -110,7 +111,6 @@ impl Approval {
             "requester_principal_id",
         )?;
         optional_bounded(&self.decision, 256, s, "decision")?;
-        timestamp(&self.expires_at, s, "expires_at")?;
         Ok(())
     }
 }
@@ -127,7 +127,8 @@ validated_struct! {
         pub collection_method: String,
         pub media_type: String,
         pub size: u64,
-        pub created_at: String,
+        #[serde(with = "time::serde::rfc3339")]
+        pub created_at: time::OffsetDateTime,
         pub retention_policy: String,
     }
 }
@@ -147,7 +148,6 @@ impl Evidence {
         ] {
             bounded(value, 256, s, field)?;
         }
-        timestamp(&self.created_at, s, "created_at")?;
         Ok(())
     }
 }
@@ -164,7 +164,8 @@ validated_struct! {
         pub reviewer_id: String,
         pub outcome: String,
         pub reason_codes: Vec<String>,
-        pub created_at: String,
+        #[serde(with = "time::serde::rfc3339")]
+        pub created_at: time::OffsetDateTime,
     }
 }
 
@@ -183,7 +184,6 @@ impl Verdict {
             bounded(value, 256, s, field)?;
         }
         string_list(&self.reason_codes, s, "reason_codes")?;
-        timestamp(&self.created_at, s, "created_at")?;
         Ok(())
     }
 }

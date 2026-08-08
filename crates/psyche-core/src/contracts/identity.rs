@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded, require_id,
-    require_schema, timestamp,
+    require_schema,
 };
 use crate::digest::Sha256Digest;
 use crate::id::RecordId;
@@ -30,7 +30,8 @@ validated_struct! {
         pub soul_digest: Sha256Digest,
         pub role_skill_digest: Sha256Digest,
         pub provenance: IdentityProvenance,
-        pub resolved_at: String,
+        #[serde(with = "time::serde::rfc3339")]
+        pub resolved_at: time::OffsetDateTime,
     }
 }
 
@@ -61,7 +62,6 @@ impl IdentitySnapshot {
             schema,
             "provenance.resolver_version",
         )?;
-        timestamp(&self.resolved_at, schema, "resolved_at")?;
         Ok(())
     }
 }

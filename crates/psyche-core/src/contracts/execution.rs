@@ -2,10 +2,11 @@
 #![allow(missing_docs)]
 
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded,
-    optional_bounded, reason_code, require_id, require_schema, timestamp,
+    optional_bounded, reason_code, require_id, require_schema,
 };
 use crate::digest::Sha256Digest;
 use crate::id::{RecordId, RequestId};
@@ -47,7 +48,8 @@ pub struct CancellationAcknowledgementEvidence {
     pub execution_request_digest: Sha256Digest,
     pub kind: CancellationAcknowledgementKind,
     pub authority_evidence_digest: Sha256Digest,
-    pub acknowledged_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub acknowledged_at: time::OffsetDateTime,
 }
 
 #[derive(Deserialize)]
@@ -60,7 +62,8 @@ struct AcknowledgementWire {
     execution_request_digest: Sha256Digest,
     kind: CancellationAcknowledgementKind,
     authority_evidence_digest: Sha256Digest,
-    acknowledged_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    acknowledged_at: time::OffsetDateTime,
 }
 
 impl TryFrom<AcknowledgementWire> for CancellationAcknowledgementEvidence {
@@ -94,7 +97,6 @@ impl CancellationAcknowledgementEvidence {
         let s = SchemaKind::ExecutionBinding;
         bounded(&self.acknowledgement_id, 255, s, "acknowledgement_id")?;
         bounded(&self.session_id, 255, s, "session_id")?;
-        timestamp(&self.acknowledged_at, s, "acknowledged_at")?;
         Ok(())
     }
 }
@@ -107,7 +109,8 @@ pub struct CancellationUnresolvedEvidence {
     pub execution_request_id: RequestId,
     pub execution_request_digest: Sha256Digest,
     pub reason_code: String,
-    pub recorded_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub recorded_at: time::OffsetDateTime,
 }
 
 #[derive(Deserialize)]
@@ -119,7 +122,8 @@ struct UnresolvedWire {
     execution_request_id: RequestId,
     execution_request_digest: Sha256Digest,
     reason_code: String,
-    recorded_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    recorded_at: time::OffsetDateTime,
 }
 
 impl TryFrom<UnresolvedWire> for CancellationUnresolvedEvidence {
@@ -153,7 +157,6 @@ impl CancellationUnresolvedEvidence {
         bounded(&self.disposition_id, 255, s, "disposition_id")?;
         bounded(&self.session_id, 255, s, "session_id")?;
         reason_code(&self.reason_code, s, "reason_code")?;
-        timestamp(&self.recorded_at, s, "recorded_at")?;
         Ok(())
     }
 }
@@ -161,16 +164,20 @@ impl CancellationUnresolvedEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TerminationRequestCorrelation {
     pub termination_request_id: RequestId,
-    pub created_at: String,
-    pub valid_until: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub valid_until: time::OffsetDateTime,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TerminationWire {
     termination_request_id: RequestId,
-    created_at: String,
-    valid_until: String,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    valid_until: time::OffsetDateTime,
 }
 
 impl TryFrom<TerminationWire> for TerminationRequestCorrelation {
@@ -197,9 +204,7 @@ impl<'de> Deserialize<'de> for TerminationRequestCorrelation {
 impl TerminationRequestCorrelation {
     pub fn validate(&self) -> Result<(), ContractError> {
         let s = SchemaKind::ExecutionBinding;
-        let created = timestamp(&self.created_at, s, "termination_request.created_at")?;
-        let until = timestamp(&self.valid_until, s, "termination_request.valid_until")?;
-        if until <= created {
+        if self.valid_until <= self.created_at {
             return Err(super::invalid(s, "termination_request.valid_until"));
         }
         Ok(())
@@ -212,13 +217,16 @@ pub struct ExecutionBinding {
     pub attempt_id: RecordId,
     pub revision: u64,
     pub previous_revision_digest: Option<Sha256Digest>,
-    pub revision_created_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub revision_created_at: time::OffsetDateTime,
     pub familiar_snapshot_id: RecordId,
     pub project_id: String,
     pub request_id: RequestId,
     pub request_digest: Sha256Digest,
-    pub request_created_at: String,
-    pub request_valid_until: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub request_created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub request_valid_until: time::OffsetDateTime,
     pub coven_contract_version: String,
     pub coven_session_id: Option<String>,
     pub adoption_state: AdoptionState,
@@ -238,28 +246,41 @@ struct ExecutionWire {
     attempt_id: RecordId,
     revision: u64,
     previous_revision_digest: Option<Sha256Digest>,
-    revision_created_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    revision_created_at: time::OffsetDateTime,
     familiar_snapshot_id: RecordId,
     project_id: String,
     request_id: RequestId,
     request_digest: Sha256Digest,
-    request_created_at: String,
-    request_valid_until: String,
+    #[serde(with = "time::serde::rfc3339")]
+    request_created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    request_valid_until: time::OffsetDateTime,
     coven_contract_version: String,
     coven_session_id: Option<String>,
     adoption_state: AdoptionState,
     event_cursor: Option<String>,
     cancellation_state: CancellationState,
-    termination_request: Option<TerminationRequestCorrelation>,
-    termination_reason_code: Option<String>,
-    cancellation_acknowledgement: Option<CancellationAcknowledgementEvidence>,
-    cancellation_unresolved: Option<CancellationUnresolvedEvidence>,
+    termination_request: Option<Value>,
+    termination_reason_code: Option<Value>,
+    cancellation_acknowledgement: Option<Value>,
+    cancellation_unresolved: Option<Value>,
     terminal_state: Option<String>,
 }
 
-impl From<ExecutionWire> for ExecutionBinding {
-    fn from(w: ExecutionWire) -> Self {
-        Self {
+impl TryFrom<ExecutionWire> for ExecutionBinding {
+    type Error = ContractError;
+
+    fn try_from(w: ExecutionWire) -> Result<Self, Self::Error> {
+        let termination_request = cancellation_value(w.termination_request)?;
+        let termination_reason_code = match w.termination_reason_code {
+            Some(Value::String(reason)) => Some(reason),
+            Some(_) => return Err(ContractError::CancellationEvidenceMismatch),
+            None => None,
+        };
+        let cancellation_acknowledgement = cancellation_value(w.cancellation_acknowledgement)?;
+        let cancellation_unresolved = cancellation_value(w.cancellation_unresolved)?;
+        let value = Self {
             schema_version: w.schema_version,
             attempt_id: w.attempt_id,
             revision: w.revision,
@@ -276,24 +297,32 @@ impl From<ExecutionWire> for ExecutionBinding {
             adoption_state: w.adoption_state,
             event_cursor: w.event_cursor,
             cancellation_state: w.cancellation_state,
-            termination_request: w.termination_request,
-            termination_reason_code: w.termination_reason_code,
-            cancellation_acknowledgement: w.cancellation_acknowledgement,
-            cancellation_unresolved: w.cancellation_unresolved,
+            termination_request,
+            termination_reason_code,
+            cancellation_acknowledgement,
+            cancellation_unresolved,
             terminal_state: w.terminal_state,
-        }
+        };
+        value.validate()?;
+        Ok(value)
     }
 }
 
 impl<'de> Deserialize<'de> for ExecutionBinding {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = Self::from(ExecutionWire::deserialize(deserializer)?);
-        value.validate().map_err(serde::de::Error::custom)?;
-        Ok(value)
+        ExecutionWire::deserialize(deserializer)?
+            .try_into()
+            .map_err(serde::de::Error::custom)
     }
 }
 
 impl ExecutionBinding {
+    pub(crate) fn decode(value: Value) -> Result<Self, ContractError> {
+        let wire: ExecutionWire = serde_json::from_value(value)
+            .map_err(|_| super::invalid(SchemaKind::ExecutionBinding, "document"))?;
+        wire.try_into()
+    }
+
     pub fn validate(&self) -> Result<(), ContractError> {
         let s = SchemaKind::ExecutionBinding;
         require_schema(self.schema_version, s)?;
@@ -307,7 +336,6 @@ impl ExecutionBinding {
         if self.revision == 0 || (self.revision == 1) != self.previous_revision_digest.is_none() {
             return Err(super::invalid(s, "revision"));
         }
-        timestamp(&self.revision_created_at, s, "revision_created_at")?;
         bounded(&self.project_id, 255, s, "project_id")?;
         bounded(
             &self.coven_contract_version,
@@ -315,15 +343,19 @@ impl ExecutionBinding {
             s,
             "coven_contract_version",
         )?;
-        optional_bounded(&self.coven_session_id, 255, s, "coven_session_id")?;
+        if let Err(error) = optional_bounded(&self.coven_session_id, 255, s, "coven_session_id") {
+            return if self.cancellation_state == CancellationState::NotRequested {
+                Err(error)
+            } else {
+                Err(ContractError::CancellationEvidenceMismatch)
+            };
+        }
         optional_bounded(&self.event_cursor, 255, s, "event_cursor")?;
         optional_bounded(&self.terminal_state, 255, s, "terminal_state")?;
-        let request_created = timestamp(&self.request_created_at, s, "request_created_at")?;
-        let request_until = timestamp(&self.request_valid_until, s, "request_valid_until")?;
-        if request_until <= request_created {
+        if self.request_valid_until <= self.request_created_at {
             return Err(super::invalid(s, "request_valid_until"));
         }
-        self.validate_cancellation(request_created)
+        self.validate_cancellation(self.request_created_at)
     }
 
     fn validate_cancellation(
@@ -345,26 +377,18 @@ impl ExecutionBinding {
             .termination_request
             .as_ref()
             .ok_or(ContractError::CancellationEvidenceMismatch)?;
-        correlation.validate()?;
+        cancellation_result(correlation.validate())?;
         let reason = self
             .termination_reason_code
             .as_deref()
             .ok_or(ContractError::CancellationEvidenceMismatch)?;
-        reason_code(
+        cancellation_result(reason_code(
             reason,
             SchemaKind::ExecutionBinding,
             "termination_reason_code",
-        )?;
-        let created = timestamp(
-            &correlation.created_at,
-            SchemaKind::ExecutionBinding,
-            "termination_request.created_at",
-        )?;
-        let valid_until = timestamp(
-            &correlation.valid_until,
-            SchemaKind::ExecutionBinding,
-            "termination_request.valid_until",
-        )?;
+        ))?;
+        let created = correlation.created_at;
+        let valid_until = correlation.valid_until;
         if created < request_created || correlation.termination_request_id == self.request_id {
             return Err(ContractError::CancellationEvidenceMismatch);
         }
@@ -396,19 +420,14 @@ impl ExecutionBinding {
                     .cancellation_unresolved
                     .as_ref()
                     .ok_or(ContractError::CancellationEvidenceMismatch)?;
-                evidence.validate()?;
+                cancellation_result(evidence.validate())?;
                 self.validate_evidence_bindings(
                     &evidence.termination_request_id,
                     &evidence.session_id,
                     &evidence.execution_request_id,
                     &evidence.execution_request_digest,
                 )?;
-                let at = timestamp(
-                    &evidence.recorded_at,
-                    SchemaKind::ExecutionBinding,
-                    "recorded_at",
-                )?;
-                in_window(at, created, valid_until)
+                in_window(evidence.recorded_at, created, valid_until)
             }
             CancellationState::NotRequested => unreachable!(),
         }
@@ -427,7 +446,7 @@ impl ExecutionBinding {
             .cancellation_acknowledgement
             .as_ref()
             .ok_or(ContractError::CancellationEvidenceMismatch)?;
-        evidence.validate()?;
+        cancellation_result(evidence.validate())?;
         if evidence.kind != kind {
             return Err(ContractError::CancellationEvidenceMismatch);
         }
@@ -437,12 +456,7 @@ impl ExecutionBinding {
             &evidence.execution_request_id,
             &evidence.execution_request_digest,
         )?;
-        let at = timestamp(
-            &evidence.acknowledged_at,
-            SchemaKind::ExecutionBinding,
-            "acknowledged_at",
-        )?;
-        in_window(at, created, valid_until)
+        in_window(evidence.acknowledged_at, created, valid_until)
     }
 
     fn validate_evidence_bindings(
@@ -466,6 +480,20 @@ impl ExecutionBinding {
             Ok(())
         }
     }
+}
+
+fn cancellation_value<T: serde::de::DeserializeOwned>(
+    value: Option<Value>,
+) -> Result<Option<T>, ContractError> {
+    value
+        .map(|value| {
+            serde_json::from_value(value).map_err(|_| ContractError::CancellationEvidenceMismatch)
+        })
+        .transpose()
+}
+
+fn cancellation_result<T>(result: Result<T, ContractError>) -> Result<T, ContractError> {
+    result.map_err(|_| ContractError::CancellationEvidenceMismatch)
 }
 
 fn in_window(

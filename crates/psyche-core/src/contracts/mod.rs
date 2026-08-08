@@ -17,18 +17,18 @@ use crate::id::RecordId;
 macro_rules! validated_struct {
     (
         pub struct $name:ident, $wire:ident {
-            $(pub $field:ident: $ty:ty),+ $(,)?
+            $($(#[$field_meta:meta])* pub $field:ident: $ty:ty),+ $(,)?
         }
     ) => {
         #[derive(Debug, Clone, PartialEq, serde::Serialize)]
         pub struct $name {
-            $(pub $field: $ty),+
+            $($(#[$field_meta])* pub $field: $ty),+
         }
 
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct $wire {
-            $($field: $ty),+
+            $($(#[$field_meta])* $field: $ty),+
         }
 
         impl<'de> serde::Deserialize<'de> for $name {
@@ -509,7 +509,11 @@ impl CanonicalDocument {
             Self::SurfaceEffect(v) => v.validate(),
             Self::Delivery(v) => v.validate(),
             Self::Error(v) => v.validate(),
+        }?;
+        if crate::digest::canonical_bytes(self)?.len() > MAX_DOCUMENT_BYTES {
+            return Err(ContractError::DocumentTooLarge);
         }
+        Ok(())
     }
 
     /// Declared schema version.
@@ -582,7 +586,7 @@ pub fn decode_document(bytes: &[u8]) -> Result<CanonicalDocument, ContractError>
         SchemaKind::Budget => decode(value, CanonicalDocument::Budget, schema.kind)?,
         SchemaKind::Approval => decode(value, CanonicalDocument::Approval, schema.kind)?,
         SchemaKind::ExecutionBinding => {
-            decode(value, CanonicalDocument::ExecutionBinding, schema.kind)?
+            CanonicalDocument::ExecutionBinding(ExecutionBinding::decode(value)?)
         }
         SchemaKind::Evidence => decode(value, CanonicalDocument::Evidence, schema.kind)?,
         SchemaKind::Verdict => decode(value, CanonicalDocument::Verdict, schema.kind)?,
@@ -668,15 +672,6 @@ pub(crate) fn string_list(
     values
         .iter()
         .try_for_each(|v| bounded(v, 256, schema, field))
-}
-
-pub(crate) fn timestamp(
-    value: &str,
-    schema: SchemaKind,
-    field: &'static str,
-) -> Result<time::OffsetDateTime, ContractError> {
-    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
-        .map_err(|_| invalid(schema, field))
 }
 
 pub(crate) fn object(

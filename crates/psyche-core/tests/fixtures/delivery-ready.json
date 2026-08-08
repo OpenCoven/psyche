@@ -12,9 +12,11 @@
     "type": "send_message",
     "format": "html",
     "text": "Review complete.",
-    "buttons": []
+    "reply_to_message_id": "314",
+    "buttons": [],
+    "link_preview": {"enabled": true}
   },
-  "effect_digest": "sha256:81fe163b620a8bedc0f7aa98ec44f1c04376ca649cf97e1161a6b7d2924cbeb2",
+  "effect_digest": "sha256:26fae759f51eafdfa1277616327d942068948182fb0aaa6b34bbedb0a8ca7dc7",
   "surface_decision": {
     "decision_id": "decision_01ARZ3NDEKTSV4RRFFQ69G5FAV",
     "request_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",

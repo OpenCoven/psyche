@@ -1,13 +1,11 @@
 //! Intent contract.
 #![allow(missing_docs)]
 
-use std::collections::BTreeMap;
-
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::contracts::{
     ContractError, MAX_DOCUMENT_BYTES, RecordKind, SchemaKind, SchemaVersion, VersionedRecord,
-    bounded, require_id, require_schema, string_list, timestamp,
+    bounded, require_id, require_schema, string_list,
 };
 use crate::digest::Sha256Digest;
 use crate::id::RecordId;
@@ -20,10 +18,11 @@ validated_struct! {
         pub familiar_snapshot_id: RecordId,
         pub project_id: String,
         pub requested_outcome: String,
-        pub constraints: BTreeMap<String, Value>,
+        pub constraints: Map<String, Value>,
         pub required_evidence: Vec<String>,
         pub surface_event_id: Option<RecordId>,
-        pub created_at: String,
+        #[serde(with = "time::serde::rfc3339")]
+        pub created_at: time::OffsetDateTime,
         pub digest: Sha256Digest,
     }
 }
@@ -52,7 +51,6 @@ impl Intent {
         if crate::digest::canonical_bytes(&self.constraints)?.len() > MAX_DOCUMENT_BYTES {
             return Err(super::invalid(schema, "constraints"));
         }
-        timestamp(&self.created_at, schema, "created_at")?;
         Ok(())
     }
 }
