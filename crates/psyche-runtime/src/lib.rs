@@ -737,7 +737,7 @@ required_api_version = "coven.daemon.v1"
     }
 
     #[test]
-    fn checkpoint_failure_is_shared_by_every_shutdown_caller() {
+    fn checkpoint_failure_stops_and_releases_every_shutdown_waiter() {
         use std::sync::Barrier;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
