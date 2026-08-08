@@ -401,6 +401,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "psyche-coven"
+version = "0.0.0"
+
+[[package]]
 name = "psyche-runtime"
 version = "0.0.0"
 dependencies = [
@@ -409,6 +413,18 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "psyche-store"
+version = "0.0.0"
+
+[[package]]
+name = "psyche-surfaces"
+version = "0.0.0"
+
+[[package]]
+name = "psyche-test-support"
+version = "0.0.0"
 
 [[package]]
 name = "quote"

@@ -12,6 +12,10 @@ members = [
     "crates/psyche-config",
     "crates/psyche-runtime",
     "crates/psyche-cli",
+    "crates/psyche-store",
+    "crates/psyche-coven",
+    "crates/psyche-surfaces",
+    "crates/psyche-test-support",
 ]
 
 [workspace.package]
@@ -32,6 +36,17 @@ publish = false   # distributed via npm, never crates.io
 psyche-core = { path = "crates/psyche-core" }
 psyche-config = { path = "crates/psyche-config" }
 psyche-runtime = { path = "crates/psyche-runtime" }
+psyche-store = { path = "crates/psyche-store" }
+psyche-coven = { path = "crates/psyche-coven" }
+psyche-surfaces = { path = "crates/psyche-surfaces" }
+psyche-test-support = { path = "crates/psyche-test-support" }
+async-trait = "0.1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json_canonicalizer = "0.3"
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+ulid = { version = "1", features = ["serde"] }
+proptest = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 thiserror = "2"
