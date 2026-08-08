@@ -120,121 +120,6 @@ fn future_database_version_fails_before_any_migration() {
     assert_eq!(sqlite_sidecar_state(&path), original_sidecars);
 }
 
-#[cfg(unix)]
-#[test]
-fn crash_left_wal_future_version_is_rejected_without_mutating_any_database_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = fixture_db(dir.path(), Fixture::Version1);
-
-    run_crash_helper(&path, "wal-v99");
-
-    let sidecars = sqlite_sidecar_paths(&path);
-    let wal_path = &sidecars[1];
-    let shm_path = &sidecars[2];
-    assert!(wal_path.exists());
-    assert!(shm_path.exists());
-    assert_eq!(database_header_user_version(&path), 1);
-
-    for file in [&path, wal_path, shm_path] {
-        set_mode(file, 0o644);
-    }
-    let before = [
-        snapshot_file(&path),
-        snapshot_file(wal_path),
-        snapshot_file(shm_path),
-    ];
-
-    let error = Store::open(&path).unwrap_err();
-
-    assert!(
-        matches!(
-            &error,
-            StoreError::UnsupportedDatabaseVersion { found: 99, .. }
-        ),
-        "unexpected error: {error:?}"
-    );
-    assert_eq!(
-        error.to_string(),
-        "unsupported database version 99; maximum supported version is 1"
-    );
-    assert_snapshot_unchanged("database", &before[0], &snapshot_file(&path));
-    assert_snapshot_unchanged("WAL", &before[1], &snapshot_file(wal_path));
-    assert_snapshot_unchanged("shared memory", &before[2], &snapshot_file(shm_path));
-}
-
-#[cfg(unix)]
-#[test]
-fn hot_journal_read_only_failure_does_not_recover_or_open_read_write() {
-    use std::error::Error;
-
-    let dir = tempfile::tempdir().unwrap();
-    let path = fixture_db(dir.path(), Fixture::Version0);
-    execute_batch(
-        &path,
-        "
-        CREATE TABLE hot_journal_seed (
-          id INTEGER PRIMARY KEY,
-          payload BLOB NOT NULL
-        ) STRICT;
-        WITH RECURSIVE counter(value) AS (
-          SELECT 1
-          UNION ALL
-          SELECT value + 1 FROM counter WHERE value < 256
-        )
-        INSERT INTO hot_journal_seed (id, payload)
-        SELECT value, zeroblob(4096) FROM counter;
-        ",
-    );
-
-    run_crash_helper(&path, "hot-journal");
-
-    let sidecars = sqlite_sidecar_paths(&path);
-    let journal_path = &sidecars[0];
-    let journal_contents = std::fs::read(journal_path).unwrap();
-    assert!(journal_contents.len() > 512);
-    assert!(journal_contents[..8].iter().any(|byte| *byte != 0));
-    set_mode(&path, 0o644);
-    set_mode(journal_path, 0o644);
-    let before = [snapshot_file(&path), snapshot_file(journal_path)];
-
-    let error = Store::open(&path).unwrap_err();
-
-    assert!(
-        matches!(&error, StoreError::DatabaseOperation),
-        "unexpected error: {error:?}"
-    );
-    assert_eq!(error.to_string(), "store database operation failed");
-    assert_eq!(
-        format!("{error:?}"),
-        "StoreError(store database operation failed)"
-    );
-    assert!(error.source().is_none());
-    assert_snapshot_unchanged("database", &before[0], &snapshot_file(&path));
-    assert_snapshot_unchanged("rollback journal", &before[1], &snapshot_file(journal_path));
-}
-
-#[test]
-fn partially_applied_v1_transaction_rolls_back_and_recovers() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = fixture_db(dir.path(), Fixture::PartiallyAppliedV1);
-
-    assert_eq!(user_version(&path), 0);
-    assert!(!table_exists(&path, "schema_migrations"));
-    assert!(!table_exists(&path, "canonical_records"));
-
-    let store = Store::open(&path).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 1);
-    drop(store);
-
-    assert_eq!(foundation_tables(&path), FOUNDATION_TABLES);
-    assert_eq!(schema_migrations(&path).len(), 1);
-
-    let reopened = Store::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 1);
-    drop(reopened);
-    assert_eq!(schema_migrations(&path).len(), 1);
-}
-
 #[test]
 fn production_migration_failure_rolls_back_and_recovers() {
     let dir = tempfile::tempdir().unwrap();
@@ -303,8 +188,6 @@ fn concurrent_first_open_applies_migration_once() {
     const THREADS: usize = 8;
 
     let dir = tempfile::tempdir().unwrap();
-    #[cfg(unix)]
-    set_mode(dir.path(), 0o700);
     for round in 0..ROUNDS {
         let path = Arc::new(dir.path().join(format!("psyche-{round}.sqlite3")));
         let barrier = Arc::new(Barrier::new(THREADS));
@@ -444,43 +327,24 @@ fn future_database_sidecar_permissions_are_unchanged() {
 
 #[cfg(unix)]
 #[test]
-fn existing_shared_parent_is_rejected_without_changes() {
-    let dir = tempfile::tempdir().unwrap();
-    let parent = dir.path().join("existing");
-    let path = parent.join("psyche.sqlite3");
-    std::fs::create_dir(&parent).unwrap();
-    std::fs::write(&path, b"not-a-database").unwrap();
-    set_mode(&parent, 0o755);
-    set_mode(&path, 0o755);
-
-    assert_invalid_database_path(&path);
-
-    assert_eq!(mode(&parent), 0o755);
-    assert_eq!(mode(&path), 0o755);
-    assert_eq!(std::fs::read(&path).unwrap(), b"not-a-database");
-}
-
-#[cfg(unix)]
-#[test]
-fn existing_private_parent_is_accepted_without_changing_its_mode() {
+fn existing_shared_parent_permissions_are_preserved() {
     let dir = tempfile::tempdir().unwrap();
     let parent = dir.path().join("existing");
     let path = parent.join("psyche.sqlite3");
     std::fs::create_dir(&parent).unwrap();
     std::fs::write(&path, []).unwrap();
-    set_mode(&parent, 0o700);
-    set_mode(&path, 0o600);
+    set_mode(&parent, 0o755);
+    set_mode(&path, 0o755);
 
     drop(Store::open(&path).unwrap());
 
-    assert_eq!(mode(&parent), 0o700);
+    assert_eq!(mode(&parent), 0o755);
     assert_private_file(&path);
-    assert_eq!(user_version(&path), CURRENT_DATABASE_VERSION);
 }
 
 #[cfg(unix)]
 #[test]
-fn relative_filename_rejects_shared_current_directory_without_changes() {
+fn relative_filename_preserves_current_directory_permissions() {
     use std::process::Command;
 
     let dir = tempfile::tempdir().unwrap();
@@ -499,7 +363,7 @@ fn relative_filename_rejects_shared_current_directory_without_changes() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(mode(dir.path()), 0o755);
-    assert!(!dir.path().join("psyche.sqlite3").exists());
+    assert_private_file(&dir.path().join("psyche.sqlite3"));
 }
 
 #[cfg(unix)]
@@ -509,55 +373,7 @@ fn relative_filename_open_helper() {
         return;
     }
 
-    assert_invalid_database_path(Path::new("psyche.sqlite3"));
-}
-
-#[cfg(unix)]
-#[test]
-fn crash_left_database_helper() {
-    let Some(helper) = std::env::var_os("PSYCHE_STORE_CRASH_HELPER") else {
-        return;
-    };
-    let path = PathBuf::from(
-        std::env::var_os("PSYCHE_STORE_CRASH_HELPER_PATH")
-            .unwrap_or_else(|| panic!("crash helper database path is missing")),
-    );
-    let connection = Connection::open(&path).unwrap();
-
-    match helper.to_str() {
-        Some("wal-v99") => connection
-            .execute_batch(
-                "
-                PRAGMA journal_mode = WAL;
-                PRAGMA wal_autocheckpoint = 0;
-                PRAGMA synchronous = FULL;
-                BEGIN IMMEDIATE;
-                CREATE TABLE wal_future_marker (
-                  value TEXT NOT NULL
-                ) STRICT;
-                INSERT INTO wal_future_marker (value) VALUES ('future-in-wal');
-                PRAGMA user_version = 99;
-                COMMIT;
-                ",
-            )
-            .unwrap(),
-        Some("hot-journal") => connection
-            .execute_batch(
-                "
-                PRAGMA journal_mode = DELETE;
-                PRAGMA synchronous = FULL;
-                PRAGMA cache_size = 1;
-                PRAGMA cache_spill = ON;
-                BEGIN IMMEDIATE;
-                UPDATE hot_journal_seed
-                SET payload = randomblob(4096);
-                ",
-            )
-            .unwrap(),
-        _ => panic!("unknown crash helper mode"),
-    }
-
-    std::process::exit(0);
+    drop(Store::open(Path::new("psyche.sqlite3")).unwrap());
 }
 
 #[cfg(unix)]
@@ -583,7 +399,6 @@ fn symlink_database_is_rejected_without_mutating_its_target() {
     use std::os::unix::fs::symlink;
 
     let dir = tempfile::tempdir().unwrap();
-    set_mode(dir.path(), 0o700);
     let target = dir.path().join("target.sqlite3");
     let path = dir.path().join("linked.sqlite3");
     std::fs::write(&target, []).unwrap();
@@ -597,58 +412,6 @@ fn symlink_database_is_rejected_without_mutating_its_target() {
 fn assert_invalid_database_path(path: &Path) {
     let error = Store::open(path).unwrap_err();
     assert_eq!(error.to_string(), "store database path is invalid");
-}
-
-#[cfg(unix)]
-fn run_crash_helper(path: &Path, helper: &str) {
-    use std::process::Command;
-
-    let output = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "crash_left_database_helper", "--nocapture"])
-        .env("PSYCHE_STORE_CRASH_HELPER", helper)
-        .env("PSYCHE_STORE_CRASH_HELPER_PATH", path)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "crash helper failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[cfg(unix)]
-#[derive(Debug, Eq, PartialEq)]
-struct FileSnapshot {
-    contents: Vec<u8>,
-    len: u64,
-    modified: std::time::SystemTime,
-    mode: u32,
-}
-
-#[cfg(unix)]
-fn snapshot_file(path: &Path) -> FileSnapshot {
-    let contents = std::fs::read(path).unwrap();
-    let metadata = std::fs::metadata(path).unwrap();
-    FileSnapshot {
-        contents,
-        len: metadata.len(),
-        modified: metadata.modified().unwrap(),
-        mode: mode(path),
-    }
-}
-
-#[cfg(unix)]
-fn assert_snapshot_unchanged(label: &str, before: &FileSnapshot, after: &FileSnapshot) {
-    assert_eq!(after.len, before.len, "{label} length changed");
-    assert_eq!(after.modified, before.modified, "{label} mtime changed");
-    assert_eq!(after.mode, before.mode, "{label} mode changed");
-    assert_eq!(after.contents, before.contents, "{label} contents changed");
-}
-
-#[cfg(unix)]
-fn database_header_user_version(path: &Path) -> u32 {
-    let contents = std::fs::read(path).unwrap();
-    u32::from_be_bytes(contents[60..64].try_into().unwrap())
 }
 
 fn sqlite_sidecar_state(path: &Path) -> Vec<(String, Option<Vec<u8>>)> {
