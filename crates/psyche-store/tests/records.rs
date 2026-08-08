@@ -1,0 +1,1327 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, missing_docs)]
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Barrier};
+
+use psyche_core::contracts::error::{ErrorBody, ErrorCode, ErrorEnvelope};
+use psyche_core::contracts::execution::{
+    AdoptionState, CancellationAcknowledgementEvidence, CancellationAcknowledgementKind,
+    CancellationState, CancellationUnresolvedEvidence, ExecutionBinding,
+    TerminationRequestCorrelation,
+};
+use psyche_core::contracts::surface::{
+    DeliveryDecisionState, DeliveryRelationship, DeliveryState, DeliverySurfaceDecision,
+    DeliveryTopic,
+};
+use psyche_core::contracts::{
+    CanonicalDocument, ContractError, Delivery, Intent, RecordKind, SchemaKind, SchemaVersion,
+    VersionedRecord,
+};
+use psyche_core::digest::{Sha256Digest, canonical_bytes, digest};
+use psyche_core::id::{RecordId, RequestId};
+use psyche_store::{IngestOutcome, Store, StoreError, Transition};
+use serde::Serialize;
+use serde_json::{Map, json};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
+
+fn test_store() -> (Store, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("private").join("psyche.sqlite3")).unwrap();
+    (store, dir)
+}
+
+fn at(value: &str) -> OffsetDateTime {
+    OffsetDateTime::parse(value, &Rfc3339).unwrap()
+}
+
+fn fixture_digest(character: char) -> Sha256Digest {
+    Sha256Digest::parse(&format!("sha256:{}", character.to_string().repeat(64))).unwrap()
+}
+
+fn fixture_other_digest() -> Sha256Digest {
+    fixture_digest('b')
+}
+
+fn record_id(kind: RecordKind, suffix: &str) -> RecordId {
+    RecordId::parse(kind, &format!("{}{suffix}", kind.prefix())).unwrap()
+}
+
+fn fixture_attempt_id() -> RecordId {
+    record_id(RecordKind::Attempt, "01J00000000000000000000000")
+}
+
+fn fixture_other_attempt_id() -> RecordId {
+    record_id(RecordKind::Attempt, "01J00000000000000000000001")
+}
+
+fn fixture_snapshot_id() -> RecordId {
+    record_id(RecordKind::IdentitySnapshot, "01J00000000000000000000002")
+}
+
+fn fixture_other_snapshot_id() -> RecordId {
+    record_id(RecordKind::IdentitySnapshot, "01J00000000000000000000003")
+}
+
+fn fixture_project_id() -> String {
+    "project-a".to_owned()
+}
+
+fn fixture_other_project_id() -> String {
+    "project-b".to_owned()
+}
+
+fn fixture_request_id() -> RequestId {
+    RequestId::parse("req_01J00000000000000000000004").unwrap()
+}
+
+fn fixture_termination_request_id() -> RequestId {
+    RequestId::parse("req_01J00000000000000000000005").unwrap()
+}
+
+fn fixture_other_request_id() -> RequestId {
+    RequestId::parse("req_01J00000000000000000000006").unwrap()
+}
+
+fn fixture_other_coven_contract_version() -> String {
+    "coven.v2".to_owned()
+}
+
+fn fixture_intent(outcome: &str) -> Intent {
+    Intent {
+        schema_version: SchemaVersion::parse("psyche.intent.v1").unwrap(),
+        intent_id: record_id(RecordKind::Intent, "01J00000000000000000000007"),
+        principal_id: "principal-a".to_owned(),
+        familiar_snapshot_id: fixture_snapshot_id(),
+        project_id: fixture_project_id(),
+        requested_outcome: outcome.to_owned(),
+        constraints: Map::new(),
+        required_evidence: vec!["review".to_owned()],
+        surface_event_id: None,
+        created_at: at("2026-08-05T12:00:00Z"),
+        digest: fixture_digest('a'),
+    }
+}
+
+fn fixture_intent_with_same_id(outcome: &str) -> Intent {
+    fixture_intent(outcome)
+}
+
+fn fixture_error_envelope() -> ErrorEnvelope {
+    ErrorEnvelope {
+        schema_version: SchemaVersion::parse("psyche.error.v1").unwrap(),
+        error: ErrorBody {
+            code: ErrorCode::StorageUnavailable,
+            message: "unavailable".to_owned(),
+            retryable: true,
+            correlation_id: "correlation-a".to_owned(),
+            details: BTreeMap::new(),
+        },
+    }
+}
+
+fn fixture_delivery() -> Delivery {
+    let effect = json!({"method": "send_message", "text": "hello"});
+    Delivery {
+        schema_version: SchemaVersion::parse("psyche.delivery.v1").unwrap(),
+        delivery_id: record_id(RecordKind::Delivery, "01J00000000000000000000008"),
+        intent_id: fixture_intent("deliver").intent_id,
+        action_class: "send_message".to_owned(),
+        account_id: "account-a".to_owned(),
+        chat_id: "-100123".to_owned(),
+        topic: DeliveryTopic {
+            kind: "telegram_topic".to_owned(),
+            id: "42".to_owned(),
+        },
+        relationship: DeliveryRelationship::ReplySameTopic,
+        effect_digest: digest(&effect).unwrap(),
+        effect,
+        surface_decision: DeliverySurfaceDecision {
+            decision_id: "decision-a".to_owned(),
+            request_digest: fixture_digest('c'),
+            policy_revision: "policy-v1".to_owned(),
+            expires_at: at("2026-08-05T12:10:00Z"),
+            state: DeliveryDecisionState::Reserved,
+        },
+        logical_response_id: "response-a".to_owned(),
+        logical_part: 0,
+        state: DeliveryState::Ready,
+        attempt_count: 0,
+        telegram_message_id: None,
+    }
+}
+
+fn fixture_execution_binding_revision_1() -> ExecutionBinding {
+    ExecutionBinding {
+        schema_version: SchemaVersion::parse("psyche.execution_binding.v1").unwrap(),
+        attempt_id: fixture_attempt_id(),
+        revision: 1,
+        previous_revision_digest: None,
+        revision_created_at: at("2026-08-05T12:00:00Z"),
+        familiar_snapshot_id: fixture_snapshot_id(),
+        project_id: fixture_project_id(),
+        request_id: fixture_request_id(),
+        request_digest: fixture_digest('a'),
+        request_created_at: at("2026-08-05T11:59:00Z"),
+        request_valid_until: at("2026-08-05T12:05:00Z"),
+        coven_contract_version: "coven.v1".to_owned(),
+        coven_session_id: None,
+        adoption_state: AdoptionState::Adopted,
+        event_cursor: Some("cursor:1".to_owned()),
+        cancellation_state: CancellationState::NotRequested,
+        termination_request: None,
+        termination_reason_code: None,
+        cancellation_acknowledgement: None,
+        cancellation_unresolved: None,
+        terminal_state: None,
+    }
+}
+
+fn fixture_execution_binding() -> ExecutionBinding {
+    fixture_execution_binding_revision_1()
+}
+
+fn next_revision(previous: &ExecutionBinding) -> ExecutionBinding {
+    let mut next = previous.clone();
+    next.revision += 1;
+    next.previous_revision_digest = Some(digest(previous).unwrap());
+    next.revision_created_at += time::Duration::nanoseconds(1);
+    next
+}
+
+fn fixture_next_not_requested_revision(previous: &ExecutionBinding) -> ExecutionBinding {
+    next_revision(previous)
+}
+
+fn termination_request() -> TerminationRequestCorrelation {
+    TerminationRequestCorrelation {
+        termination_request_id: fixture_termination_request_id(),
+        created_at: at("2026-08-05T12:06:00Z"),
+        valid_until: at("2026-08-05T12:08:00Z"),
+    }
+}
+
+fn fixture_termination_requested_revision(previous: &ExecutionBinding) -> ExecutionBinding {
+    let mut requested = next_revision(previous);
+    requested.coven_session_id = Some("session-a".to_owned());
+    requested.cancellation_state = CancellationState::TerminationRequested;
+    requested.termination_request = Some(termination_request());
+    requested.termination_reason_code = Some("operator_request".to_owned());
+    requested
+}
+
+fn fixture_next_termination_requested_revision(previous: &ExecutionBinding) -> ExecutionBinding {
+    next_revision(previous)
+}
+
+fn fixture_not_requested_revision_after(previous: &ExecutionBinding) -> ExecutionBinding {
+    let mut next = next_revision(previous);
+    next.cancellation_state = CancellationState::NotRequested;
+    next.termination_request = None;
+    next.termination_reason_code = None;
+    next.cancellation_acknowledgement = None;
+    next.cancellation_unresolved = None;
+    next
+}
+
+fn fixture_session_bound_revision(previous: &ExecutionBinding, session: &str) -> ExecutionBinding {
+    let mut next = next_revision(previous);
+    next.coven_session_id = Some(session.to_owned());
+    next
+}
+
+fn acknowledgement(binding: &ExecutionBinding) -> CancellationAcknowledgementEvidence {
+    let termination = binding.termination_request.as_ref().unwrap();
+    CancellationAcknowledgementEvidence {
+        acknowledgement_id: "ack-a".to_owned(),
+        termination_request_id: termination.termination_request_id.clone(),
+        session_id: binding.coven_session_id.clone().unwrap(),
+        execution_request_id: binding.request_id.clone(),
+        execution_request_digest: binding.request_digest.clone(),
+        kind: CancellationAcknowledgementKind::Terminated,
+        authority_evidence_digest: fixture_digest('d'),
+        acknowledged_at: termination.created_at + time::Duration::seconds(30),
+    }
+}
+
+fn unresolved(binding: &ExecutionBinding) -> CancellationUnresolvedEvidence {
+    let termination = binding.termination_request.as_ref().unwrap();
+    CancellationUnresolvedEvidence {
+        disposition_id: "unresolved-a".to_owned(),
+        termination_request_id: termination.termination_request_id.clone(),
+        session_id: binding.coven_session_id.clone().unwrap(),
+        execution_request_id: binding.request_id.clone(),
+        execution_request_digest: binding.request_digest.clone(),
+        reason_code: "timeout".to_owned(),
+        recorded_at: termination.created_at + time::Duration::seconds(30),
+    }
+}
+
+fn fixture_acknowledged_revision(previous: &ExecutionBinding) -> ExecutionBinding {
+    let mut acknowledged = next_revision(previous);
+    acknowledged.cancellation_state = CancellationState::AcknowledgedTerminated;
+    acknowledged.cancellation_acknowledgement = Some(acknowledgement(&acknowledged));
+    acknowledged
+}
+
+fn fixture_unresolved_revision(previous: &ExecutionBinding) -> ExecutionBinding {
+    let mut unresolved_binding = next_revision(previous);
+    unresolved_binding.cancellation_state = CancellationState::TerminationUnknown;
+    unresolved_binding.cancellation_unresolved = Some(unresolved(&unresolved_binding));
+    unresolved_binding
+}
+
+fn fixture_acknowledged_execution_binding() -> ExecutionBinding {
+    let mut binding = fixture_execution_binding();
+    binding.coven_session_id = Some("session-a".to_owned());
+    binding.cancellation_state = CancellationState::AcknowledgedTerminated;
+    binding.termination_request = Some(termination_request());
+    binding.termination_reason_code = Some("operator_request".to_owned());
+    binding.cancellation_acknowledgement = Some(acknowledgement(&binding));
+    binding
+}
+
+fn fixture_unresolved_execution_binding() -> ExecutionBinding {
+    let mut binding = fixture_execution_binding();
+    binding.coven_session_id = Some("session-a".to_owned());
+    binding.cancellation_state = CancellationState::TerminationUnknown;
+    binding.termination_request = Some(termination_request());
+    binding.termination_reason_code = Some("operator_request".to_owned());
+    binding.cancellation_unresolved = Some(unresolved(&binding));
+    binding
+}
+
+fn fixture_acknowledged_binding_after_execution_deadline() -> ExecutionBinding {
+    let mut binding = fixture_acknowledged_execution_binding();
+    let termination = binding.termination_request.as_mut().unwrap();
+    termination.created_at = binding.request_valid_until + time::Duration::seconds(1);
+    termination.valid_until = termination.created_at + time::Duration::minutes(1);
+    binding
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .acknowledged_at = termination.created_at;
+    binding
+}
+
+fn transition(record_version: u64, from_state: Option<&str>, to_state: &str) -> Transition {
+    Transition::new(
+        SchemaKind::ExecutionBinding,
+        fixture_attempt_id(),
+        record_version,
+        from_state.map(str::to_owned),
+        to_state.to_owned(),
+        at("2026-08-05T12:00:00Z") + time::Duration::seconds(record_version as i64),
+    )
+    .unwrap()
+}
+
+#[test]
+fn delivery_direct_insert_round_trips_canonically() {
+    let (mut store, _dir) = test_store();
+    let delivery = fixture_delivery();
+    let id = delivery.record_id().clone();
+    let expected = CanonicalDocument::Delivery(delivery);
+    store.insert(&expected).unwrap();
+    assert_eq!(
+        store.load(SchemaKind::Delivery, &id).unwrap(),
+        Some(expected.clone())
+    );
+    assert_eq!(
+        store
+            .load_canonical_bytes(SchemaKind::Delivery, &id)
+            .unwrap(),
+        Some(canonical_bytes(&expected).unwrap())
+    );
+}
+
+#[test]
+fn same_id_same_digest_is_idempotent_but_changed_payload_conflicts() {
+    let (mut store, _dir) = test_store();
+    let intent = fixture_intent("Review A");
+    store
+        .insert(&CanonicalDocument::Intent(intent.clone()))
+        .unwrap();
+    store.insert(&CanonicalDocument::Intent(intent)).unwrap();
+    let changed = fixture_intent_with_same_id("Review B");
+    assert!(matches!(
+        store.insert(&CanonicalDocument::Intent(changed)),
+        Err(StoreError::RecordConflict { .. })
+    ));
+    assert_eq!(store.total_record_count().unwrap(), 1);
+}
+
+#[test]
+fn direct_insert_rejects_wrong_field_id_kind_without_writing() {
+    let (mut store, _dir) = test_store();
+    let mut intent = fixture_intent("Review A");
+    intent.intent_id =
+        RecordId::parse(RecordKind::Graph, "grf_01J00000000000000000000000").unwrap();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::Intent(intent)),
+        Err(StoreError::Contract(ContractError::WrongRecordKind { .. }))
+    ));
+    assert_eq!(store.total_record_count().unwrap(), 0);
+}
+
+#[test]
+fn direct_insert_rejects_wrong_schema_without_writing() {
+    let (mut store, _dir) = test_store();
+    let mut intent = fixture_intent("Review A");
+    intent.schema_version = SchemaVersion::parse("psyche.graph.v1").unwrap();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::Intent(intent)),
+        Err(StoreError::Contract(ContractError::SchemaMismatch { .. }))
+    ));
+    assert_eq!(store.total_record_count().unwrap(), 0);
+}
+
+#[test]
+fn direct_insert_rejects_non_persistable_error_envelope() {
+    let (mut store, _dir) = test_store();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::Error(fixture_error_envelope())),
+        Err(StoreError::NonPersistableKind {
+            kind: SchemaKind::Error
+        })
+    ));
+    assert_eq!(store.total_record_count().unwrap(), 0);
+}
+
+#[test]
+fn ingest_rejects_non_persistable_error_envelope() {
+    let (mut store, _dir) = test_store();
+    let bytes = canonical_bytes(&fixture_error_envelope()).unwrap();
+    assert!(matches!(
+        store.ingest(&bytes),
+        Err(StoreError::NonPersistableKind {
+            kind: SchemaKind::Error
+        })
+    ));
+    assert_eq!(store.total_record_count().unwrap(), 0);
+}
+
+#[test]
+fn ingest_distinguishes_insert_from_exact_replay() {
+    let (mut store, _dir) = test_store();
+    let bytes = canonical_bytes(&fixture_intent("Review A")).unwrap();
+    assert_eq!(store.ingest(&bytes).unwrap(), IngestOutcome::Inserted);
+    assert_eq!(store.ingest(&bytes).unwrap(), IngestOutcome::AlreadyPresent);
+}
+
+#[test]
+fn load_helpers_reject_non_persistable_error_before_querying() {
+    let (store, _dir) = test_store();
+    let id = fixture_attempt_id();
+    assert!(matches!(
+        store.load(SchemaKind::Error, &id),
+        Err(StoreError::NonPersistableKind {
+            kind: SchemaKind::Error
+        })
+    ));
+    assert!(matches!(
+        store.load_canonical_bytes(SchemaKind::Error, &id),
+        Err(StoreError::NonPersistableKind {
+            kind: SchemaKind::Error
+        })
+    ));
+}
+
+#[test]
+fn direct_insert_rejects_acknowledged_cancellation_without_evidence() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_acknowledged_execution_binding();
+    binding.cancellation_acknowledgement = None;
+    let attempt_id = binding.attempt_id.clone();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        Err(StoreError::Contract(
+            ContractError::CancellationEvidenceMismatch
+        ))
+    ));
+    assert!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn direct_insert_rejects_acknowledged_state_without_termination_correlation() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_acknowledged_execution_binding();
+    binding.termination_request = None;
+    let attempt_id = binding.attempt_id.clone();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        Err(StoreError::Contract(
+            ContractError::CancellationEvidenceMismatch
+        ))
+    ));
+    assert!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn direct_insert_rejects_mismatched_cancellation_evidence() {
+    let baseline = fixture_acknowledged_execution_binding();
+    let mut cases = Vec::new();
+
+    let mut changed = baseline.clone();
+    changed
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .execution_request_digest = fixture_other_digest();
+    cases.push(changed);
+
+    let mut changed = baseline.clone();
+    changed
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .execution_request_id = fixture_other_request_id();
+    cases.push(changed);
+
+    let mut changed = baseline.clone();
+    changed
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .termination_request_id = fixture_other_request_id();
+    cases.push(changed);
+
+    let mut changed = baseline.clone();
+    changed
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .session_id = "session-b".to_owned();
+    cases.push(changed);
+
+    let mut changed = baseline.clone();
+    changed.cancellation_acknowledgement.as_mut().unwrap().kind =
+        CancellationAcknowledgementKind::AlreadyAuthoritativelyTerminal;
+    cases.push(changed);
+
+    let mut changed = baseline.clone();
+    changed.cancellation_unresolved = Some(unresolved(&changed));
+    cases.push(changed);
+
+    let mut changed = baseline;
+    changed.cancellation_state = CancellationState::TerminationUnknown;
+    cases.push(changed);
+
+    for binding in cases {
+        let (mut store, _dir) = test_store();
+        let attempt_id = binding.attempt_id.clone();
+        assert!(matches!(
+            store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+            Err(StoreError::Contract(
+                ContractError::CancellationEvidenceMismatch
+            ))
+        ));
+        assert!(
+            store
+                .execution_binding_revisions(&attempt_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn direct_insert_rejects_wrong_termination_request_id() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_acknowledged_execution_binding();
+    binding
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .termination_request_id = fixture_other_request_id();
+    let attempt_id = binding.attempt_id.clone();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        Err(StoreError::Contract(
+            ContractError::CancellationEvidenceMismatch
+        ))
+    ));
+    assert!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn direct_insert_rejects_termination_before_execution_request() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_acknowledged_execution_binding();
+    let before_execution = binding.request_created_at - time::Duration::nanoseconds(1);
+    binding.termination_request.as_mut().unwrap().created_at = before_execution;
+    let attempt_id = binding.attempt_id.clone();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        Err(StoreError::Contract(
+            ContractError::CancellationEvidenceMismatch
+        ))
+    ));
+    assert!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn direct_insert_rejects_acknowledgement_outside_termination_window() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_acknowledged_execution_binding();
+    let after_deadline =
+        binding.termination_request.as_ref().unwrap().valid_until + time::Duration::nanoseconds(1);
+    binding
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .acknowledged_at = after_deadline;
+    let attempt_id = binding.attempt_id.clone();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        Err(StoreError::Contract(
+            ContractError::CancellationEvidenceMismatch
+        ))
+    ));
+    assert!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn direct_insert_rejects_acknowledgement_before_termination_window() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_acknowledged_execution_binding();
+    let before_start =
+        binding.termination_request.as_ref().unwrap().created_at - time::Duration::nanoseconds(1);
+    binding
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .acknowledged_at = before_start;
+    let attempt_id = binding.attempt_id.clone();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        Err(StoreError::Contract(
+            ContractError::CancellationEvidenceMismatch
+        ))
+    ));
+    assert!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn direct_insert_rejects_unresolved_outside_termination_window() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_unresolved_execution_binding();
+    let after_deadline =
+        binding.termination_request.as_ref().unwrap().valid_until + time::Duration::nanoseconds(1);
+    binding
+        .cancellation_unresolved
+        .as_mut()
+        .unwrap()
+        .recorded_at = after_deadline;
+    let attempt_id = binding.attempt_id.clone();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        Err(StoreError::Contract(
+            ContractError::CancellationEvidenceMismatch
+        ))
+    ));
+    assert!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn direct_insert_rejects_unresolved_before_termination_window() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_unresolved_execution_binding();
+    let before_start =
+        binding.termination_request.as_ref().unwrap().created_at - time::Duration::nanoseconds(1);
+    binding
+        .cancellation_unresolved
+        .as_mut()
+        .unwrap()
+        .recorded_at = before_start;
+    let attempt_id = binding.attempt_id.clone();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        Err(StoreError::Contract(
+            ContractError::CancellationEvidenceMismatch
+        ))
+    ));
+    assert!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn direct_insert_accepts_acknowledgement_at_termination_window_boundaries() {
+    for use_deadline in [false, true] {
+        let (mut store, _dir) = test_store();
+        let mut binding = fixture_acknowledged_execution_binding();
+        let termination = binding.termination_request.as_ref().unwrap();
+        let evidence_time = if use_deadline {
+            termination.valid_until
+        } else {
+            termination.created_at
+        };
+        binding
+            .cancellation_acknowledgement
+            .as_mut()
+            .unwrap()
+            .acknowledged_at = evidence_time;
+        let attempt_id = binding.attempt_id.clone();
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(binding))
+            .unwrap();
+        assert_eq!(
+            store
+                .execution_binding_revisions(&attempt_id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[test]
+fn direct_insert_accepts_unresolved_at_termination_window_boundaries() {
+    for use_deadline in [false, true] {
+        let (mut store, _dir) = test_store();
+        let mut binding = fixture_unresolved_execution_binding();
+        let termination = binding.termination_request.as_ref().unwrap();
+        let evidence_time = if use_deadline {
+            termination.valid_until
+        } else {
+            termination.created_at
+        };
+        binding
+            .cancellation_unresolved
+            .as_mut()
+            .unwrap()
+            .recorded_at = evidence_time;
+        let attempt_id = binding.attempt_id.clone();
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(binding))
+            .unwrap();
+        assert_eq!(
+            store
+                .execution_binding_revisions(&attempt_id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[test]
+fn direct_insert_accepts_termination_window_after_execution_deadline() {
+    let (mut store, _dir) = test_store();
+    let binding = fixture_acknowledged_binding_after_execution_deadline();
+    assert!(binding.termination_request.as_ref().unwrap().created_at > binding.request_valid_until);
+    let attempt_id = binding.attempt_id.clone();
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(binding))
+        .unwrap();
+    assert_eq!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn direct_insert_accepts_termination_at_execution_creation_boundary() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_acknowledged_execution_binding();
+    let execution_created_at = binding.request_created_at;
+    binding.termination_request.as_mut().unwrap().created_at = execution_created_at;
+    let attempt_id = binding.attempt_id.clone();
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(binding))
+        .unwrap();
+    assert_eq!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn direct_insert_rejects_revision_u64_overflow_without_writing() {
+    let (mut store, _dir) = test_store();
+    let mut binding = fixture_execution_binding_revision_1();
+    binding.revision = u64::MAX;
+    binding.previous_revision_digest = Some(fixture_digest('a'));
+    let attempt_id = binding.attempt_id.clone();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        Err(StoreError::Contract(_))
+    ));
+    assert!(
+        store
+            .execution_binding_revisions(&attempt_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn execution_binding_revision_appends_termination_outcomes_without_record_conflict() {
+    let (mut acknowledged_store, _acknowledged_dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    acknowledged_store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    let requested = fixture_termination_requested_revision(&initial);
+    acknowledged_store
+        .insert(&CanonicalDocument::ExecutionBinding(requested.clone()))
+        .unwrap();
+    let acknowledged = fixture_acknowledged_revision(&requested);
+    acknowledged_store
+        .insert(&CanonicalDocument::ExecutionBinding(acknowledged.clone()))
+        .unwrap();
+    assert_eq!(
+        acknowledged_store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial.clone(), requested.clone(), acknowledged.clone()]
+    );
+    assert_eq!(
+        acknowledged_store
+            .load(SchemaKind::ExecutionBinding, &initial.attempt_id)
+            .unwrap(),
+        Some(CanonicalDocument::ExecutionBinding(acknowledged))
+    );
+
+    let (mut unresolved_store, _unresolved_dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    unresolved_store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    let requested = fixture_termination_requested_revision(&initial);
+    unresolved_store
+        .insert(&CanonicalDocument::ExecutionBinding(requested.clone()))
+        .unwrap();
+    let unresolved = fixture_unresolved_revision(&requested);
+    unresolved_store
+        .insert(&CanonicalDocument::ExecutionBinding(unresolved.clone()))
+        .unwrap();
+    assert_eq!(
+        unresolved_store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial, requested, unresolved]
+    );
+}
+
+#[test]
+fn execution_binding_revision_rejects_forks_gaps_and_changed_correlation() {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+
+    let mut gap = fixture_termination_requested_revision(&initial);
+    gap.revision = 3;
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(gap)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+
+    let mut wrong_previous = fixture_termination_requested_revision(&initial);
+    wrong_previous.previous_revision_digest = Some(fixture_other_digest());
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(wrong_previous)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+
+    let mut changed_correlation = fixture_termination_requested_revision(&initial);
+    changed_correlation.request_digest = fixture_other_digest();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(changed_correlation)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+
+    assert_eq!(
+        store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial]
+    );
+}
+
+#[test]
+fn execution_binding_revision_replay_is_idempotent() {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    for revision in [&initial, &requested] {
+        store
+            .insert(&CanonicalDocument::ExecutionBinding((*revision).clone()))
+            .unwrap();
+    }
+    for revision in [&initial, &requested] {
+        store
+            .insert(&CanonicalDocument::ExecutionBinding((*revision).clone()))
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial, requested]
+    );
+}
+
+#[test]
+fn execution_binding_revision_rejects_same_revision_changed_bytes() {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(requested.clone()))
+        .unwrap();
+    for revision in [&initial, &requested] {
+        let mut changed = (*revision).clone();
+        changed.event_cursor = Some("cursor:changed".to_owned());
+        assert!(matches!(
+            store.insert(&CanonicalDocument::ExecutionBinding(changed)),
+            Err(StoreError::ExecutionBindingRevisionConflict { .. })
+        ));
+    }
+    assert_eq!(
+        store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial, requested]
+    );
+}
+
+#[test]
+fn execution_binding_revision_rejects_changed_reason_replay() {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(requested.clone()))
+        .unwrap();
+    let mut changed_reason = requested.clone();
+    changed_reason.termination_reason_code = Some("different_reason".to_owned());
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(changed_reason)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    assert_eq!(
+        store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial, requested]
+    );
+}
+
+fn assert_next_revision_conflict(mutate: impl FnOnce(&mut ExecutionBinding)) {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    let mut candidate = fixture_next_not_requested_revision(&initial);
+    mutate(&mut candidate);
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(candidate)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    assert_eq!(
+        store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial]
+    );
+}
+
+#[test]
+fn execution_binding_revision_rejects_every_frozen_execution_field_change() {
+    assert_next_revision_conflict(|revision| {
+        revision.attempt_id = fixture_other_attempt_id();
+    });
+    assert_next_revision_conflict(|revision| {
+        revision.familiar_snapshot_id = fixture_other_snapshot_id();
+    });
+    assert_next_revision_conflict(|revision| {
+        revision.project_id = fixture_other_project_id();
+    });
+    assert_next_revision_conflict(|revision| {
+        revision.request_id = fixture_other_request_id();
+    });
+    assert_next_revision_conflict(|revision| {
+        revision.request_digest = fixture_other_digest();
+    });
+    assert_next_revision_conflict(|revision| {
+        revision.request_created_at += time::Duration::nanoseconds(1);
+    });
+    assert_next_revision_conflict(|revision| {
+        revision.request_valid_until += time::Duration::nanoseconds(1);
+    });
+    assert_next_revision_conflict(|revision| {
+        revision.coven_contract_version = fixture_other_coven_contract_version();
+    });
+}
+
+#[test]
+fn execution_binding_revision_rejects_session_and_termination_rebinding() {
+    let (mut session_store, _session_dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    let bound = fixture_session_bound_revision(&initial, "session-a");
+    session_store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    session_store
+        .insert(&CanonicalDocument::ExecutionBinding(bound.clone()))
+        .unwrap();
+    let rebound = fixture_session_bound_revision(&bound, "session-b");
+    assert!(matches!(
+        session_store.insert(&CanonicalDocument::ExecutionBinding(rebound)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    let mut cleared = fixture_next_not_requested_revision(&bound);
+    cleared.coven_session_id = None;
+    assert!(matches!(
+        session_store.insert(&CanonicalDocument::ExecutionBinding(cleared)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    assert_eq!(
+        session_store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial, bound]
+    );
+
+    let (mut termination_store, _termination_dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    termination_store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    termination_store
+        .insert(&CanonicalDocument::ExecutionBinding(requested.clone()))
+        .unwrap();
+    let mut changed_id = fixture_next_termination_requested_revision(&requested);
+    changed_id
+        .termination_request
+        .as_mut()
+        .unwrap()
+        .termination_request_id = fixture_other_request_id();
+    assert!(matches!(
+        termination_store.insert(&CanonicalDocument::ExecutionBinding(changed_id)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    let mut changed_created_at = fixture_next_termination_requested_revision(&requested);
+    changed_created_at
+        .termination_request
+        .as_mut()
+        .unwrap()
+        .created_at += time::Duration::nanoseconds(1);
+    assert!(matches!(
+        termination_store.insert(&CanonicalDocument::ExecutionBinding(changed_created_at)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    let mut changed_valid_until = fixture_next_termination_requested_revision(&requested);
+    changed_valid_until
+        .termination_request
+        .as_mut()
+        .unwrap()
+        .valid_until += time::Duration::nanoseconds(1);
+    assert!(matches!(
+        termination_store.insert(&CanonicalDocument::ExecutionBinding(changed_valid_until)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    let mut changed_reason = fixture_next_termination_requested_revision(&requested);
+    changed_reason.termination_reason_code = Some("different_reason".to_owned());
+    assert!(matches!(
+        termination_store.insert(&CanonicalDocument::ExecutionBinding(changed_reason)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    assert_eq!(
+        termination_store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial, requested]
+    );
+}
+
+#[test]
+fn execution_binding_revision_rejects_termination_correlation_removal() {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(requested.clone()))
+        .unwrap();
+    let cleared = fixture_not_requested_revision_after(&requested);
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(cleared)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    assert_eq!(
+        store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial, requested]
+    );
+}
+
+#[test]
+fn execution_binding_revision_rejects_timestamp_regression() {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    for non_increasing in [
+        initial.revision_created_at,
+        initial.revision_created_at - time::Duration::nanoseconds(1),
+    ] {
+        let mut regressed = fixture_termination_requested_revision(&initial);
+        regressed.revision_created_at = non_increasing;
+        assert!(matches!(
+            store.insert(&CanonicalDocument::ExecutionBinding(regressed)),
+            Err(StoreError::ExecutionBindingRevisionConflict { .. })
+        ));
+    }
+    assert_eq!(
+        store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap(),
+        vec![initial]
+    );
+}
+
+#[test]
+fn concurrent_execution_binding_forks_have_one_durable_winner() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("private").join("psyche.sqlite3");
+    let mut first = Store::open(&path).unwrap();
+    let initial = fixture_execution_binding_revision_1();
+    first
+        .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+        .unwrap();
+    let second = Store::open(&path).unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+
+    let left = fixture_termination_requested_revision(&initial);
+    let mut right = fixture_termination_requested_revision(&initial);
+    right.event_cursor = Some("cursor:competing".to_owned());
+
+    let left_barrier = Arc::clone(&barrier);
+    let left_thread = std::thread::spawn(move || {
+        let mut store = first;
+        left_barrier.wait();
+        store.insert(&CanonicalDocument::ExecutionBinding(left))
+    });
+    let right_barrier = Arc::clone(&barrier);
+    let right_thread = std::thread::spawn(move || {
+        let mut store = second;
+        right_barrier.wait();
+        store.insert(&CanonicalDocument::ExecutionBinding(right))
+    });
+
+    let results = [left_thread.join().unwrap(), right_thread.join().unwrap()];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(
+                result,
+                Err(StoreError::ExecutionBindingRevisionConflict { .. })
+            ))
+            .count(),
+        1
+    );
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store
+            .execution_binding_revisions(&initial.attempt_id)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn transition_versions_are_monotonic_and_append_only() {
+    let (mut store, _dir) = test_store();
+    store
+        .append_transition(&transition(1, None, "admitted"))
+        .unwrap();
+    assert!(matches!(
+        store.append_transition(&transition(1, None, "running")),
+        Err(StoreError::TransitionConflict { .. })
+    ));
+    assert_eq!(store.count_transitions().unwrap(), 1);
+}
+
+#[test]
+fn transition_validation_rejects_wrong_id_kind_and_digest_without_writing() {
+    let (mut store, _dir) = test_store();
+    let mut wrong_kind = transition(1, None, "admitted");
+    wrong_kind.record_id =
+        RecordId::parse(RecordKind::Intent, "int_01J00000000000000000000000").unwrap();
+    assert!(matches!(
+        store.append_transition(&wrong_kind),
+        Err(StoreError::Contract(ContractError::WrongRecordKind { .. }))
+    ));
+
+    let mut wrong_digest = transition(1, None, "admitted");
+    wrong_digest.transition_digest = fixture_digest('f');
+    assert!(matches!(
+        store.append_transition(&wrong_digest),
+        Err(StoreError::Contract(ContractError::DigestMismatch { .. }))
+    ));
+    assert_eq!(store.count_transitions().unwrap(), 0);
+}
+
+#[test]
+fn transition_append_requires_exact_version_and_prior_state() {
+    let (mut store, _dir) = test_store();
+    store
+        .append_transition(&transition(1, None, "admitted"))
+        .unwrap();
+    assert!(matches!(
+        store.append_transition(&transition(3, Some("admitted"), "running")),
+        Err(StoreError::TransitionConflict { .. })
+    ));
+    assert!(matches!(
+        store.append_transition(&transition(2, Some("draft"), "running")),
+        Err(StoreError::TransitionConflict { .. })
+    ));
+    assert_eq!(store.count_transitions().unwrap(), 1);
+}
+
+#[test]
+fn transition_contract_rejects_invalid_states_and_version_overflow_without_writing() {
+    let (store, _dir) = test_store();
+    let invalid = [
+        Transition::new(
+            SchemaKind::ExecutionBinding,
+            fixture_attempt_id(),
+            1,
+            Some("prior".to_owned()),
+            "UPPER".to_owned(),
+            at("2026-08-05T12:00:00Z"),
+        ),
+        Transition::new(
+            SchemaKind::ExecutionBinding,
+            fixture_attempt_id(),
+            2,
+            None,
+            "running".to_owned(),
+            at("2026-08-05T12:00:00Z"),
+        ),
+        Transition::new(
+            SchemaKind::ExecutionBinding,
+            fixture_attempt_id(),
+            2,
+            Some("running".to_owned()),
+            "running".to_owned(),
+            at("2026-08-05T12:00:00Z"),
+        ),
+        Transition::new(
+            SchemaKind::ExecutionBinding,
+            fixture_attempt_id(),
+            u64::MAX,
+            Some("running".to_owned()),
+            "done".to_owned(),
+            at("2026-08-05T12:00:00Z"),
+        ),
+    ];
+    assert!(invalid.into_iter().all(|result| result.is_err()));
+    assert_eq!(store.count_transitions().unwrap(), 0);
+}
+
+#[derive(Serialize)]
+struct ExpectedTransitionDigestInput<'a> {
+    kind: SchemaKind,
+    record_id: &'a RecordId,
+    record_version: u64,
+    from_state: &'a Option<String>,
+    to_state: &'a str,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+}
+
+#[test]
+fn transition_digest_uses_the_exact_owned_canonical_contract() {
+    let transition = transition(2, Some("admitted"), "running");
+    assert_eq!(
+        transition.transition_digest,
+        digest(&ExpectedTransitionDigestInput {
+            kind: transition.kind,
+            record_id: &transition.record_id,
+            record_version: transition.record_version,
+            from_state: &transition.from_state,
+            to_state: &transition.to_state,
+            created_at: transition.created_at,
+        })
+        .unwrap()
+    );
+    transition.validate().unwrap();
+}
+
+proptest::proptest! {
+    #[test]
+    fn reinsertion_never_changes_stored_bytes(outcome in "[a-zA-Z0-9 ]{1,80}") {
+        let (mut store, _dir) = test_store();
+        let intent = fixture_intent(&outcome);
+        let id = intent.record_id().clone();
+        let before = canonical_bytes(&intent).unwrap();
+        store.insert(&CanonicalDocument::Intent(intent.clone())).unwrap();
+        store.insert(&CanonicalDocument::Intent(intent)).unwrap();
+        let after = store.load_canonical_bytes(SchemaKind::Intent, &id).unwrap().unwrap();
+        proptest::prop_assert_eq!(before, after);
+    }
+}

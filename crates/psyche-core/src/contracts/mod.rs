@@ -243,6 +243,34 @@ pub enum ContractError {
         /// Stable field name or validation category.
         field: &'static str,
     },
+    /// A typed record declared a schema other than the one its Rust type owns.
+    #[error("document schema does not match {expected:?}")]
+    SchemaMismatch {
+        /// Schema required by the typed record.
+        expected: SchemaKind,
+        /// Schema declared by the supplied value.
+        found: SchemaKind,
+    },
+    /// A record identifier belongs to a different persisted record kind.
+    #[error("{schema:?}.{field} does not identify a {expected:?} record")]
+    WrongRecordKind {
+        /// Schema containing the identifier.
+        schema: SchemaKind,
+        /// Stable field name.
+        field: &'static str,
+        /// Record kind required for the field.
+        expected: RecordKind,
+        /// Record kind carried by the identifier.
+        found: RecordKind,
+    },
+    /// A supplied digest does not match the canonical digest of its input.
+    #[error("{schema:?}.{field} does not match the canonical digest")]
+    DigestMismatch {
+        /// Schema containing the digest.
+        schema: SchemaKind,
+        /// Stable digest field name.
+        field: &'static str,
+    },
     /// A string did not name a member of a frozen enum vocabulary.
     #[error("unknown enum value for {schema:?}.{field}")]
     UnknownEnumValue {
@@ -347,7 +375,8 @@ impl RecordKind {
 
 /// The sixteen record/document shapes this build's schema registry knows
 /// about, one of which (`Error`) never round-trips through a `RecordKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SchemaKind {
     /// `psyche.identity_snapshot.vN`
     IdentitySnapshot,
@@ -631,6 +660,38 @@ impl RejectedDocument {
             bounded_payload: bytes[..bytes.len().min(MAX_REJECTED_PAYLOAD_BYTES)].to_vec(),
             reason,
         }
+    }
+
+    /// Converts a typed decode denial into bounded quarantine input.
+    pub fn from_decode_error(bytes: &[u8], error: ContractError) -> Self {
+        let reason = match error {
+            ContractError::DocumentTooLarge => RejectionReason::TooLarge,
+            ContractError::UnknownSchema => RejectionReason::UnknownSchema,
+            ContractError::UnsupportedMajor { found, supported } => {
+                RejectionReason::UnsupportedMajor { found, supported }
+            }
+            ContractError::UnknownEnumValue { schema, field } => {
+                RejectionReason::UnknownEnumValue { schema, field }
+            }
+            ContractError::InvalidShape { schema, field } => {
+                RejectionReason::InvalidShape { schema, field }
+            }
+            ContractError::WrongRecordPrefix { .. }
+            | ContractError::MalformedIdentifier
+            | ContractError::InvalidUlid
+            | ContractError::UnsupportedDigestPrefix
+            | ContractError::MalformedDigest
+            | ContractError::CanonicalizationFailed
+            | ContractError::NonInteroperableNumber
+            | ContractError::SchemaMismatch { .. }
+            | ContractError::WrongRecordKind { .. }
+            | ContractError::DigestMismatch { .. }
+            | ContractError::CancellationEvidenceMismatch => RejectionReason::InvalidShape {
+                schema: SchemaKind::Error,
+                field: "document",
+            },
+        };
+        Self::from_bytes(bytes, reason)
     }
 }
 
@@ -1174,7 +1235,10 @@ pub(crate) fn require_schema(value: SchemaVersion, kind: SchemaKind) -> Result<(
     if value.kind == kind && value.major == 1 {
         Ok(())
     } else {
-        Err(invalid(kind, "schema_version"))
+        Err(ContractError::SchemaMismatch {
+            expected: kind,
+            found: value.kind,
+        })
     }
 }
 
@@ -1187,7 +1251,12 @@ pub(crate) fn require_id(
     if id.kind() == kind {
         Ok(())
     } else {
-        Err(invalid(schema, field))
+        Err(ContractError::WrongRecordKind {
+            schema,
+            field,
+            expected: kind,
+            found: id.kind(),
+        })
     }
 }
 

@@ -2,7 +2,10 @@
 
 mod connection;
 mod error;
+mod execution_bindings;
 mod migrations;
+mod records;
+mod transitions;
 
 use std::{
     path::Path,
@@ -13,6 +16,8 @@ use rusqlite::TransactionBehavior;
 
 pub use error::StoreError;
 pub use migrations::CURRENT_DATABASE_VERSION;
+pub use records::IngestOutcome;
+pub use transitions::Transition;
 
 /// A configured connection to Psyche's durable SQLite substrate.
 #[derive(Debug)]

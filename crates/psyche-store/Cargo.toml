@@ -8,10 +8,15 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+psyche-core = { workspace = true }
 rusqlite = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

@@ -628,9 +628,14 @@ dependencies = [
 name = "psyche-store"
 version = "0.0.0"
 dependencies = [
+ "proptest",
+ "psyche-core",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
+ "time",
 ]
 
 [[package]]

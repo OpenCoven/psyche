@@ -1,5 +1,8 @@
 use std::fmt;
 
+use psyche_core::contracts::{ContractError, SchemaKind};
+use psyche_core::id::RecordId;
+
 /// A stable, payload-free store failure.
 #[derive(thiserror::Error)]
 #[non_exhaustive]
@@ -27,6 +30,41 @@ pub enum StoreError {
     MigrationUnavailable {
         /// Missing migration version.
         version: u32,
+    },
+    /// A typed document failed its owned contract validation.
+    #[error("record contract validation failed")]
+    Contract(ContractError),
+    /// A recognized document kind has no durable storage identity.
+    #[error("document kind is not persistable")]
+    NonPersistableKind {
+        /// Recognized non-persistable schema kind.
+        kind: SchemaKind,
+    },
+    /// A record identity already names different canonical content.
+    #[error("record identity conflicts with stored canonical content")]
+    RecordConflict {
+        /// Schema kind of the conflicting record.
+        kind: SchemaKind,
+        /// Durable identity that was reused.
+        record_id: RecordId,
+    },
+    /// An execution-binding revision would break its immutable linear history.
+    #[error("execution binding revision conflicts with stored history")]
+    ExecutionBindingRevisionConflict {
+        /// Attempt whose revision history would fork.
+        attempt_id: RecordId,
+        /// Conflicting one-based revision.
+        revision: u64,
+    },
+    /// A transition would break its record's immutable linear history.
+    #[error("transition conflicts with stored history")]
+    TransitionConflict {
+        /// Schema kind of the transitioned record.
+        kind: SchemaKind,
+        /// Durable identity of the transitioned record.
+        record_id: RecordId,
+        /// Conflicting one-based record version.
+        record_version: u64,
     },
     /// Creating the store's parent directory failed.
     #[error("store directory operation failed")]
@@ -61,9 +99,18 @@ impl From<rusqlite::Error> for StoreError {
     }
 }
 
+impl From<ContractError> for StoreError {
+    fn from(source: ContractError) -> Self {
+        Self::Contract(source)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+
+    use psyche_core::contracts::{ContractError, RecordKind, SchemaKind};
+    use psyche_core::id::RecordId;
 
     use super::StoreError;
 
@@ -101,6 +148,41 @@ mod tests {
                 };
                 current = source;
             }
+            assert!(error.source().is_none());
+        }
+    }
+
+    #[test]
+    fn record_failures_keep_identifiers_and_contract_details_out_of_rendering() {
+        let id = RecordId::parse(RecordKind::Attempt, "att_01J00000000000000000000000").unwrap();
+        let errors = [
+            StoreError::Contract(ContractError::WrongRecordKind {
+                schema: SchemaKind::ExecutionBinding,
+                field: "record_id",
+                expected: RecordKind::Attempt,
+                found: RecordKind::Intent,
+            }),
+            StoreError::NonPersistableKind {
+                kind: SchemaKind::Error,
+            },
+            StoreError::RecordConflict {
+                kind: SchemaKind::ExecutionBinding,
+                record_id: id.clone(),
+            },
+            StoreError::ExecutionBindingRevisionConflict {
+                attempt_id: id.clone(),
+                revision: 2,
+            },
+            StoreError::TransitionConflict {
+                kind: SchemaKind::ExecutionBinding,
+                record_id: id,
+                record_version: 2,
+            },
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().contains("att_"));
+            assert!(!format!("{error:?}").contains("att_"));
             assert!(error.source().is_none());
         }
     }
