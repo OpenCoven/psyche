@@ -229,7 +229,7 @@ fn quarantine_resolution_is_durable_and_idempotent() {
 }
 
 #[test]
-fn quarantine_resolution_rejects_unknown_stale_non_utc_or_conflicting_requests() {
+fn quarantine_resolution_rejects_unknown_stale_or_conflicting_requests() {
     let (mut store, _dir, _path) = test_store();
     let unknown = QuarantineId::parse("qua_01J00000000000000000000000").unwrap();
     let unknown_resolution = resolution(
@@ -487,7 +487,7 @@ fn prune_uses_strictly_older_cutoff_and_never_deletes_unresolved_rows() {
 }
 
 #[test]
-fn pruning_preserves_unresolved_quarantine_binding_revisions_transitions_and_audit() {
+fn pruning_preserves_unresolved_quarantine_binding_revisions_and_transitions() {
     let (mut store, _dir, _path) = test_store();
     let binding = fixture_binding();
     store
