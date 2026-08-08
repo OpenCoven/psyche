@@ -73,6 +73,8 @@ fn existing_v1_fixture_opens_without_reapplying_migration() {
 #[test]
 fn v1_quarantine_schema_contains_durable_integrity_metadata() {
     let dir = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    set_mode(dir.path(), 0o700);
     let fresh_path = dir.path().join("fresh.sqlite3");
     let store = Store::open(&fresh_path).unwrap();
     drop(store);
@@ -83,6 +85,7 @@ fn v1_quarantine_schema_contains_durable_integrity_metadata() {
         "payload_digest",
         "original_payload_len",
         "retained_payload_digest",
+        "integrity_digest",
         "bounded_payload",
         "reason",
         "discovered_at",
@@ -100,13 +103,15 @@ fn v1_quarantine_schema_contains_durable_integrity_metadata() {
                 "
                 INSERT INTO quarantine_records (
                     quarantine_id, schema_version, payload_digest, original_payload_len,
-                    retained_payload_digest, bounded_payload, reason, discovered_at
+                    retained_payload_digest, integrity_digest, bounded_payload, reason,
+                    discovered_at
                 ) VALUES (
                     'qua_01J00000000000000000000000',
                     NULL,
                     'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                     -1,
                     'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                    'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
                     X'',
                     'unknown_schema',
                     '2026-08-08T00:00:00Z'

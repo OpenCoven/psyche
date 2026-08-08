@@ -261,6 +261,7 @@ struct StoredQuarantineRecord {
     payload_digest: String,
     original_payload_len: i64,
     retained_payload_digest: String,
+    integrity_digest: String,
     bounded_payload: Vec<u8>,
     reason: String,
     discovered_at: String,
@@ -285,6 +286,18 @@ struct ResolutionDigestInput<'a> {
     resolution_code: QuarantineResolutionCode,
     #[serde(with = "time::serde::rfc3339")]
     resolved_at: time::OffsetDateTime,
+}
+
+#[derive(serde::Serialize)]
+struct QuarantineIntegrityInput<'a> {
+    domain: &'static str,
+    quarantine_id: &'a QuarantineId,
+    schema_version: &'a Option<String>,
+    payload_digest: &'a Sha256Digest,
+    original_payload_len: String,
+    retained_payload_digest: &'a Sha256Digest,
+    reason: QuarantineReasonCode,
+    discovered_at: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -341,6 +354,16 @@ impl Store {
         let discovered_at = time::OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .map_err(|_| StoreError::InvalidQuarantineRecord)?;
+        let integrity_digest = compute_quarantine_integrity_digest(
+            &quarantine_id,
+            &rejected.schema_version,
+            &rejected.payload_digest,
+            original_payload_len,
+            &retained_payload_digest,
+            reason,
+            &discovered_at,
+        )
+        .map_err(StoreError::from)?;
         transaction.execute(
             "
             INSERT INTO quarantine_records (
@@ -349,11 +372,12 @@ impl Store {
                 payload_digest,
                 original_payload_len,
                 retained_payload_digest,
+                integrity_digest,
                 bounded_payload,
                 reason,
                 discovered_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ",
             params![
                 quarantine_id.as_str(),
@@ -361,6 +385,7 @@ impl Store {
                 rejected.payload_digest.as_str(),
                 stored_original_payload_len,
                 retained_payload_digest.as_str(),
+                integrity_digest.as_str(),
                 rejected.bounded_payload,
                 reason.as_str(),
                 discovered_at,
@@ -601,6 +626,7 @@ fn stored_by_id(
                 payload_digest,
                 original_payload_len,
                 retained_payload_digest,
+                integrity_digest,
                 bounded_payload,
                 reason,
                 discovered_at,
@@ -630,6 +656,7 @@ fn stored_by_digest_and_reason(
             payload_digest,
             original_payload_len,
             retained_payload_digest,
+            integrity_digest,
             bounded_payload,
             reason,
             discovered_at,
@@ -656,6 +683,7 @@ fn load_all_stored(connection: &Connection) -> Result<Vec<StoredQuarantineRecord
             payload_digest,
             original_payload_len,
             retained_payload_digest,
+            integrity_digest,
             bounded_payload,
             reason,
             discovered_at,
@@ -679,12 +707,13 @@ fn stored_quarantine_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
         payload_digest: row.get(2)?,
         original_payload_len: row.get(3)?,
         retained_payload_digest: row.get(4)?,
-        bounded_payload: row.get(5)?,
-        reason: row.get(6)?,
-        discovered_at: row.get(7)?,
-        resolved_at: row.get(8)?,
-        resolution_code: row.get(9)?,
-        resolution_digest: row.get(10)?,
+        integrity_digest: row.get(5)?,
+        bounded_payload: row.get(6)?,
+        reason: row.get(7)?,
+        discovered_at: row.get(8)?,
+        resolved_at: row.get(9)?,
+        resolution_code: row.get(10)?,
+        resolution_digest: row.get(11)?,
     })
 }
 
@@ -706,6 +735,8 @@ fn validate_stored(stored: StoredQuarantineRecord) -> Result<QuarantineRecord, S
         Sha256Digest::parse(&stored.payload_digest).map_err(|_| StoreError::DatabaseCorruption)?;
     let retained_payload_digest = Sha256Digest::parse(&stored.retained_payload_digest)
         .map_err(|_| StoreError::DatabaseCorruption)?;
+    let integrity_digest = Sha256Digest::parse(&stored.integrity_digest)
+        .map_err(|_| StoreError::DatabaseCorruption)?;
     let reason = QuarantineReasonCode::parse(&stored.reason)?;
     let reconstructed =
         RejectedDocument::from_bytes(&stored.bounded_payload, reason.rejection_reason());
@@ -719,6 +750,19 @@ fn validate_stored(stored: StoredQuarantineRecord) -> Result<QuarantineRecord, S
         return Err(StoreError::DatabaseCorruption);
     }
     let discovered_at = parse_canonical_utc(&stored.discovered_at)?;
+    let expected_integrity_digest = compute_quarantine_integrity_digest(
+        &quarantine_id,
+        &stored.schema_version,
+        &payload_digest,
+        original_payload_len,
+        &retained_payload_digest,
+        reason,
+        &stored.discovered_at,
+    )
+    .map_err(|_| StoreError::DatabaseCorruption)?;
+    if integrity_digest != expected_integrity_digest {
+        return Err(StoreError::DatabaseCorruption);
+    }
 
     let resolution_columns = (
         stored.resolved_at.as_deref(),
@@ -767,6 +811,27 @@ fn validate_stored(stored: StoredQuarantineRecord) -> Result<QuarantineRecord, S
         resolved_at,
         resolution_code,
         resolution_digest,
+    })
+}
+
+fn compute_quarantine_integrity_digest(
+    quarantine_id: &QuarantineId,
+    schema_version: &Option<String>,
+    payload_digest: &Sha256Digest,
+    original_payload_len: usize,
+    retained_payload_digest: &Sha256Digest,
+    reason: QuarantineReasonCode,
+    discovered_at: &str,
+) -> Result<Sha256Digest, psyche_core::contracts::ContractError> {
+    digest(&QuarantineIntegrityInput {
+        domain: "psyche.quarantine-integrity.v1",
+        quarantine_id,
+        schema_version,
+        payload_digest,
+        original_payload_len: original_payload_len.to_string(),
+        retained_payload_digest,
+        reason,
+        discovered_at,
     })
 }
 

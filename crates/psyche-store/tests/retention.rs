@@ -459,7 +459,57 @@ fn oversized_quarantine_integrity_metadata_round_trips_after_reopen() {
 }
 
 #[test]
-fn dedupe_equality_includes_integrity_metadata() {
+fn oversized_quarantine_immutable_metadata_tampering_fails_closed() {
+    for mutation in [
+        "payload_digest",
+        "schema_version",
+        "original_payload_len",
+        "reason",
+        "discovered_at",
+    ] {
+        let (mut store, _dir, path) = test_store();
+        let payload = vec![b'x'; 64 * 1024 + 17];
+        let id = store
+            .quarantine(RejectedDocument::from_bytes(
+                &payload,
+                RejectionReason::TooLarge,
+            ))
+            .unwrap();
+        let discovered_at = store.quarantine_record(&id).unwrap().unwrap().discovered_at;
+        let connection = raw_connection(&path);
+        let sql = match mutation {
+            "payload_digest" => {
+                "UPDATE quarantine_records SET payload_digest = \
+                 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' \
+                 WHERE quarantine_id = ?1"
+            }
+            "schema_version" => {
+                "UPDATE quarantine_records SET schema_version = 'psyche.future.v1' \
+                 WHERE quarantine_id = ?1"
+            }
+            "original_payload_len" => {
+                "UPDATE quarantine_records SET original_payload_len = original_payload_len + 1 \
+                 WHERE quarantine_id = ?1"
+            }
+            "reason" => {
+                "UPDATE quarantine_records SET reason = 'unknown_schema' \
+                 WHERE quarantine_id = ?1"
+            }
+            "discovered_at" => {
+                "UPDATE quarantine_records SET discovered_at = '2026-08-08T00:00:00Z' \
+                 WHERE quarantine_id = ?1"
+            }
+            _ => unreachable!(),
+        };
+        connection.execute(sql, [id.as_str()]).unwrap();
+        drop(connection);
+
+        assert_quarantine_paths_detect_corruption(&mut store, &id, discovered_at);
+    }
+}
+
+#[test]
+fn dedupe_rejects_corrupt_integrity_metadata() {
     let (mut store, _dir, path) = test_store();
     let payload = vec![b'x'; 64 * 1024 + 17];
     let rejected = RejectedDocument::from_bytes(&payload, RejectionReason::TooLarge);
@@ -471,10 +521,7 @@ fn dedupe_equality_includes_integrity_metadata() {
         )
         .unwrap();
 
-    assert!(matches!(
-        store.quarantine(rejected),
-        Err(StoreError::QuarantineConflict { .. })
-    ));
+    assert_database_corruption(store.quarantine(rejected));
 }
 
 #[test]
@@ -904,8 +951,8 @@ fn malformed_persisted_quarantine_id_fails_prune_before_deleting_valid_rows() {
             "
             INSERT INTO quarantine_records (
                 quarantine_id, schema_version, payload_digest, original_payload_len,
-                retained_payload_digest, bounded_payload, reason, discovered_at
-            ) VALUES ('bad-id', NULL, ?1, 0, ?1, X'', 'unknown_schema', ?2)
+                retained_payload_digest, integrity_digest, bounded_payload, reason, discovered_at
+            ) VALUES ('bad-id', NULL, ?1, 0, ?1, ?1, X'', 'unknown_schema', ?2)
             ",
             params![
                 empty_payload.as_str(),
