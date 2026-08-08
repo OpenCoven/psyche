@@ -10,9 +10,10 @@ use psyche_core::digest::{Sha256Digest, canonical_bytes, digest};
 use psyche_core::id::RequestId;
 use psyche_coven::{
     AdoptionDisposition, AdoptionRequest, Capability, CapabilityProfile, CovenPort, EventCursor,
-    EventPage, ExecutionCorrelation, NegotiateRequest, PortError, ReconciliationDisposition,
-    ReconciliationRequest, ResultBundle, SessionSnapshot, TerminationDisposition,
-    TerminationPersistence, TerminationPersistenceFailure, TerminationRequest,
+    EventPage, ExecutionCorrelation, ExecutionRequestInput, NegotiateRequest, PortError,
+    ReconciliationDisposition, ReconciliationRequest, ResultBundle, SessionSnapshot,
+    TerminationDisposition, TerminationPersistence, TerminationPersistenceFailure,
+    TerminationRequest,
 };
 use psyche_store::{Store, StoreError};
 use tokio::sync::Mutex as AsyncMutex;
@@ -422,6 +423,20 @@ impl FakeCoven {
         disposition: &AdoptionDisposition,
     ) -> Result<AdoptionDisposition, PortError> {
         disposition.validate()?;
+        if let (
+            ExecutionRequestInput::Input {
+                session_id: requested_session,
+                ..
+            },
+            AdoptionDisposition::Adopted {
+                session_id: adopted_session,
+            },
+        ) = (request.input(), disposition)
+        {
+            if requested_session != adopted_session {
+                return Err(PortError::CorrelationMismatch);
+            }
+        }
         let correlation = request.correlation();
         let bytes = canonical_bytes(request.input()).map_err(PortError::from)?;
         let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;

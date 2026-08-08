@@ -709,6 +709,18 @@ fn direct_insert_rejects_mismatched_cancellation_evidence() {
             },
         ),
         mutation(
+            "acknowledgement with zero authority evidence digest",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .authority_evidence_digest =
+                    Sha256Digest::parse(&format!("sha256:{}", "0".repeat(64))).unwrap();
+            },
+        ),
+        mutation(
             "termination request id reused as execution request id",
             &acknowledged_terminated,
             |binding| {

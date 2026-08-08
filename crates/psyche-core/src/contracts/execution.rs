@@ -98,6 +98,14 @@ impl CancellationAcknowledgementEvidence {
         let s = SchemaKind::ExecutionBinding;
         bounded(&self.acknowledgement_id, 255, s, "acknowledgement_id")?;
         bounded(&self.session_id, 255, s, "session_id")?;
+        if self
+            .authority_evidence_digest
+            .as_str()
+            .strip_prefix("sha256:")
+            .is_none_or(|hex| hex.bytes().all(|byte| byte == b'0'))
+        {
+            return Err(ContractError::CancellationEvidenceMismatch);
+        }
         Ok(())
     }
 }

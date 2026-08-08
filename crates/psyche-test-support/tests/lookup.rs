@@ -8,6 +8,8 @@ use psyche_test_support::{CovenScriptReturn, CovenScriptStep, FakeCoven, FakeOpe
 
 const LAUNCH_GOLDEN: &[u8] =
     include_bytes!("../../psyche-coven/tests/fixtures/execution-request-launch.json");
+const INPUT_GOLDEN: &[u8] =
+    include_bytes!("../../psyche-coven/tests/fixtures/execution-request-input.json");
 
 #[tokio::test]
 async fn lookup_replays_durable_adoption_after_restart_without_a_script_step() {
@@ -88,6 +90,23 @@ async fn lookup_after_commit_disconnect_replays_but_before_commit_does_not() {
     assert_eq!(
         before_commit.lookup(&other_id).await,
         Err(PortError::UnexpectedCall)
+    );
+}
+
+#[tokio::test]
+async fn input_adoption_rejects_a_different_session() {
+    let input: ExecutionRequestInput = serde_json::from_slice(INPUT_GOLDEN).unwrap();
+    let request = AdoptionRequest::new(input).unwrap();
+    let fake = FakeCoven::builder()
+        .adoption(AdoptionDisposition::Adopted {
+            session_id: "session-2".to_owned(),
+        })
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        fake.adopt(request).await,
+        Err(PortError::CorrelationMismatch)
     );
 }
 
