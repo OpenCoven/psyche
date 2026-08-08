@@ -711,6 +711,20 @@ impl CovenPort for FakeCoven {
     }
 
     async fn lookup(&self, request_id: &RequestId) -> Result<AdoptionDisposition, PortError> {
+        let durable = {
+            let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
+            let disposition = state
+                .adoptions
+                .get(request_id.as_str())
+                .map(|(_, _, disposition)| disposition.clone());
+            if disposition.is_some() {
+                state.calls.push(FakeCall::Lookup);
+            }
+            disposition
+        };
+        if let Some(disposition) = durable {
+            return Ok(disposition);
+        }
         match self.take(FakeOperation::Lookup)? {
             CovenScriptStep::Return(CovenScriptReturn::Lookup(disposition)) => {
                 self.lookup_adoption(request_id, &disposition)
