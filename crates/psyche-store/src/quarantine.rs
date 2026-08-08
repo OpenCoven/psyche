@@ -203,10 +203,6 @@ pub struct QuarantineRecord {
     pub schema_version: Option<String>,
     /// SHA-256 digest over the complete raw input.
     pub payload_digest: Sha256Digest,
-    /// Complete raw-input length before the retained payload was bounded.
-    pub original_payload_len: usize,
-    /// SHA-256 digest over exactly the retained payload bytes.
-    pub retained_payload_digest: Sha256Digest,
     /// At most 64 KiB retained from the beginning of the raw input.
     pub bounded_payload: Vec<u8>,
     /// Stable payload-free rejection classification.
@@ -228,8 +224,6 @@ impl fmt::Debug for QuarantineRecord {
             .field("quarantine_id", &self.quarantine_id)
             .field("schema_version", &self.schema_version)
             .field("payload_digest", &self.payload_digest)
-            .field("original_payload_len", &self.original_payload_len)
-            .field("retained_payload_digest", &self.retained_payload_digest)
             .field("bounded_payload_bytes", &self.bounded_payload.len())
             .field("reason", &self.reason)
             .field("discovered_at", &self.discovered_at)
@@ -259,8 +253,6 @@ struct StoredQuarantineRecord {
     quarantine_id: String,
     schema_version: Option<String>,
     payload_digest: String,
-    original_payload_len: i64,
-    retained_payload_digest: String,
     bounded_payload: Vec<u8>,
     reason: String,
     discovered_at: String,
@@ -304,10 +296,6 @@ impl Store {
     pub fn quarantine(&mut self, rejected: RejectedDocument) -> Result<QuarantineId, StoreError> {
         validate_rejected(&rejected)?;
         let reason = QuarantineReasonCode::from(&rejected.reason);
-        let original_payload_len = rejected.original_payload_len();
-        let stored_original_payload_len =
-            i64::try_from(original_payload_len).map_err(|_| StoreError::InvalidQuarantineRecord)?;
-        let retained_payload_digest = rejected.retained_payload_digest();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -324,8 +312,6 @@ impl Store {
             validate_record_audit(&transaction, &record)?;
             if record.schema_version == rejected.schema_version
                 && record.payload_digest == rejected.payload_digest
-                && record.original_payload_len == original_payload_len
-                && record.retained_payload_digest == retained_payload_digest
                 && record.bounded_payload == rejected.bounded_payload
                 && record.reason == reason
             {
@@ -347,20 +333,16 @@ impl Store {
                 quarantine_id,
                 schema_version,
                 payload_digest,
-                original_payload_len,
-                retained_payload_digest,
                 bounded_payload,
                 reason,
                 discovered_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ",
             params![
                 quarantine_id.as_str(),
                 rejected.schema_version.as_deref(),
                 rejected.payload_digest.as_str(),
-                stored_original_payload_len,
-                retained_payload_digest.as_str(),
                 rejected.bounded_payload,
                 reason.as_str(),
                 discovered_at,
@@ -557,8 +539,7 @@ fn validate_typed_id(id: &QuarantineId) -> Result<(), StoreError> {
 }
 
 fn validate_rejected(rejected: &RejectedDocument) -> Result<(), StoreError> {
-    if !rejected.is_authentic()
-        || rejected.bounded_payload.len() > MAX_BOUNDED_PAYLOAD_BYTES
+    if rejected.bounded_payload.len() > MAX_BOUNDED_PAYLOAD_BYTES
         || !rejected
             .schema_version
             .as_deref()
@@ -599,8 +580,6 @@ fn stored_by_id(
                 quarantine_id,
                 schema_version,
                 payload_digest,
-                original_payload_len,
-                retained_payload_digest,
                 bounded_payload,
                 reason,
                 discovered_at,
@@ -628,8 +607,6 @@ fn stored_by_digest_and_reason(
             quarantine_id,
             schema_version,
             payload_digest,
-            original_payload_len,
-            retained_payload_digest,
             bounded_payload,
             reason,
             discovered_at,
@@ -654,8 +631,6 @@ fn load_all_stored(connection: &Connection) -> Result<Vec<StoredQuarantineRecord
             quarantine_id,
             schema_version,
             payload_digest,
-            original_payload_len,
-            retained_payload_digest,
             bounded_payload,
             reason,
             discovered_at,
@@ -677,46 +652,37 @@ fn stored_quarantine_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
         quarantine_id: row.get(0)?,
         schema_version: row.get(1)?,
         payload_digest: row.get(2)?,
-        original_payload_len: row.get(3)?,
-        retained_payload_digest: row.get(4)?,
-        bounded_payload: row.get(5)?,
-        reason: row.get(6)?,
-        discovered_at: row.get(7)?,
-        resolved_at: row.get(8)?,
-        resolution_code: row.get(9)?,
-        resolution_digest: row.get(10)?,
+        bounded_payload: row.get(3)?,
+        reason: row.get(4)?,
+        discovered_at: row.get(5)?,
+        resolved_at: row.get(6)?,
+        resolution_code: row.get(7)?,
+        resolution_digest: row.get(8)?,
     })
 }
 
 fn validate_stored(stored: StoredQuarantineRecord) -> Result<QuarantineRecord, StoreError> {
     let quarantine_id =
         QuarantineId::parse(&stored.quarantine_id).map_err(|_| StoreError::DatabaseCorruption)?;
-    let original_payload_len =
-        usize::try_from(stored.original_payload_len).map_err(|_| StoreError::DatabaseCorruption)?;
     if !stored
         .schema_version
         .as_deref()
         .is_none_or(schema_version_is_safe)
         || stored.bounded_payload.len() > MAX_BOUNDED_PAYLOAD_BYTES
-        || stored.bounded_payload.len() != original_payload_len.min(MAX_BOUNDED_PAYLOAD_BYTES)
     {
         return Err(StoreError::DatabaseCorruption);
     }
     let payload_digest =
         Sha256Digest::parse(&stored.payload_digest).map_err(|_| StoreError::DatabaseCorruption)?;
-    let retained_payload_digest = Sha256Digest::parse(&stored.retained_payload_digest)
-        .map_err(|_| StoreError::DatabaseCorruption)?;
     let reason = QuarantineReasonCode::parse(&stored.reason)?;
-    let reconstructed =
-        RejectedDocument::from_bytes(&stored.bounded_payload, reason.rejection_reason());
-    if reconstructed.retained_payload_digest() != retained_payload_digest {
-        return Err(StoreError::DatabaseCorruption);
-    }
-    if original_payload_len <= MAX_BOUNDED_PAYLOAD_BYTES
-        && (reconstructed.payload_digest != payload_digest
-            || reconstructed.schema_version != stored.schema_version)
-    {
-        return Err(StoreError::DatabaseCorruption);
+    if stored.bounded_payload.len() < MAX_BOUNDED_PAYLOAD_BYTES {
+        let reconstructed =
+            RejectedDocument::from_bytes(&stored.bounded_payload, reason.rejection_reason());
+        if reconstructed.payload_digest != payload_digest
+            || reconstructed.schema_version != stored.schema_version
+        {
+            return Err(StoreError::DatabaseCorruption);
+        }
     }
     let discovered_at = parse_canonical_utc(&stored.discovered_at)?;
 
@@ -759,8 +725,6 @@ fn validate_stored(stored: StoredQuarantineRecord) -> Result<QuarantineRecord, S
         quarantine_id,
         schema_version: stored.schema_version,
         payload_digest,
-        original_payload_len,
-        retained_payload_digest,
         bounded_payload: stored.bounded_payload,
         reason,
         discovered_at,

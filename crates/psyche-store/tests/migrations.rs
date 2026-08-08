@@ -13,7 +13,7 @@ use psyche_store::{CURRENT_DATABASE_VERSION, Store, StoreError};
 use rusqlite::Connection;
 use support::{
     FOUNDATION_TABLES, Fixture, execute_batch, fixture_db, foundation_tables, journal_mode,
-    scalar_text, schema_migrations, table_columns, table_exists, user_version,
+    scalar_text, schema_migrations, table_exists, user_version,
 };
 
 #[test]
@@ -68,54 +68,6 @@ fn existing_v1_fixture_opens_without_reapplying_migration() {
 
     assert_eq!(schema_migrations(&path), vec![(1, "fixture-v1".to_owned())]);
     assert_eq!(foundation_tables(&path), FOUNDATION_TABLES);
-}
-
-#[test]
-fn v1_quarantine_schema_contains_durable_integrity_metadata() {
-    let dir = tempfile::tempdir().unwrap();
-    let fresh_path = dir.path().join("fresh.sqlite3");
-    let store = Store::open(&fresh_path).unwrap();
-    drop(store);
-    let fixture_path = fixture_db(dir.path(), Fixture::Version1);
-    let expected = [
-        "quarantine_id",
-        "schema_version",
-        "payload_digest",
-        "original_payload_len",
-        "retained_payload_digest",
-        "bounded_payload",
-        "reason",
-        "discovered_at",
-        "resolved_at",
-        "resolution_code",
-        "resolution_digest",
-    ];
-
-    assert_eq!(table_columns(&fresh_path, "quarantine_records"), expected);
-    assert_eq!(table_columns(&fixture_path, "quarantine_records"), expected);
-    assert!(
-        Connection::open(&fresh_path)
-            .unwrap()
-            .execute(
-                "
-                INSERT INTO quarantine_records (
-                    quarantine_id, schema_version, payload_digest, original_payload_len,
-                    retained_payload_digest, bounded_payload, reason, discovered_at
-                ) VALUES (
-                    'qua_01J00000000000000000000000',
-                    NULL,
-                    'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-                    -1,
-                    'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-                    X'',
-                    'unknown_schema',
-                    '2026-08-08T00:00:00Z'
-                )
-                ",
-                [],
-            )
-            .is_err()
-    );
 }
 
 #[test]

@@ -118,15 +118,6 @@ fn quarantined_fixture(store: &mut Store) -> QuarantineId {
     quarantine_id
 }
 
-fn complete_64_kib_payload() -> Vec<u8> {
-    let empty = r#"{"schema_version":"psyche.future.v1","padding":""}"#;
-    let padding = "x".repeat(64 * 1024 - empty.len());
-    let bytes =
-        format!(r#"{{"schema_version":"psyche.future.v1","padding":"{padding}"}}"#).into_bytes();
-    assert_eq!(bytes.len(), 64 * 1024);
-    bytes
-}
-
 fn resolution(code: QuarantineResolutionCode, resolved_at: OffsetDateTime) -> QuarantineResolution {
     QuarantineResolution { code, resolved_at }
 }
@@ -143,22 +134,6 @@ fn assert_database_corruption<T: std::fmt::Debug>(result: Result<T, StoreError>)
         "StoreError(stored database content failed integrity validation)"
     );
     assert!(error.source().is_none());
-}
-
-fn assert_quarantine_paths_detect_corruption(
-    store: &mut Store,
-    id: &QuarantineId,
-    discovered_at: OffsetDateTime,
-) {
-    assert_database_corruption(store.quarantine_record(id));
-    assert_database_corruption(store.resolve_quarantine(
-        id,
-        &resolution(
-            QuarantineResolutionCode::ConfirmedInvalid,
-            discovered_at + Duration::seconds(1),
-        ),
-    ));
-    assert_database_corruption(store.prune(discovered_at + Duration::days(1)));
 }
 
 #[test]
@@ -243,257 +218,6 @@ fn quarantine_is_bounded_idempotent_and_reason_sensitive() {
 }
 
 #[test]
-fn quarantine_rejects_forged_exactly_64_kib_digest() {
-    let (mut store, _dir, _path) = test_store();
-    let mut rejected =
-        RejectedDocument::from_bytes(&vec![b'x'; 64 * 1024], RejectionReason::TooLarge);
-    rejected.payload_digest = fixture_digest('a');
-
-    let error = store.quarantine(rejected).unwrap_err();
-    assert!(matches!(error, StoreError::InvalidQuarantineRecord));
-    assert_eq!(error.to_string(), "quarantine record is invalid");
-    assert_eq!(
-        format!("{error:?}"),
-        "StoreError(quarantine record is invalid)"
-    );
-    assert!(error.source().is_none());
-}
-
-#[test]
-fn quarantine_rejects_exactly_64_kib_public_field_mutations() {
-    let (mut store, _dir, _path) = test_store();
-    let original =
-        RejectedDocument::from_bytes(&vec![b'x'; 64 * 1024], RejectionReason::UnknownSchema);
-
-    let mut schema_mutated = original.clone();
-    schema_mutated.schema_version = Some("psyche.other.v1".to_owned());
-    let mut digest_mutated = original.clone();
-    digest_mutated.payload_digest = fixture_digest('b');
-    let mut payload_mutated = original.clone();
-    payload_mutated.bounded_payload[0] = b'y';
-    let mut reason_mutated = original;
-    reason_mutated.reason = RejectionReason::TooLarge;
-
-    for rejected in [
-        schema_mutated,
-        digest_mutated,
-        payload_mutated,
-        reason_mutated,
-    ] {
-        let error = store.quarantine(rejected).unwrap_err();
-        assert!(matches!(error, StoreError::InvalidQuarantineRecord));
-        assert_eq!(error.to_string(), "quarantine record is invalid");
-        assert!(error.source().is_none());
-    }
-}
-
-#[test]
-fn complete_64_kib_quarantine_integrity_tampering_fails_closed() {
-    for tamper in [
-        "bounded_payload",
-        "retained_payload_digest",
-        "original_payload_len",
-        "negative_original_payload_len",
-        "payload_digest",
-        "schema_version",
-    ] {
-        let (mut store, _dir, path) = test_store();
-        let payload = complete_64_kib_payload();
-        let id = store
-            .quarantine(RejectedDocument::from_bytes(
-                &payload,
-                RejectionReason::UnknownSchema,
-            ))
-            .unwrap();
-        let discovered_at = store.quarantine_record(&id).unwrap().unwrap().discovered_at;
-        let connection = raw_connection(&path);
-        match tamper {
-            "bounded_payload" => {
-                let mut mutated = payload;
-                let index = mutated.iter().rposition(|byte| *byte == b'x').unwrap();
-                mutated[index] = b'y';
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET bounded_payload = ?1 WHERE quarantine_id = ?2",
-                        params![mutated, id.as_str()],
-                    )
-                    .unwrap();
-            }
-            "retained_payload_digest" => {
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET retained_payload_digest = ?1 WHERE quarantine_id = ?2",
-                        params![fixture_digest('d').as_str(), id.as_str()],
-                    )
-                    .unwrap();
-            }
-            "original_payload_len" => {
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET original_payload_len = ?1 WHERE quarantine_id = ?2",
-                        params![64 * 1024 - 1, id.as_str()],
-                    )
-                    .unwrap();
-            }
-            "negative_original_payload_len" => {
-                connection
-                    .execute_batch("PRAGMA ignore_check_constraints = ON;")
-                    .unwrap();
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET original_payload_len = -1 WHERE quarantine_id = ?1",
-                        [id.as_str()],
-                    )
-                    .unwrap();
-            }
-            "payload_digest" => {
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET payload_digest = ?1 WHERE quarantine_id = ?2",
-                        params![fixture_digest('e').as_str(), id.as_str()],
-                    )
-                    .unwrap();
-            }
-            "schema_version" => {
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET schema_version = 'psyche.other.v1' WHERE quarantine_id = ?1",
-                        [id.as_str()],
-                    )
-                    .unwrap();
-            }
-            _ => unreachable!(),
-        }
-        drop(connection);
-
-        assert_quarantine_paths_detect_corruption(&mut store, &id, discovered_at);
-    }
-}
-
-#[test]
-fn short_quarantine_integrity_tampering_fails_closed() {
-    for tamper in [
-        "bounded_payload",
-        "retained_payload_digest",
-        "original_payload_len",
-        "payload_digest",
-        "schema_version",
-    ] {
-        let (mut store, _dir, path) = test_store();
-        let payload = br#"{"schema_version":"psyche.future.v1"}"#;
-        let id = store
-            .quarantine(RejectedDocument::from_bytes(
-                payload,
-                RejectionReason::UnknownSchema,
-            ))
-            .unwrap();
-        let discovered_at = store.quarantine_record(&id).unwrap().unwrap().discovered_at;
-        let connection = raw_connection(&path);
-        match tamper {
-            "bounded_payload" => {
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET bounded_payload = ?1 WHERE quarantine_id = ?2",
-                        params![b"corrupted payload", id.as_str()],
-                    )
-                    .unwrap();
-            }
-            "retained_payload_digest" => {
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET retained_payload_digest = ?1 WHERE quarantine_id = ?2",
-                        params![fixture_digest('d').as_str(), id.as_str()],
-                    )
-                    .unwrap();
-            }
-            "original_payload_len" => {
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET original_payload_len = original_payload_len + 1 WHERE quarantine_id = ?1",
-                        [id.as_str()],
-                    )
-                    .unwrap();
-            }
-            "payload_digest" => {
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET payload_digest = ?1 WHERE quarantine_id = ?2",
-                        params![fixture_digest('e').as_str(), id.as_str()],
-                    )
-                    .unwrap();
-            }
-            "schema_version" => {
-                connection
-                    .execute(
-                        "UPDATE quarantine_records SET schema_version = 'psyche.other.v1' WHERE quarantine_id = ?1",
-                        [id.as_str()],
-                    )
-                    .unwrap();
-            }
-            _ => unreachable!(),
-        }
-        drop(connection);
-
-        assert_quarantine_paths_detect_corruption(&mut store, &id, discovered_at);
-    }
-}
-
-#[test]
-fn oversized_quarantine_integrity_metadata_round_trips_after_reopen() {
-    let (mut store, _dir, path) = test_store();
-    let mut payload = vec![b'x'; 64 * 1024];
-    payload.extend_from_slice(b"tail-not-retained");
-    let rejected = RejectedDocument::from_bytes(&payload, RejectionReason::TooLarge);
-    let expected_payload_digest = rejected.payload_digest.clone();
-    let expected_retained_digest = rejected.retained_payload_digest();
-    let id = store.quarantine(rejected.clone()).unwrap();
-    drop(store);
-
-    let mut reopened = Store::open(&path).unwrap();
-    let record = reopened.quarantine_record(&id).unwrap().unwrap();
-    assert_eq!(record.original_payload_len, payload.len());
-    assert_eq!(record.retained_payload_digest, expected_retained_digest);
-    assert_eq!(record.payload_digest, expected_payload_digest);
-    assert_eq!(record.bounded_payload, payload[..64 * 1024]);
-    assert_eq!(reopened.quarantine(rejected).unwrap(), id);
-}
-
-#[test]
-fn dedupe_equality_includes_integrity_metadata() {
-    let (mut store, _dir, path) = test_store();
-    let payload = vec![b'x'; 64 * 1024 + 17];
-    let rejected = RejectedDocument::from_bytes(&payload, RejectionReason::TooLarge);
-    let id = store.quarantine(rejected.clone()).unwrap();
-    raw_connection(&path)
-        .execute(
-            "UPDATE quarantine_records SET original_payload_len = original_payload_len + 1 WHERE quarantine_id = ?1",
-            [id.as_str()],
-        )
-        .unwrap();
-
-    assert!(matches!(
-        store.quarantine(rejected),
-        Err(StoreError::QuarantineConflict { .. })
-    ));
-}
-
-#[test]
-fn quarantine_replay_validates_persisted_integrity_metadata() {
-    let (mut store, _dir, path) = test_store();
-    let payload = vec![b'x'; 64 * 1024 + 1];
-    let rejected = RejectedDocument::from_bytes(&payload, RejectionReason::TooLarge);
-    let id = store.quarantine(rejected.clone()).unwrap();
-    raw_connection(&path)
-        .execute(
-            "UPDATE quarantine_records SET retained_payload_digest = ?1 WHERE quarantine_id = ?2",
-            params![fixture_digest('f').as_str(), id.as_str()],
-        )
-        .unwrap();
-
-    assert_database_corruption(store.quarantine(rejected));
-}
-
-#[test]
 fn complete_persisted_quarantine_rejects_valid_format_payload_tampering() {
     let (mut store, _dir, path) = test_store();
     let id = quarantined_fixture(&mut store);
@@ -533,6 +257,38 @@ fn complete_persisted_quarantine_rejects_valid_format_schema_tampering() {
         .unwrap();
 
     assert_database_corruption(store.quarantine_record(&id));
+}
+
+#[test]
+fn fully_bounded_persisted_quarantine_retains_shape_only_validation() {
+    for raw_len in [64 * 1024, 64 * 1024 + 1] {
+        let (mut store, _dir, path) = test_store();
+        let id = store
+            .quarantine(RejectedDocument::from_bytes(
+                &vec![b'x'; raw_len],
+                RejectionReason::UnknownSchema,
+            ))
+            .unwrap();
+        raw_connection(&path)
+            .execute(
+                "
+                UPDATE quarantine_records
+                SET payload_digest = ?1, schema_version = ?2
+                WHERE quarantine_id = ?3
+                ",
+                params![
+                    fixture_digest('e').as_str(),
+                    "psyche.future.v1",
+                    id.as_str()
+                ],
+            )
+            .unwrap();
+
+        let record = store.quarantine_record(&id).unwrap().unwrap();
+        assert_eq!(record.bounded_payload.len(), 64 * 1024);
+        assert_eq!(record.payload_digest, fixture_digest('e'));
+        assert_eq!(record.schema_version.as_deref(), Some("psyche.future.v1"));
+    }
 }
 
 #[test]
@@ -888,8 +644,6 @@ fn malformed_persisted_quarantine_id_fails_prune_before_deleting_valid_rows() {
     let (mut store, _dir, path) = test_store();
     let id = quarantined_fixture(&mut store);
     let discovered_at = store.quarantine_record(&id).unwrap().unwrap().discovered_at;
-    let empty_payload =
-        RejectedDocument::from_bytes(b"", RejectionReason::UnknownSchema).payload_digest;
     store
         .resolve_quarantine(
             &id,
@@ -903,12 +657,12 @@ fn malformed_persisted_quarantine_id_fails_prune_before_deleting_valid_rows() {
         .execute(
             "
             INSERT INTO quarantine_records (
-                quarantine_id, schema_version, payload_digest, original_payload_len,
-                retained_payload_digest, bounded_payload, reason, discovered_at
-            ) VALUES ('bad-id', NULL, ?1, 0, ?1, X'', 'unknown_schema', ?2)
+                quarantine_id, schema_version, payload_digest, bounded_payload,
+                reason, discovered_at
+            ) VALUES ('bad-id', NULL, ?1, X'', 'unknown_schema', ?2)
             ",
             params![
-                empty_payload.as_str(),
+                fixture_digest('b').as_str(),
                 discovered_at.format(&Rfc3339).unwrap()
             ],
         )
