@@ -920,6 +920,9 @@ mod tests {
         );
 
         for value in [
+            canonical_bytes(&-9_007_199_254_740_992_i64),
+            canonical_bytes(&9_007_199_254_740_992_i64),
+            canonical_bytes(&9_007_199_254_740_992_u64),
             canonical_bytes(&-9_007_199_254_740_992_i128),
             canonical_bytes(&9_007_199_254_740_992_i128),
             canonical_bytes(&9_007_199_254_740_992_u128),
@@ -956,6 +959,39 @@ mod tests {
             String::from_utf8(canonical_bytes(&safe).unwrap()).unwrap(),
             r#"{"-9007199254740991":"minimum","9007199254740991":"maximum"}"#
         );
+    }
+
+    #[test]
+    fn canonicalization_preserves_every_integer_map_key_type() {
+        macro_rules! assert_key_canonicalizes {
+            ($value:expr) => {{
+                let map = BTreeMap::from([($value, "value")]);
+                let canonical = String::from_utf8(canonical_bytes(&map).unwrap()).unwrap();
+                assert_eq!(canonical, format!(r#"{{"{}":"value"}}"#, $value));
+            }};
+        }
+
+        assert_key_canonicalizes!(-1_i8);
+        assert_key_canonicalizes!(-2_i16);
+        assert_key_canonicalizes!(-3_i32);
+        assert_key_canonicalizes!(-9_007_199_254_740_991_i64);
+        assert_key_canonicalizes!(9_007_199_254_740_991_i128);
+        assert_key_canonicalizes!(u8::MAX);
+        assert_key_canonicalizes!(u16::MAX);
+        assert_key_canonicalizes!(u32::MAX);
+        assert_key_canonicalizes!(9_007_199_254_740_991_u64);
+        assert_key_canonicalizes!(9_007_199_254_740_991_u128);
+    }
+
+    #[test]
+    fn canonicalization_rejects_unsafe_i128_and_u128_map_keys() {
+        for result in [
+            canonical_bytes(&BTreeMap::from([(-9_007_199_254_740_992_i128, "unsafe")])),
+            canonical_bytes(&BTreeMap::from([(9_007_199_254_740_992_i128, "unsafe")])),
+            canonical_bytes(&BTreeMap::from([(9_007_199_254_740_992_u128, "unsafe")])),
+        ] {
+            assert_eq!(result, Err(ContractError::NonInteroperableNumber));
+        }
     }
 
     #[test]
