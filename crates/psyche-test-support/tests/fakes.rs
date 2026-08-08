@@ -19,7 +19,7 @@ use psyche_coven::{
     TerminationPersistenceFailure, derive_termination_outcome_revision, persist_then_terminate,
 };
 use psyche_store::{Store, StoreError};
-use psyche_surfaces::{DeliveryDisposition, SurfacePort};
+use psyche_surfaces::{DeliveryDisposition, SurfaceAcceptance, SurfacePort};
 use psyche_test_support::{
     CovenScriptReturn, CovenScriptStep, FakeBuildError, FakeCall, FakeCoven, FakeOperation,
     FakeSurface, StoreTerminationPersistence, SurfaceScriptReturn, SurfaceScriptStep,
@@ -167,6 +167,21 @@ fn surface_effect() -> psyche_core::contracts::surface::SurfaceEffect {
     .unwrap()
 }
 
+fn surface_event() -> psyche_core::contracts::surface::SurfaceEvent {
+    serde_json::from_value(serde_json::json!({
+        "schema_version":"psyche.surface_event.v1",
+        "surface_event_id":"sev_01J00000000000000000000000",
+        "adapter_id":"telegram",
+        "account_id":"account-1",
+        "actor":{"type":"user","id":"123"},
+        "locator":{"type":"message","chat_id":"123","message_id":"42"},
+        "adapter_event_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "received_at":"2026-08-05T14:00:00Z",
+        "content":{"type":"text","text":"hello"}
+    }))
+    .unwrap()
+}
+
 fn alternate_utc_spelling(bytes: Vec<u8>) -> Vec<u8> {
     let canonical = String::from_utf8(bytes).unwrap();
     canonical.replacen("Z\"", "+00:00\"", 1).into_bytes()
@@ -265,6 +280,124 @@ async fn reconcile_after_commit_replays_and_changed_correlation_conflicts() {
         restarted.reconcile(changed).await,
         Err(PortError::IntentConflict)
     ));
+}
+
+#[test]
+fn reconciliation_resolution_may_be_recorded_after_correlation_deadline() {
+    let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
+    let correlation = AdoptionRequest::new(input).unwrap().correlation();
+    let request = ReconciliationRequest {
+        correlation: correlation.clone(),
+        ambiguity_digest: digest_of('e'),
+        reason_code: "adoption_unknown".to_owned(),
+    };
+    let recorded_at = request.correlation.valid_until + time::Duration::nanoseconds(1);
+
+    for disposition in [
+        ReconciliationDisposition::Returned {
+            disposition_id: "disposition-1".to_owned(),
+            session_id: "session-1".to_owned(),
+            correlation: correlation.clone(),
+            ambiguity_digest: request.ambiguity_digest.clone(),
+            recorded_at,
+        },
+        ReconciliationDisposition::Fenced {
+            disposition_id: "disposition-2".to_owned(),
+            fence_token: "fence-1".to_owned(),
+            correlation: correlation.clone(),
+            ambiguity_digest: request.ambiguity_digest.clone(),
+            recorded_at,
+        },
+    ] {
+        disposition.validate_for(&request).unwrap();
+    }
+}
+
+#[test]
+fn reconciliation_resolution_requires_exact_correlation_digest_utc_and_lower_bound() {
+    let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
+    let correlation = AdoptionRequest::new(input).unwrap().correlation();
+    let request = ReconciliationRequest {
+        correlation: correlation.clone(),
+        ambiguity_digest: digest_of('e'),
+        reason_code: "adoption_unknown".to_owned(),
+    };
+    let disposition =
+        |correlation, ambiguity_digest, recorded_at| ReconciliationDisposition::Returned {
+            disposition_id: "disposition-1".to_owned(),
+            session_id: "session-1".to_owned(),
+            correlation,
+            ambiguity_digest,
+            recorded_at,
+        };
+
+    let mut mismatched_correlation = correlation.clone();
+    mismatched_correlation.project_id = "project:sha256:def".to_owned();
+    let non_utc = correlation
+        .created_at
+        .to_offset(time::UtcOffset::from_hms(1, 0, 0).unwrap());
+    for invalid in [
+        disposition(
+            mismatched_correlation,
+            request.ambiguity_digest.clone(),
+            correlation.valid_until,
+        ),
+        disposition(correlation.clone(), digest_of('f'), correlation.valid_until),
+        disposition(
+            correlation.clone(),
+            request.ambiguity_digest.clone(),
+            correlation.created_at - time::Duration::nanoseconds(1),
+        ),
+        disposition(correlation, request.ambiguity_digest.clone(), non_utc),
+    ] {
+        assert!(matches!(
+            invalid.validate_for(&request),
+            Err(PortError::CorrelationMismatch)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn unresolved_reconciliation_remains_retryable_until_returned_or_fenced() {
+    let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
+    let correlation = AdoptionRequest::new(input).unwrap().correlation();
+    let request = ReconciliationRequest {
+        correlation: correlation.clone(),
+        ambiguity_digest: digest_of('e'),
+        reason_code: "adoption_unknown".to_owned(),
+    };
+    let recorded_at = request.correlation.valid_until + time::Duration::nanoseconds(1);
+    let resolutions = [
+        ReconciliationDisposition::Returned {
+            disposition_id: "disposition-1".to_owned(),
+            session_id: "session-1".to_owned(),
+            correlation: correlation.clone(),
+            ambiguity_digest: request.ambiguity_digest.clone(),
+            recorded_at,
+        },
+        ReconciliationDisposition::Fenced {
+            disposition_id: "disposition-2".to_owned(),
+            fence_token: "fence-1".to_owned(),
+            correlation,
+            ambiguity_digest: request.ambiguity_digest.clone(),
+            recorded_at,
+        },
+    ];
+
+    for resolution in resolutions {
+        let fake = FakeCoven::builder()
+            .reconciliation(ReconciliationDisposition::Unresolved)
+            .reconciliation(resolution.clone())
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            fake.reconcile(request.clone()).await.unwrap(),
+            ReconciliationDisposition::Unresolved
+        );
+        assert_eq!(fake.reconcile(request.clone()).await.unwrap(), resolution);
+        assert_eq!(fake.remaining_steps(), 0);
+    }
 }
 
 #[tokio::test]
@@ -506,6 +639,64 @@ async fn surface_after_commit_replays_the_durable_disposition() {
         Err(psyche_surfaces::PortError::Unavailable)
     ));
     assert_eq!(fake.restart().apply(effect).await.unwrap(), committed);
+}
+
+#[tokio::test]
+async fn successful_surface_acceptance_is_durable_and_conflict_safe() {
+    let event = surface_event();
+    let committed = SurfaceAcceptance {
+        surface_event_id: event.surface_event_id.clone(),
+        accepted: true,
+    };
+    let fake = FakeSurface::builder()
+        .acceptance(committed.clone())
+        .acceptance(SurfaceAcceptance {
+            surface_event_id: event.surface_event_id.clone(),
+            accepted: false,
+        })
+        .build()
+        .unwrap();
+
+    assert_eq!(fake.accept(event.clone()).await.unwrap(), committed);
+    assert_eq!(
+        fake.restart().accept(event.clone()).await.unwrap(),
+        committed
+    );
+
+    let mut changed = event;
+    changed.content["text"] = serde_json::json!("different");
+    assert!(matches!(
+        fake.accept(changed).await,
+        Err(psyche_surfaces::PortError::IntentConflict)
+    ));
+}
+
+#[tokio::test]
+async fn successful_surface_delivery_is_durable_and_conflict_safe() {
+    let committed = DeliveryDisposition::Applied {
+        external_id: "delivery-1".to_owned(),
+    };
+    let fake = FakeSurface::builder()
+        .delivery(committed.clone())
+        .delivery(DeliveryDisposition::Rejected {
+            code: "policy_denied".to_owned(),
+        })
+        .build()
+        .unwrap();
+    let effect = surface_effect();
+
+    assert_eq!(fake.apply(effect.clone()).await.unwrap(), committed);
+    assert_eq!(
+        fake.restart().apply(effect.clone()).await.unwrap(),
+        committed
+    );
+
+    let mut changed = effect;
+    changed.project_id = "project:sha256:def".to_owned();
+    assert!(matches!(
+        fake.apply(changed).await,
+        Err(psyche_surfaces::PortError::IntentConflict)
+    ));
 }
 
 #[tokio::test]
@@ -1360,5 +1551,8 @@ async fn surface_fake_consumes_only_scripted_behavior() {
         port.apply(effect.clone()).await.unwrap(),
         DeliveryDisposition::Unknown
     );
-    assert!(port.apply(effect).await.is_err());
+    assert_eq!(
+        port.apply(effect).await.unwrap(),
+        DeliveryDisposition::Unknown
+    );
 }

@@ -326,6 +326,9 @@ impl FakeCoven {
         request: &ReconciliationRequest,
         disposition: &ReconciliationDisposition,
     ) -> Result<ReconciliationDisposition, PortError> {
+        if disposition == &ReconciliationDisposition::Unresolved {
+            return Ok(ReconciliationDisposition::Unresolved);
+        }
         let key = request.correlation.request_id.as_str().to_owned();
         {
             let state = self.state.lock().map_err(|_| PortError::Unavailable)?;

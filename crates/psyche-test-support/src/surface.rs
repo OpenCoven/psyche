@@ -146,18 +146,26 @@ impl FakeSurface {
         &self,
         event: &SurfaceEvent,
         acceptance: SurfaceAcceptance,
-    ) -> Result<(), PortError> {
+    ) -> Result<SurfaceAcceptance, PortError> {
         acceptance.validate()?;
         if acceptance.surface_event_id != event.surface_event_id {
             return Err(PortError::InvalidResponse);
         }
         let bytes = canonical_bytes(event).map_err(|_| PortError::InvalidEvent)?;
         let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
+        if let Some((stored_bytes, stored)) = state.acceptances.get(event.surface_event_id.as_str())
+        {
+            return if stored_bytes == &bytes {
+                Ok(stored.clone())
+            } else {
+                Err(PortError::IntentConflict)
+            };
+        }
         state.acceptances.insert(
             event.surface_event_id.as_str().to_owned(),
-            (bytes, acceptance),
+            (bytes, acceptance.clone()),
         );
-        Ok(())
+        Ok(acceptance)
     }
 
     fn replay_delivery(
@@ -182,15 +190,24 @@ impl FakeSurface {
         &self,
         effect: &SurfaceEffect,
         disposition: DeliveryDisposition,
-    ) -> Result<(), PortError> {
+    ) -> Result<DeliveryDisposition, PortError> {
         disposition.validate()?;
         let bytes = canonical_bytes(effect).map_err(|_| PortError::InvalidEffect)?;
         let mut state = self.state.lock().map_err(|_| PortError::Unavailable)?;
+        if let Some((stored_bytes, stored)) =
+            state.deliveries.get(effect.surface_effect_id.as_str())
+        {
+            return if stored_bytes == &bytes {
+                Ok(stored.clone())
+            } else {
+                Err(PortError::IntentConflict)
+            };
+        }
         state.deliveries.insert(
             effect.surface_effect_id.as_str().to_owned(),
-            (bytes, disposition),
+            (bytes, disposition.clone()),
         );
-        Ok(())
+        Ok(disposition)
     }
 }
 
@@ -261,12 +278,7 @@ impl SurfacePort for FakeSurface {
         }
         match self.take(SurfaceFakeCall::Accept)? {
             SurfaceScriptStep::Return(SurfaceScriptReturn::Accept(acceptance)) => {
-                acceptance.validate()?;
-                if acceptance.surface_event_id == event.surface_event_id {
-                    Ok(acceptance)
-                } else {
-                    Err(PortError::InvalidResponse)
-                }
+                self.commit_acceptance(&event, acceptance)
             }
             SurfaceScriptStep::DisconnectAfterCommit(SurfaceScriptReturn::Accept(acceptance)) => {
                 self.commit_acceptance(&event, acceptance)?;
@@ -287,8 +299,7 @@ impl SurfacePort for FakeSurface {
         }
         match self.take(SurfaceFakeCall::Apply)? {
             SurfaceScriptStep::Return(SurfaceScriptReturn::Apply(disposition)) => {
-                disposition.validate()?;
-                Ok(disposition)
+                self.commit_delivery(&effect, disposition)
             }
             SurfaceScriptStep::DisconnectAfterCommit(SurfaceScriptReturn::Apply(disposition)) => {
                 self.commit_delivery(&effect, disposition)?;

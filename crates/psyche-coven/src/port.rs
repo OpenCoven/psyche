@@ -636,7 +636,6 @@ impl ReconciliationDisposition {
             || ambiguity_digest != &request.ambiguity_digest
             || !utc(*recorded_at)
             || *recorded_at < request.correlation.created_at
-            || *recorded_at > request.correlation.valid_until
         {
             return Err(PortError::CorrelationMismatch);
         }
@@ -811,7 +810,7 @@ impl ContentAddressedReference {
     /// Validates metadata only; this does not attest payload bytes.
     pub fn validate(&self) -> Result<(), PortError> {
         validate_media_type(&self.media_type)?;
-        if self.size_bytes == 0 || self.size_bytes > i64::MAX as u64 || !utc(self.expires_at) {
+        if self.size_bytes == 0 || self.size_bytes > MAX_SAFE_INTEGER || !utc(self.expires_at) {
             return Err(PortError::InvalidRequest);
         }
         Ok(())
