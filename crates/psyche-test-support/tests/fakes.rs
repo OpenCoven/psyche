@@ -439,6 +439,83 @@ async fn unresolved_reconciliation_remains_retryable_until_returned_or_fenced() 
 }
 
 #[tokio::test]
+async fn reconciliation_disconnect_before_and_stall_leave_ambiguity_retryable() {
+    let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
+    let correlation = AdoptionRequest::new(input).unwrap().correlation();
+    let request = ReconciliationRequest {
+        correlation: correlation.clone(),
+        ambiguity_digest: digest_of('e'),
+        reason_code: "adoption_unknown".to_owned(),
+    };
+    let returned = ReconciliationDisposition::Returned {
+        disposition_id: "disposition-1".to_owned(),
+        session_id: "session-1".to_owned(),
+        correlation,
+        ambiguity_digest: request.ambiguity_digest.clone(),
+        recorded_at: request.correlation.valid_until + time::Duration::nanoseconds(1),
+    };
+    let fake = FakeCoven::builder()
+        .step(CovenScriptStep::DisconnectBeforeCommit(
+            FakeOperation::Reconcile,
+        ))
+        .step(CovenScriptStep::Stall(FakeOperation::Reconcile))
+        .reconciliation(returned.clone())
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        fake.reconcile(request.clone()).await,
+        Err(PortError::Unavailable)
+    ));
+    assert!(matches!(
+        fake.restart().reconcile(request.clone()).await,
+        Err(PortError::Stalled)
+    ));
+    assert_eq!(fake.reconcile(request.clone()).await.unwrap(), returned);
+    assert_eq!(fake.restart().reconcile(request).await.unwrap(), returned);
+}
+
+#[tokio::test]
+async fn fenced_reconciliation_survives_after_commit_disconnect_and_restart() {
+    let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
+    let correlation = AdoptionRequest::new(input).unwrap().correlation();
+    let request = ReconciliationRequest {
+        correlation: correlation.clone(),
+        ambiguity_digest: digest_of('e'),
+        reason_code: "adoption_unknown".to_owned(),
+    };
+    let fenced = ReconciliationDisposition::Fenced {
+        disposition_id: "disposition-1".to_owned(),
+        fence_token: "fence-1".to_owned(),
+        correlation,
+        ambiguity_digest: request.ambiguity_digest.clone(),
+        recorded_at: request.correlation.valid_until + time::Duration::nanoseconds(1),
+    };
+    let fake = FakeCoven::builder()
+        .step(CovenScriptStep::DisconnectAfterCommit(
+            CovenScriptReturn::Reconcile(fenced.clone()),
+        ))
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        fake.reconcile(request.clone()).await,
+        Err(PortError::Unavailable)
+    ));
+    assert_eq!(
+        fake.restart().reconcile(request.clone()).await.unwrap(),
+        fenced
+    );
+
+    let mut changed = request;
+    changed.ambiguity_digest = digest_of('f');
+    assert!(matches!(
+        fake.reconcile(changed).await,
+        Err(PortError::IntentConflict)
+    ));
+}
+
+#[tokio::test]
 async fn before_commit_error_and_stall_never_advertise_success() {
     let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
     let request = AdoptionRequest::new(input).unwrap();
@@ -787,6 +864,80 @@ async fn raw_session_statuses_never_become_termination_acknowledgement() {
 }
 
 #[tokio::test]
+async fn killed_then_orphaned_statuses_do_not_create_termination_evidence() {
+    let (_dir, path) = create_store();
+    let requested = seed(&path);
+    let input: ExecutionRequestInput = serde_json::from_slice(LAUNCH_GOLDEN).unwrap();
+    let correlation = AdoptionRequest::new(input).unwrap().correlation();
+    let snapshot = |status: &str| SessionSnapshot {
+        session_id: "session-1".to_owned(),
+        correlation: correlation.clone(),
+        terminal_state: Some(status.to_owned()),
+    };
+    let page = |status: &str, sequence| EventPage {
+        events: vec![CovenEvent {
+            sequence,
+            event_digest: digest_of('e'),
+            terminal_state: Some(status.to_owned()),
+        }],
+        next_cursor: EventCursor {
+            session_id: "session-1".to_owned(),
+            after_sequence: sequence,
+        },
+    };
+    let fake = FakeCoven::builder()
+        .snapshot(snapshot("killed"))
+        .event_page(page("killed", 1))
+        .snapshot(snapshot("orphaned"))
+        .event_page(page("orphaned", 2))
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        fake.inspect("session-1").await.unwrap().terminal_state,
+        Some("killed".to_owned())
+    );
+    fake.events(EventCursor {
+        session_id: "session-1".to_owned(),
+        after_sequence: 0,
+    })
+    .await
+    .unwrap();
+
+    let restarted = fake.restart();
+    assert_eq!(
+        restarted.inspect("session-1").await.unwrap().terminal_state,
+        Some("orphaned".to_owned())
+    );
+    restarted
+        .events(EventCursor {
+            session_id: "session-1".to_owned(),
+            after_sequence: 1,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        persist_then_terminate(&mut persistence(&path), &restarted, requested.clone()).await,
+        Err(TerminationDispatchError::Port(PortError::UnexpectedCall))
+    ));
+
+    let stored = revisions(&path, &requested.attempt_id);
+    assert_eq!(stored.len(), 2);
+    assert_eq!(
+        stored.last().unwrap().cancellation_state,
+        CancellationState::TerminationRequested
+    );
+    assert!(
+        stored
+            .last()
+            .unwrap()
+            .cancellation_acknowledgement
+            .is_none()
+    );
+    assert!(stored.last().unwrap().cancellation_unresolved.is_none());
+}
+
+#[tokio::test]
 async fn changed_request_with_retained_digest_fails_before_adoption() {
     for golden in [LAUNCH_GOLDEN, INPUT_GOLDEN] {
         let input: ExecutionRequestInput = serde_json::from_slice(golden).unwrap();
@@ -1122,6 +1273,70 @@ async fn distinct_requests_may_share_an_adopted_session() {
 
     assert_eq!(fake.adopt(launch).await.unwrap(), disposition);
     assert_eq!(fake.adopt(input).await.unwrap(), disposition);
+}
+
+#[tokio::test]
+async fn termination_disconnect_before_and_stall_leave_request_retryable() {
+    let (_dir, path) = create_store();
+    let requested = seed(&path);
+    let disposition = TerminationDisposition::Acknowledged {
+        evidence: acknowledgement_for(&requested),
+    };
+    let fake = FakeCoven::builder()
+        .step(CovenScriptStep::DisconnectBeforeCommit(
+            FakeOperation::Terminate,
+        ))
+        .step(CovenScriptStep::Stall(FakeOperation::Terminate))
+        .acknowledge_termination(acknowledgement_for(&requested))
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        persist_then_terminate(&mut persistence(&path), &fake, requested.clone()).await,
+        Err(TerminationDispatchError::Port(PortError::Unavailable))
+    ));
+    assert_eq!(revisions(&path, &requested.attempt_id).len(), 2);
+    assert!(matches!(
+        persist_then_terminate(&mut persistence(&path), &fake, requested.clone()).await,
+        Err(TerminationDispatchError::Port(PortError::Stalled))
+    ));
+    assert_eq!(revisions(&path, &requested.attempt_id).len(), 2);
+    assert_eq!(
+        persist_then_terminate(&mut persistence(&path), &fake, requested.clone())
+            .await
+            .unwrap(),
+        disposition
+    );
+    assert_eq!(revisions(&path, &requested.attempt_id).len(), 3);
+}
+
+#[tokio::test]
+async fn termination_after_commit_disconnect_replays_durable_acknowledgement() {
+    let (_dir, path) = create_store();
+    let requested = seed(&path);
+    let disposition = TerminationDisposition::Acknowledged {
+        evidence: acknowledgement_for(&requested),
+    };
+    let fake = FakeCoven::builder()
+        .step(CovenScriptStep::DisconnectAfterCommit(
+            CovenScriptReturn::Terminate(disposition.clone()),
+        ))
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        persist_then_terminate(&mut persistence(&path), &fake, requested.clone()).await,
+        Err(TerminationDispatchError::Port(PortError::Unavailable))
+    ));
+    assert_eq!(revisions(&path, &requested.attempt_id).len(), 2);
+
+    assert_eq!(
+        persist_then_terminate(&mut persistence(&path), &fake.restart(), requested.clone(),)
+            .await
+            .unwrap(),
+        disposition
+    );
+    assert_eq!(revisions(&path, &requested.attempt_id).len(), 3);
 }
 
 #[tokio::test]
