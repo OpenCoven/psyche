@@ -1,7 +1,7 @@
 //! Psyche v1 contract fixtures and strict decoding integration tests.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use psyche_core::contracts::error::ErrorCode;
+use psyche_core::contracts::error::{ErrorCode, ErrorEnvelope};
 use psyche_core::contracts::execution::{
     AdoptionState, CancellationAcknowledgementEvidence, CancellationAcknowledgementKind,
     CancellationState, CancellationUnresolvedEvidence, ExecutionBinding,
@@ -63,6 +63,10 @@ fn assert_duplicate_json_rejected(bytes: &[u8], location: &str) {
         ),
         "{location}"
     );
+}
+
+fn assert_typed_duplicate_rejected<T: serde::de::DeserializeOwned>(bytes: &[u8], location: &str) {
+    assert!(serde_json::from_slice::<T>(bytes).is_err(), "{location}");
 }
 
 fn timestamp(value: &str) -> OffsetDateTime {
@@ -1189,19 +1193,244 @@ fn duplicate_key_errors_do_not_expose_attacker_controlled_text() {
 
 #[test]
 fn typed_deserialization_rejects_duplicate_keys_in_embedded_json_values() {
+    assert_typed_duplicate_rejected::<Intent>(
+        &replace_fixture_once(
+            "intent-local.json",
+            r#""constraints": {}"#,
+            r#""constraints": {"scope": "public", "scope": "public"}"#,
+        ),
+        "intent constraints",
+    );
+    assert_typed_duplicate_rejected::<SurfaceEvent>(
+        &duplicate_fixture_fragment("surface-event.json", r#""type": "user""#),
+        "surface event actor",
+    );
+    assert_typed_duplicate_rejected::<SurfaceEvent>(
+        &duplicate_fixture_fragment("surface-event.json", r#""message_id": "42""#),
+        "surface event locator",
+    );
+    assert_typed_duplicate_rejected::<SurfaceEvent>(
+        &duplicate_fixture_fragment("surface-event.json", r#""text": "Please review this.""#),
+        "surface event content",
+    );
+    assert_typed_duplicate_rejected::<SurfaceEffect>(
+        &duplicate_fixture_fragment("surface-effect.json", r#""chat_id": "-100123""#),
+        "surface effect locator",
+    );
+    assert_typed_duplicate_rejected::<SurfaceEffect>(
+        &duplicate_fixture_fragment("surface-effect.json", r#""text": "Review complete.""#),
+        "surface effect effect",
+    );
+    assert_typed_duplicate_rejected::<Delivery>(
+        &duplicate_fixture_fragment("delivery-ready.json", r#""format": "html""#),
+        "delivery effect",
+    );
+    assert_typed_duplicate_rejected::<ErrorEnvelope>(
+        &duplicate_fixture_fragment("error-storage-unavailable.json", r#""component": "sqlite""#),
+        "error details",
+    );
+
+    let marker = "DIRECT_DUPLICATE_SECRET";
     let intent = replace_fixture_once(
         "intent-local.json",
         r#""constraints": {}"#,
-        r#""constraints": {"scope": "public", "scope": "public"}"#,
+        &format!(r#""constraints": {{"{marker}": "secret", "{marker}": "secret"}}"#),
     );
-    assert!(serde_json::from_slice::<Intent>(&intent).is_err());
+    let error = serde_json::from_slice::<Intent>(&intent).unwrap_err();
+    assert!(!error.to_string().contains(marker));
+    assert!(!error.to_string().contains("secret"));
 
-    let binding =
-        serde_json::to_string(&valid_binding(CancellationState::AcknowledgedTerminated)).unwrap();
-    let session = r#""session_id":"session-1""#;
-    assert_eq!(binding.matches(session).count(), 1);
-    let binding = binding.replacen(session, &format!("{session},{session}"), 1);
-    assert!(serde_json::from_str::<ExecutionBinding>(&binding).is_err());
+    for (location, state, fragment) in [
+        (
+            "termination request",
+            CancellationState::TerminationRequested,
+            r#""termination_request_id":"req_01BX5ZZKBKACTAV9WEVGEMMVRZ""#,
+        ),
+        (
+            "cancellation acknowledgement",
+            CancellationState::AcknowledgedTerminated,
+            r#""acknowledgement_id":"ack-1""#,
+        ),
+        (
+            "cancellation unresolved",
+            CancellationState::TerminationUnknown,
+            r#""disposition_id":"disp-1""#,
+        ),
+    ] {
+        let binding = serde_json::to_string(&valid_binding(state)).unwrap();
+        assert_eq!(binding.matches(fragment).count(), 1, "{location}");
+        let binding = binding.replacen(fragment, &format!("{fragment},{fragment}"), 1);
+        assert!(
+            serde_json::from_str::<ExecutionBinding>(&binding).is_err(),
+            "{location}"
+        );
+    }
+}
+
+#[test]
+fn direct_strict_json_deserialization_preserves_private_number_marker_lookalikes() {
+    for (constraints, expected) in [
+        (
+            r#"{"$serde_json::private::Number": "1.5"}"#,
+            r#"{"$serde_json::private::Number":"1.5"}"#,
+        ),
+        (
+            r#"{"$serde_json::private::Number": 1.5}"#,
+            r#"{"$serde_json::private::Number":1.5}"#,
+        ),
+        (
+            r#"{"$serde_json::private::Number": "1.5", "extra": true}"#,
+            r#"{"$serde_json::private::Number":"1.5","extra":true}"#,
+        ),
+    ] {
+        let bytes = replace_fixture_once(
+            "intent-local.json",
+            r#""constraints": {}"#,
+            &format!(r#""constraints": {constraints}"#),
+        );
+        let intent: Intent = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            canonical_bytes(&intent.constraints).unwrap(),
+            expected.as_bytes()
+        );
+    }
+}
+
+fn nested_arrays(count: usize) -> Value {
+    (0..count).fold(Value::Null, |value, _| Value::Array(vec![value]))
+}
+
+fn nested_arbitrary_object(array_count: usize) -> Value {
+    json!({"nested": nested_arrays(array_count)})
+}
+
+#[test]
+fn direct_arbitrary_json_depth_matches_the_decoder_boundary() {
+    const MAX_JSON_DEPTH: usize = 64;
+    let accepted_arrays = MAX_JSON_DEPTH - 2;
+    let rejected_arrays = accepted_arrays + 1;
+
+    for (array_count, accepted) in [(accepted_arrays, true), (rejected_arrays, false)] {
+        let bytes = mutate("intent-local.json", |object| {
+            object.insert("constraints".into(), nested_arbitrary_object(array_count));
+        });
+        assert_eq!(
+            decode_document(&bytes).is_ok(),
+            accepted,
+            "decoder boundary at {array_count} nested arrays"
+        );
+
+        let intent: Intent = serde_json::from_slice(&fixture("intent-local.json")).unwrap();
+        let mut intent = intent;
+        intent.constraints = nested_arbitrary_object(array_count)
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            intent.validate().is_ok(),
+            accepted,
+            "record boundary at {array_count} nested arrays"
+        );
+    }
+
+    let CanonicalDocument::SurfaceEffect(mut effect) = decode("surface-effect.json") else {
+        panic!("expected surface effect");
+    };
+    effect.effect = nested_arbitrary_object(accepted_arrays);
+    effect.effect_digest = digest(&effect.effect).unwrap();
+    effect.validate().unwrap();
+
+    let CanonicalDocument::Delivery(mut delivery) = decode("delivery-ready.json") else {
+        panic!("expected delivery");
+    };
+    delivery.effect = nested_arbitrary_object(accepted_arrays);
+    delivery.effect_digest = digest(&delivery.effect).unwrap();
+    delivery.validate().unwrap();
+}
+
+#[test]
+fn every_direct_arbitrary_json_entry_point_rejects_excessive_depth() {
+    const EXCESSIVE_ARRAYS: usize = 80;
+    let deep = nested_arbitrary_object(EXCESSIVE_ARRAYS);
+
+    let CanonicalDocument::Intent(mut intent) = decode("intent-local.json") else {
+        panic!("expected intent");
+    };
+    intent.constraints = deep.as_object().unwrap().clone();
+    assert_eq!(
+        intent.validate(),
+        Err(ContractError::InvalidShape {
+            schema: SchemaKind::Intent,
+            field: "constraints",
+        })
+    );
+
+    for field in ["actor", "locator", "content"] {
+        let CanonicalDocument::SurfaceEvent(mut event) = decode("surface-event.json") else {
+            panic!("expected surface event");
+        };
+        match field {
+            "actor" => event.actor = deep.clone(),
+            "locator" => event.locator = deep.clone(),
+            "content" => event.content = deep.clone(),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            event.validate(),
+            Err(ContractError::InvalidShape {
+                schema: SchemaKind::SurfaceEvent,
+                field,
+            })
+        );
+    }
+
+    for field in ["locator", "effect"] {
+        let CanonicalDocument::SurfaceEffect(mut effect) = decode("surface-effect.json") else {
+            panic!("expected surface effect");
+        };
+        match field {
+            "locator" => effect.locator = deep.clone(),
+            "effect" => effect.effect = deep.clone(),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            effect.validate(),
+            Err(ContractError::InvalidShape {
+                schema: SchemaKind::SurfaceEffect,
+                field,
+            })
+        );
+    }
+
+    let CanonicalDocument::Delivery(mut delivery) = decode("delivery-ready.json") else {
+        panic!("expected delivery");
+    };
+    delivery.effect = deep;
+    assert_eq!(
+        delivery.validate(),
+        Err(ContractError::InvalidShape {
+            schema: SchemaKind::Delivery,
+            field: "effect",
+        })
+    );
+}
+
+#[test]
+fn canonical_document_rejects_deep_direct_intent_without_panicking() {
+    let CanonicalDocument::Intent(mut intent) = decode("intent-local.json") else {
+        panic!("expected intent");
+    };
+    intent.constraints = nested_arbitrary_object(80).as_object().unwrap().clone();
+
+    let result = std::panic::catch_unwind(|| CanonicalDocument::Intent(intent).validate());
+    assert!(result.is_ok());
+    assert_eq!(
+        result.unwrap(),
+        Err(ContractError::InvalidShape {
+            schema: SchemaKind::Intent,
+            field: "constraints",
+        })
+    );
 }
 
 #[test]

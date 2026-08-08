@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use serde::Serialize;
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::digest::Sha256Digest;
 use crate::id::RecordId;
@@ -123,6 +123,41 @@ pub(crate) mod strict_json_optional_value {
             deserializer: D,
         ) -> Result<Self::Value, D::Error> {
             super::strict_json_value::deserialize(deserializer).map(Some)
+        }
+    }
+}
+
+pub(crate) mod strict_string_map {
+    use std::collections::{BTreeMap, HashSet};
+    use std::fmt;
+
+    use serde::de::{MapAccess, Visitor};
+
+    pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, String>, D::Error> {
+        deserializer.deserialize_map(StringMapVisitor)
+    }
+
+    struct StringMapVisitor;
+
+    impl<'de> Visitor<'de> for StringMapVisitor {
+        type Value = BTreeMap<String, String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a JSON object with string values")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut object: A) -> Result<Self::Value, A::Error> {
+            let mut keys = HashSet::with_capacity(object.size_hint().unwrap_or(0));
+            let mut values = BTreeMap::new();
+            while let Some(key) = object.next_key::<String>()? {
+                if !keys.insert(key.clone()) {
+                    return Err(serde::de::Error::custom("duplicate JSON object key"));
+                }
+                values.insert(key, object.next_value()?);
+            }
+            Ok(values)
         }
     }
 }
@@ -886,7 +921,7 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
         }
 
         let mut keys = HashSet::with_capacity(object.size_hint().unwrap_or(0));
-        let mut values = serde_json::Map::with_capacity(object.size_hint().unwrap_or(0));
+        let mut values = Map::with_capacity(object.size_hint().unwrap_or(0));
         while let Some(key) = object.next_key::<String>()? {
             if !keys.insert(key.clone()) {
                 return Err(serde::de::Error::custom("duplicate JSON object key"));
@@ -1217,8 +1252,49 @@ pub(crate) fn object(
     if nonempty && map.is_empty() {
         return Err(invalid(schema, field));
     }
+    validate_json_value_depth(value, schema, field)?;
     if crate::digest::canonical_bytes(value)?.len() > MAX_DOCUMENT_BYTES {
         return Err(invalid(schema, field));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_json_value_depth(
+    value: &Value,
+    schema: SchemaKind,
+    field: &'static str,
+) -> Result<(), ContractError> {
+    validate_json_depth([(value, 1)], schema, field)
+}
+
+pub(crate) fn validate_json_object_depth(
+    value: &Map<String, Value>,
+    schema: SchemaKind,
+    field: &'static str,
+) -> Result<(), ContractError> {
+    validate_json_depth(value.values().map(|value| (value, 2)), schema, field)
+}
+
+fn validate_json_depth<'a>(
+    roots: impl IntoIterator<Item = (&'a Value, usize)>,
+    schema: SchemaKind,
+    field: &'static str,
+) -> Result<(), ContractError> {
+    let mut pending: Vec<_> = roots.into_iter().collect();
+    while let Some((value, depth)) = pending.pop() {
+        if depth > MAX_JSON_DEPTH {
+            return Err(invalid(schema, field));
+        }
+        let child_depth = depth + 1;
+        match value {
+            Value::Array(values) => {
+                pending.extend(values.iter().map(|value| (value, child_depth)));
+            }
+            Value::Object(values) => {
+                pending.extend(values.values().map(|value| (value, child_depth)));
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
     }
     Ok(())
 }

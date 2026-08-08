@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::contracts::{
     ContractError, MAX_DOCUMENT_BYTES, RecordKind, SchemaKind, SchemaVersion, VersionedRecord,
-    bounded, require_id, require_schema, string_list,
+    bounded, require_id, require_schema, string_list, validate_json_object_depth,
 };
 use crate::digest::Sha256Digest;
 use crate::id::RecordId;
@@ -49,6 +49,7 @@ impl Intent {
         for key in self.constraints.keys() {
             bounded(key, 256, schema, "constraints")?;
         }
+        validate_json_object_depth(&self.constraints, schema, "constraints")?;
         if crate::digest::canonical_bytes(&self.constraints)?.len() > MAX_DOCUMENT_BYTES {
             return Err(super::invalid(schema, "constraints"));
         }

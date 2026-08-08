@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded,
     optional_bounded, reason_code, require_id, require_schema, safe_integer,
+    validate_json_value_depth,
 };
 use crate::digest::Sha256Digest;
 use crate::id::{RecordId, RequestId};
@@ -276,6 +277,23 @@ impl TryFrom<ExecutionWire> for ExecutionBinding {
     type Error = ContractError;
 
     fn try_from(w: ExecutionWire) -> Result<Self, Self::Error> {
+        for (value, field) in [
+            (&w.termination_request, "termination_request"),
+            (&w.termination_reason_code, "termination_reason_code"),
+            (
+                &w.cancellation_acknowledgement,
+                "cancellation_acknowledgement",
+            ),
+            (&w.cancellation_unresolved, "cancellation_unresolved"),
+        ] {
+            if let Some(value) = value {
+                cancellation_result(validate_json_value_depth(
+                    value,
+                    SchemaKind::ExecutionBinding,
+                    field,
+                ))?;
+            }
+        }
         let termination_request = cancellation_value(w.termination_request)?;
         let termination_reason_code = match w.termination_reason_code {
             Some(Value::String(reason)) => Some(reason),

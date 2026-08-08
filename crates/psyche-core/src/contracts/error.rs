@@ -189,7 +189,44 @@ struct ErrorBodyWire {
     message: String,
     retryable: bool,
     correlation_id: String,
+    #[serde(deserialize_with = "super::strict_string_map::deserialize")]
     details: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypedErrorEnvelopeWire {
+    schema_version: SchemaVersion,
+    error: TypedErrorBodyWire,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypedErrorBodyWire {
+    code: ErrorCode,
+    message: String,
+    retryable: bool,
+    correlation_id: String,
+    #[serde(deserialize_with = "super::strict_string_map::deserialize")]
+    details: BTreeMap<String, String>,
+}
+
+impl<'de> Deserialize<'de> for ErrorEnvelope {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = TypedErrorEnvelopeWire::deserialize(deserializer)?;
+        let envelope = Self {
+            schema_version: wire.schema_version,
+            error: ErrorBody {
+                code: wire.error.code,
+                message: wire.error.message,
+                retryable: wire.error.retryable,
+                correlation_id: wire.error.correlation_id,
+                details: wire.error.details,
+            },
+        };
+        envelope.validate().map_err(serde::de::Error::custom)?;
+        Ok(envelope)
+    }
 }
 
 impl ErrorEnvelope {
