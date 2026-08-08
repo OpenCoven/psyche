@@ -8,27 +8,49 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::StoreError;
 
-pub(crate) fn open(path: &Path) -> Result<Connection, StoreError> {
+pub(crate) fn open(path: &Path) -> Result<(Connection, PathBuf), StoreError> {
     validate_path(path)?;
     prepare_parent_directory(path)?;
     prepare_database_file(path)?;
     let open_path = database_open_path(path)?;
 
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-        | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    Ok(Connection::open_with_flags(open_path, flags)?)
+    let connection = Connection::open_with_flags(&open_path, flags)?;
+    Ok((connection, open_path))
+}
+
+pub(crate) fn enforce_database_permissions(path: &Path) -> Result<(), StoreError> {
+    let metadata = fs::symlink_metadata(path).map_err(StoreError::file_operation)?;
+    validate_database_metadata(&metadata)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(StoreError::file_operation)?;
+        let metadata = fs::symlink_metadata(path).map_err(StoreError::file_operation)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.permissions().mode() & 0o777 != 0o600
+        {
+            return Err(StoreError::InvalidDatabasePath);
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn configure(connection: &Connection) -> Result<(), StoreError> {
     connection.execute_batch(
         "
+        PRAGMA busy_timeout = 5000;
         PRAGMA foreign_keys = ON;
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = FULL;
         PRAGMA secure_delete = ON;
-        PRAGMA busy_timeout = 5000;
         ",
     )?;
 
@@ -70,9 +92,6 @@ fn prepare_parent_directory(path: &Path) -> Result<(), StoreError> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    if parent.has_root() && parent.parent().is_none() {
-        return Err(StoreError::InvalidDatabasePath);
-    }
 
     match fs::symlink_metadata(parent) {
         Ok(metadata) => validate_parent_metadata(&metadata)?,
@@ -82,21 +101,6 @@ fn prepare_parent_directory(path: &Path) -> Result<(), StoreError> {
 
     let metadata = fs::symlink_metadata(parent).map_err(StoreError::directory_operation)?;
     validate_parent_metadata(&metadata)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(StoreError::directory_operation)?;
-        let metadata = fs::symlink_metadata(parent).map_err(StoreError::directory_operation)?;
-        if metadata.file_type().is_symlink()
-            || !metadata.is_dir()
-            || metadata.permissions().mode() & 0o777 != 0o700
-        {
-            return Err(StoreError::InvalidDatabasePath);
-        }
-    }
 
     Ok(())
 }
@@ -129,27 +133,16 @@ fn create_parent_directory(parent: &Path) -> Result<(), StoreError> {
 fn prepare_database_file(path: &Path) -> Result<(), StoreError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => validate_database_metadata(&metadata)?,
-        Err(error) if error.kind() == ErrorKind::NotFound => create_database_file(path)?,
+        Err(error) if error.kind() == ErrorKind::NotFound => match create_database_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(StoreError::file_operation(error)),
+        },
         Err(error) => return Err(StoreError::file_operation(error)),
     }
 
     let metadata = fs::symlink_metadata(path).map_err(StoreError::file_operation)?;
     validate_database_metadata(&metadata)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(StoreError::file_operation)?;
-        let metadata = fs::symlink_metadata(path).map_err(StoreError::file_operation)?;
-        if metadata.file_type().is_symlink()
-            || !metadata.is_file()
-            || metadata.permissions().mode() & 0o777 != 0o600
-        {
-            return Err(StoreError::InvalidDatabasePath);
-        }
-    }
 
     Ok(())
 }
@@ -171,7 +164,7 @@ fn validate_database_metadata(metadata: &fs::Metadata) -> Result<(), StoreError>
     Ok(())
 }
 
-fn create_database_file(path: &Path) -> Result<(), StoreError> {
+fn create_database_file(path: &Path) -> std::io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
 
@@ -182,7 +175,7 @@ fn create_database_file(path: &Path) -> Result<(), StoreError> {
         options.mode(0o600);
     }
 
-    drop(options.open(path).map_err(StoreError::file_operation)?);
+    drop(options.open(path)?);
     Ok(())
 }
 
@@ -197,7 +190,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("private").join("psyche.sqlite3");
 
-        let connection = open(&path).unwrap();
+        let (connection, _) = open(&path).unwrap();
         configure(&connection).unwrap();
 
         assert_eq!(

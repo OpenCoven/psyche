@@ -20,7 +20,7 @@ pub struct Store {
 impl Store {
     /// Opens a store and atomically applies every missing known migration.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let mut connection = connection::open(path)?;
+        let (mut connection, database_path) = connection::open(path)?;
 
         let found =
             connection.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))?;
@@ -28,6 +28,7 @@ impl Store {
             return Err(StoreError::UnsupportedDatabaseVersion { found });
         }
 
+        connection::enforce_database_permissions(&database_path)?;
         connection::configure(&connection)?;
 
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Exclusive)?;

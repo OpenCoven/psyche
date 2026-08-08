@@ -1,5 +1,8 @@
+use std::fmt;
+
 /// A stable, payload-free store failure.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
+#[non_exhaustive]
 pub enum StoreError {
     /// The supplied path cannot safely name a persistent database.
     #[error("store database path is invalid")]
@@ -45,6 +48,12 @@ pub enum StoreError {
     },
 }
 
+impl fmt::Debug for StoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "StoreError({self})")
+    }
+}
+
 impl StoreError {
     pub(crate) fn directory_operation(source: std::io::Error) -> Self {
         Self::DirectoryOperation { source }
@@ -58,5 +67,25 @@ impl StoreError {
 impl From<rusqlite::Error> for StoreError {
     fn from(source: rusqlite::Error) -> Self {
         Self::DatabaseOperation { source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StoreError;
+
+    #[test]
+    fn debug_redacts_source_payloads() {
+        let marker = "sensitive-path-or-sql";
+        let errors = [
+            StoreError::directory_operation(std::io::Error::other(marker)),
+            StoreError::file_operation(std::io::Error::other(marker)),
+            StoreError::from(rusqlite::Error::InvalidParameterName(marker.to_owned())),
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().contains(marker));
+            assert!(!format!("{error:?}").contains(marker));
+        }
     }
 }
