@@ -1,14 +1,26 @@
+use psyche_core::contracts::execution::CancellationState;
 use psyche_core::contracts::{CanonicalDocument, ContractError, ExecutionBinding, SchemaKind};
-use psyche_core::digest::{canonical_bytes, digest};
+use psyche_core::digest::{Sha256Digest, canonical_bytes, digest};
 use psyche_core::id::RecordId;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 use time::format_description::well_known::Rfc3339;
 
 use crate::records::InsertStatus;
 use crate::{Store, StoreError, records};
 
 struct StoredRevision {
-    revision: u64,
+    attempt_id: String,
+    revision: i64,
+    schema_version: String,
+    digest: String,
+    previous_revision_digest: Option<String>,
+    canonical_json: Vec<u8>,
+    created_at: String,
+}
+
+struct ValidatedRevision {
+    binding: ExecutionBinding,
+    digest: Sha256Digest,
     canonical_json: Vec<u8>,
 }
 
@@ -34,38 +46,21 @@ pub(crate) fn insert(
         .format(&Rfc3339)
         .map_err(|_| StoreError::Contract(ContractError::CanonicalizationFailed))?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let stored = load_stored_revisions(&transaction, &binding.attempt_id)?;
+    let history = validate_revision_chain(stored, &binding.attempt_id)?;
 
-    let existing: Option<Vec<u8>> = transaction
-        .query_row(
-            "
-            SELECT canonical_json
-            FROM execution_binding_revisions
-            WHERE attempt_id = ?1 AND revision = ?2
-            ",
-            params![binding.attempt_id.as_str(), sql_revision],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(existing) = existing {
-        if existing == canonical_json {
+    if let Some(existing) = history
+        .iter()
+        .find(|revision| revision.binding.revision == binding.revision)
+    {
+        if existing.canonical_json == canonical_json {
             transaction.commit()?;
             return Ok(InsertStatus::AlreadyPresent);
         }
         return Err(revision_conflict(binding));
     }
 
-    let latest = latest_revision(&transaction, &binding.attempt_id)?;
-    match latest {
-        None => {
-            if binding.revision != 1 || binding.previous_revision_digest.is_some() {
-                return Err(revision_conflict(binding));
-            }
-        }
-        Some(latest) => {
-            validate_next_revision(&transaction, binding, &latest)?;
-        }
-    }
-
+    validate_next_revision(binding, &history)?;
     transaction.execute(
         "
         INSERT INTO execution_binding_revisions (
@@ -101,21 +96,11 @@ pub(crate) fn revisions(
     attempt_id: &RecordId,
 ) -> Result<Vec<ExecutionBinding>, StoreError> {
     records::validate_kind_id(SchemaKind::ExecutionBinding, attempt_id)?;
-    let mut statement = connection.prepare(
-        "
-        SELECT canonical_json
-        FROM execution_binding_revisions
-        WHERE attempt_id = ?1
-        ORDER BY revision
-        ",
-    )?;
-    let canonical = statement
-        .query_map([attempt_id.as_str()], |row| row.get::<_, Vec<u8>>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    canonical
+    let stored = load_stored_revisions(connection, attempt_id)?;
+    Ok(validate_revision_chain(stored, attempt_id)?
         .into_iter()
-        .map(|bytes| decode_binding(&bytes))
-        .collect()
+        .map(|revision| revision.binding)
+        .collect())
 }
 
 pub(crate) fn latest_canonical_bytes(
@@ -123,45 +108,139 @@ pub(crate) fn latest_canonical_bytes(
     attempt_id: &RecordId,
 ) -> Result<Option<Vec<u8>>, StoreError> {
     records::validate_kind_id(SchemaKind::ExecutionBinding, attempt_id)?;
-    connection
-        .query_row(
-            "
-            SELECT canonical_json
-            FROM execution_binding_revisions
-            WHERE attempt_id = ?1
-            ORDER BY revision DESC
-            LIMIT 1
-            ",
-            [attempt_id.as_str()],
-            |row| row.get(0),
-        )
-        .optional()
+    let stored = load_stored_revisions(connection, attempt_id)?;
+    Ok(validate_revision_chain(stored, attempt_id)?
+        .pop()
+        .map(|revision| revision.canonical_json))
+}
+
+fn load_stored_revisions(
+    connection: &Connection,
+    attempt_id: &RecordId,
+) -> Result<Vec<StoredRevision>, StoreError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT
+            attempt_id,
+            revision,
+            schema_version,
+            digest,
+            previous_revision_digest,
+            canonical_json,
+            created_at
+        FROM execution_binding_revisions
+        WHERE attempt_id = ?1
+        ORDER BY revision
+        ",
+    )?;
+    statement
+        .query_map([attempt_id.as_str()], |row| {
+            Ok(StoredRevision {
+                attempt_id: row.get(0)?,
+                revision: row.get(1)?,
+                schema_version: row.get(2)?,
+                digest: row.get(3)?,
+                previous_revision_digest: row.get(4)?,
+                canonical_json: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
 
+fn validate_revision_chain(
+    stored: Vec<StoredRevision>,
+    expected_attempt_id: &RecordId,
+) -> Result<Vec<ValidatedRevision>, StoreError> {
+    let mut validated = Vec::with_capacity(stored.len());
+    for row in stored {
+        let binding = decode_stored_binding(&row.canonical_json)?;
+        let canonical_json =
+            canonical_bytes(&binding).map_err(|_| StoreError::DatabaseCorruption)?;
+        let revision_digest = digest(&binding).map_err(|_| StoreError::DatabaseCorruption)?;
+        let revision = u64::try_from(row.revision).map_err(|_| StoreError::DatabaseCorruption)?;
+        let created_at = binding
+            .revision_created_at
+            .format(&Rfc3339)
+            .map_err(|_| StoreError::DatabaseCorruption)?;
+        if row.attempt_id != expected_attempt_id.as_str()
+            || binding.attempt_id != *expected_attempt_id
+            || revision != binding.revision
+            || row.schema_version != binding.schema_version.to_string()
+            || row.digest != revision_digest.as_str()
+            || row.previous_revision_digest.as_deref()
+                != binding
+                    .previous_revision_digest
+                    .as_ref()
+                    .map(Sha256Digest::as_str)
+            || row.canonical_json != canonical_json
+            || row.created_at != created_at
+        {
+            return Err(StoreError::DatabaseCorruption);
+        }
+        validated.push(ValidatedRevision {
+            binding,
+            digest: revision_digest,
+            canonical_json,
+        });
+    }
+
+    let Some(initial) = validated.first() else {
+        return Ok(validated);
+    };
+    for (index, current) in validated.iter().enumerate() {
+        let expected_revision = u64::try_from(index)
+            .map_err(|_| StoreError::DatabaseCorruption)?
+            .checked_add(1)
+            .ok_or(StoreError::DatabaseCorruption)?;
+        if current.binding.revision != expected_revision {
+            return Err(StoreError::DatabaseCorruption);
+        }
+        if index == 0 {
+            if current.binding.previous_revision_digest.is_some() {
+                return Err(StoreError::DatabaseCorruption);
+            }
+            continue;
+        }
+
+        let previous = &validated[index - 1];
+        if current.binding.previous_revision_digest.as_ref() != Some(&previous.digest)
+            || current.binding.revision_created_at <= previous.binding.revision_created_at
+            || !frozen_execution_fields_match(&initial.binding, &current.binding)
+            || !session_binding_is_append_only(&previous.binding, &current.binding)
+            || !termination_binding_is_append_only(&previous.binding, &current.binding)
+            || !cancellation_binding_is_append_only(&previous.binding, &current.binding)
+        {
+            return Err(StoreError::DatabaseCorruption);
+        }
+    }
+    Ok(validated)
+}
+
 fn validate_next_revision(
-    transaction: &Transaction<'_>,
     binding: &ExecutionBinding,
-    latest: &StoredRevision,
+    history: &[ValidatedRevision],
 ) -> Result<(), StoreError> {
+    let Some(latest) = history.last() else {
+        if binding.revision == 1 && binding.previous_revision_digest.is_none() {
+            return Ok(());
+        }
+        return Err(revision_conflict(binding));
+    };
     let expected_revision = latest
+        .binding
         .revision
         .checked_add(1)
         .ok_or_else(|| revision_conflict(binding))?;
-    let latest_binding = decode_binding(&latest.canonical_json)?;
-    let latest_digest = digest(&latest_binding)?;
+    let initial = &history[0].binding;
     if binding.revision != expected_revision
-        || binding.previous_revision_digest.as_ref() != Some(&latest_digest)
-    {
-        return Err(revision_conflict(binding));
-    }
-
-    let initial =
-        first_revision(transaction, &binding.attempt_id)?.ok_or(StoreError::DatabaseOperation)?;
-    if binding.revision_created_at <= latest_binding.revision_created_at
-        || !frozen_execution_fields_match(&initial, binding)
-        || !session_binding_is_append_only(&latest_binding, binding)
-        || !termination_binding_is_append_only(&latest_binding, binding)
+        || binding.previous_revision_digest.as_ref() != Some(&latest.digest)
+        || binding.revision_created_at <= latest.binding.revision_created_at
+        || !frozen_execution_fields_match(initial, binding)
+        || !session_binding_is_append_only(&latest.binding, binding)
+        || !termination_binding_is_append_only(&latest.binding, binding)
+        || !cancellation_binding_is_append_only(&latest.binding, binding)
     {
         return Err(revision_conflict(binding));
     }
@@ -200,60 +279,38 @@ fn termination_binding_is_append_only(
     }
 }
 
-fn latest_revision(
-    transaction: &Transaction<'_>,
-    attempt_id: &RecordId,
-) -> Result<Option<StoredRevision>, StoreError> {
-    let stored = transaction
-        .query_row(
-            "
-            SELECT revision, canonical_json
-            FROM execution_binding_revisions
-            WHERE attempt_id = ?1
-            ORDER BY revision DESC
-            LIMIT 1
-            ",
-            [attempt_id.as_str()],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
-        )
-        .optional()?;
-    stored
-        .map(|(revision, canonical_json)| {
-            let revision = u64::try_from(revision).map_err(|_| StoreError::DatabaseOperation)?;
-            Ok(StoredRevision {
-                revision,
-                canonical_json,
-            })
-        })
-        .transpose()
+fn cancellation_binding_is_append_only(
+    latest: &ExecutionBinding,
+    candidate: &ExecutionBinding,
+) -> bool {
+    match latest.cancellation_state {
+        CancellationState::NotRequested => matches!(
+            candidate.cancellation_state,
+            CancellationState::NotRequested | CancellationState::TerminationRequested
+        ),
+        CancellationState::TerminationRequested => matches!(
+            candidate.cancellation_state,
+            CancellationState::TerminationRequested
+                | CancellationState::AcknowledgedTerminated
+                | CancellationState::AcknowledgedAlreadyTerminal
+                | CancellationState::TerminationUnknown
+        ),
+        CancellationState::AcknowledgedTerminated
+        | CancellationState::AcknowledgedAlreadyTerminal
+        | CancellationState::TerminationUnknown => {
+            candidate.cancellation_state == latest.cancellation_state
+                && candidate.cancellation_acknowledgement == latest.cancellation_acknowledgement
+                && candidate.cancellation_unresolved == latest.cancellation_unresolved
+        }
+    }
 }
 
-fn first_revision(
-    transaction: &Transaction<'_>,
-    attempt_id: &RecordId,
-) -> Result<Option<ExecutionBinding>, StoreError> {
-    transaction
-        .query_row(
-            "
-            SELECT canonical_json
-            FROM execution_binding_revisions
-            WHERE attempt_id = ?1 AND revision = 1
-            ",
-            [attempt_id.as_str()],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .optional()?
-        .map(|bytes| decode_binding(&bytes))
-        .transpose()
-}
-
-fn decode_binding(bytes: &[u8]) -> Result<ExecutionBinding, StoreError> {
-    match psyche_core::contracts::decode_document(bytes)? {
+fn decode_stored_binding(bytes: &[u8]) -> Result<ExecutionBinding, StoreError> {
+    match psyche_core::contracts::decode_document(bytes)
+        .map_err(|_| StoreError::DatabaseCorruption)?
+    {
         CanonicalDocument::ExecutionBinding(binding) => Ok(binding),
-        document => Err(StoreError::Contract(ContractError::SchemaMismatch {
-            expected: SchemaKind::ExecutionBinding,
-            found: document.schema_version().kind,
-        })),
+        _ => Err(StoreError::DatabaseCorruption),
     }
 }
 

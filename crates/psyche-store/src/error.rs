@@ -66,6 +66,9 @@ pub enum StoreError {
         /// Conflicting one-based record version.
         record_version: u64,
     },
+    /// Persisted rows failed canonical or revision-chain integrity validation.
+    #[error("stored database content failed integrity validation")]
+    DatabaseCorruption,
     /// Creating the store's parent directory failed.
     #[error("store directory operation failed")]
     DirectoryOperation,
@@ -178,6 +181,7 @@ mod tests {
                 record_id: id,
                 record_version: 2,
             },
+            StoreError::DatabaseCorruption,
         ];
 
         for error in errors {

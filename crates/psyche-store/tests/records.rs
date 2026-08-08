@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, missing_docs)]
 
 use std::collections::BTreeMap;
+use std::error::Error;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 
 use psyche_core::contracts::error::{ErrorBody, ErrorCode, ErrorEnvelope};
@@ -20,6 +22,7 @@ use psyche_core::contracts::{
 use psyche_core::digest::{Sha256Digest, canonical_bytes, digest};
 use psyche_core::id::{RecordId, RequestId};
 use psyche_store::{IngestOutcome, Store, StoreError, Transition};
+use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{Map, json};
 use time::OffsetDateTime;
@@ -29,6 +32,30 @@ fn test_store() -> (Store, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("private").join("psyche.sqlite3")).unwrap();
     (store, dir)
+}
+
+fn test_store_with_path() -> (Store, tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("private").join("psyche.sqlite3");
+    let store = Store::open(&path).unwrap();
+    (store, dir, path)
+}
+
+fn raw_connection(path: &Path) -> Connection {
+    Connection::open(path).unwrap()
+}
+
+fn assert_database_corruption<T: std::fmt::Debug>(result: Result<T, StoreError>) {
+    let error = result.unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "stored database content failed integrity validation"
+    );
+    assert_eq!(
+        format!("{error:?}"),
+        "StoreError(stored database content failed integrity validation)"
+    );
+    assert!(error.source().is_none());
 }
 
 fn at(value: &str) -> OffsetDateTime {
@@ -261,6 +288,15 @@ fn fixture_acknowledged_revision(previous: &ExecutionBinding) -> ExecutionBindin
     let mut acknowledged = next_revision(previous);
     acknowledged.cancellation_state = CancellationState::AcknowledgedTerminated;
     acknowledged.cancellation_acknowledgement = Some(acknowledgement(&acknowledged));
+    acknowledged
+}
+
+fn fixture_already_terminal_revision(previous: &ExecutionBinding) -> ExecutionBinding {
+    let mut acknowledged = next_revision(previous);
+    acknowledged.cancellation_state = CancellationState::AcknowledgedAlreadyTerminal;
+    let mut evidence = acknowledgement(&acknowledged);
+    evidence.kind = CancellationAcknowledgementKind::AlreadyAuthoritativelyTerminal;
+    acknowledged.cancellation_acknowledgement = Some(evidence);
     acknowledged
 }
 
@@ -1310,6 +1346,463 @@ fn transition_digest_uses_the_exact_owned_canonical_contract() {
         .unwrap()
     );
     transition.validate().unwrap();
+}
+
+#[test]
+fn execution_cancellation_legal_forward_paths_and_stable_terminal_revisions_append() {
+    for terminal_kind in [
+        CancellationState::AcknowledgedTerminated,
+        CancellationState::AcknowledgedAlreadyTerminal,
+        CancellationState::TerminationUnknown,
+    ] {
+        let (mut store, _dir) = test_store();
+        let initial = fixture_execution_binding_revision_1();
+        let unchanged = fixture_next_not_requested_revision(&initial);
+        let requested = fixture_termination_requested_revision(&unchanged);
+        let requested_again = fixture_next_termination_requested_revision(&requested);
+        for binding in [&initial, &unchanged, &requested, &requested_again] {
+            store
+                .insert(&CanonicalDocument::ExecutionBinding(binding.clone()))
+                .unwrap();
+        }
+
+        let terminal = match terminal_kind {
+            CancellationState::AcknowledgedTerminated => {
+                fixture_acknowledged_revision(&requested_again)
+            }
+            CancellationState::AcknowledgedAlreadyTerminal => {
+                fixture_already_terminal_revision(&requested_again)
+            }
+            CancellationState::TerminationUnknown => fixture_unresolved_revision(&requested_again),
+            _ => unreachable!(),
+        };
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(terminal.clone()))
+            .unwrap();
+
+        let mut stable = next_revision(&terminal);
+        stable.event_cursor = Some("cursor:after-terminal".to_owned());
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(stable.clone()))
+            .unwrap();
+        assert_eq!(
+            store
+                .execution_binding_revisions(&initial.attempt_id)
+                .unwrap(),
+            vec![
+                initial,
+                unchanged,
+                requested,
+                requested_again,
+                terminal,
+                stable
+            ]
+        );
+    }
+}
+
+#[test]
+fn execution_cancellation_rejects_direct_not_requested_to_any_terminal_state() {
+    for terminal_kind in [
+        CancellationState::AcknowledgedTerminated,
+        CancellationState::AcknowledgedAlreadyTerminal,
+        CancellationState::TerminationUnknown,
+    ] {
+        let (mut store, _dir) = test_store();
+        let initial = fixture_execution_binding_revision_1();
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(initial.clone()))
+            .unwrap();
+        let mut terminal = fixture_termination_requested_revision(&initial);
+        terminal.cancellation_state = terminal_kind;
+        match terminal_kind {
+            CancellationState::AcknowledgedTerminated => {
+                terminal.cancellation_acknowledgement = Some(acknowledgement(&terminal));
+            }
+            CancellationState::AcknowledgedAlreadyTerminal => {
+                let mut evidence = acknowledgement(&terminal);
+                evidence.kind = CancellationAcknowledgementKind::AlreadyAuthoritativelyTerminal;
+                terminal.cancellation_acknowledgement = Some(evidence);
+            }
+            CancellationState::TerminationUnknown => {
+                terminal.cancellation_unresolved = Some(unresolved(&terminal));
+            }
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            store.insert(&CanonicalDocument::ExecutionBinding(terminal)),
+            Err(StoreError::ExecutionBindingRevisionConflict { .. })
+        ));
+        assert_eq!(
+            store
+                .execution_binding_revisions(&initial.attempt_id)
+                .unwrap(),
+            vec![initial]
+        );
+    }
+}
+
+#[test]
+fn execution_cancellation_rejects_requested_and_terminal_regressions() {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    for binding in [&initial, &requested] {
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(binding.clone()))
+            .unwrap();
+    }
+    let requested_regression = fixture_not_requested_revision_after(&requested);
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(requested_regression)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+
+    let terminal = fixture_acknowledged_revision(&requested);
+    store
+        .insert(&CanonicalDocument::ExecutionBinding(terminal.clone()))
+        .unwrap();
+    let mut terminal_regression = next_revision(&terminal);
+    terminal_regression.cancellation_state = CancellationState::TerminationRequested;
+    terminal_regression.cancellation_acknowledgement = None;
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(terminal_regression)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    let terminal_removal = fixture_not_requested_revision_after(&terminal);
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(terminal_removal)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+}
+
+#[test]
+fn execution_cancellation_rejects_terminal_switches_and_evidence_mutation() {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    let terminal = fixture_acknowledged_revision(&requested);
+    for binding in [&initial, &requested, &terminal] {
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(binding.clone()))
+            .unwrap();
+    }
+
+    let mut switched = next_revision(&terminal);
+    switched.cancellation_state = CancellationState::AcknowledgedAlreadyTerminal;
+    switched.cancellation_acknowledgement.as_mut().unwrap().kind =
+        CancellationAcknowledgementKind::AlreadyAuthoritativelyTerminal;
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(switched)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+
+    let mut mutated = next_revision(&terminal);
+    mutated
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .authority_evidence_digest = fixture_other_digest();
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(mutated)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+}
+
+#[test]
+fn execution_cancellation_rejects_unknown_to_acknowledged() {
+    let (mut store, _dir) = test_store();
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    let unknown = fixture_unresolved_revision(&requested);
+    for binding in [&initial, &requested, &unknown] {
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(binding.clone()))
+            .unwrap();
+    }
+    let mut acknowledged = next_revision(&unknown);
+    acknowledged.cancellation_state = CancellationState::AcknowledgedTerminated;
+    acknowledged.cancellation_unresolved = None;
+    acknowledged.cancellation_acknowledgement = Some(acknowledgement(&acknowledged));
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(acknowledged)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+}
+
+#[test]
+fn transition_exact_replay_is_idempotent_and_divergent_identity_conflicts() {
+    let (mut store, _dir) = test_store();
+    let original = transition(1, None, "admitted");
+    store.append_transition(&original).unwrap();
+    store.append_transition(&original).unwrap();
+    assert_eq!(store.count_transitions().unwrap(), 1);
+
+    let changed_field = transition(1, None, "running");
+    assert!(matches!(
+        store.append_transition(&changed_field),
+        Err(StoreError::TransitionConflict { .. })
+    ));
+    assert_eq!(store.count_transitions().unwrap(), 1);
+}
+
+#[test]
+fn transition_exact_replay_compares_the_stored_digest() {
+    let (mut store, _dir, path) = test_store_with_path();
+    let original = transition(1, None, "admitted");
+    store.append_transition(&original).unwrap();
+    raw_connection(&path)
+        .execute(
+            "UPDATE transitions SET transition_digest = ?1 WHERE record_version = 1",
+            [fixture_other_digest().as_str()],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.append_transition(&original),
+        Err(StoreError::TransitionConflict { .. })
+    ));
+    assert_eq!(store.count_transitions().unwrap(), 1);
+}
+
+fn insert_intent_for_tamper() -> (
+    Store,
+    tempfile::TempDir,
+    PathBuf,
+    CanonicalDocument,
+    RecordId,
+) {
+    let (mut store, dir, path) = test_store_with_path();
+    let intent = fixture_intent("Review A");
+    let id = intent.intent_id.clone();
+    let document = CanonicalDocument::Intent(intent);
+    store.insert(&document).unwrap();
+    (store, dir, path, document, id)
+}
+
+fn assert_canonical_corruption_across_access_paths(
+    store: &mut Store,
+    document: &CanonicalDocument,
+    id: &RecordId,
+) {
+    assert_database_corruption(store.load(SchemaKind::Intent, id));
+    assert_database_corruption(store.load_canonical_bytes(SchemaKind::Intent, id));
+    assert_database_corruption(store.insert(document));
+}
+
+#[test]
+fn canonical_record_detects_digest_only_bytes_noncanonical_and_malformed_tamper() {
+    for case in ["digest", "bytes", "noncanonical", "malformed"] {
+        let (mut store, _dir, path, document, id) = insert_intent_for_tamper();
+        let connection = raw_connection(&path);
+        match case {
+            "digest" => {
+                connection
+                    .execute(
+                        "UPDATE canonical_records SET digest = ?1",
+                        [fixture_other_digest().as_str()],
+                    )
+                    .unwrap();
+            }
+            "bytes" => {
+                let changed =
+                    canonical_bytes(&CanonicalDocument::Intent(fixture_intent("Review B")))
+                        .unwrap();
+                connection
+                    .execute(
+                        "UPDATE canonical_records SET canonical_json = ?1",
+                        [changed],
+                    )
+                    .unwrap();
+            }
+            "noncanonical" => {
+                let mut bytes = vec![b' '];
+                bytes.extend(canonical_bytes(&document).unwrap());
+                connection
+                    .execute("UPDATE canonical_records SET canonical_json = ?1", [bytes])
+                    .unwrap();
+            }
+            "malformed" => {
+                connection
+                    .execute(
+                        "UPDATE canonical_records SET canonical_json = ?1",
+                        [b"{".as_slice()],
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        drop(connection);
+        assert_canonical_corruption_across_access_paths(&mut store, &document, &id);
+    }
+}
+
+#[test]
+fn canonical_record_detects_schema_kind_and_record_id_metadata_tamper() {
+    let (mut schema_store, _dir, schema_path, document, id) = insert_intent_for_tamper();
+    raw_connection(&schema_path)
+        .execute(
+            "UPDATE canonical_records SET schema_version = 'psyche.graph.v1'",
+            [],
+        )
+        .unwrap();
+    assert_canonical_corruption_across_access_paths(&mut schema_store, &document, &id);
+
+    let (mut id_store, _dir, id_path, _document, _id) = insert_intent_for_tamper();
+    let other_id = record_id(RecordKind::Intent, "01J00000000000000000000009");
+    raw_connection(&id_path)
+        .execute(
+            "UPDATE canonical_records SET record_id = ?1",
+            [other_id.as_str()],
+        )
+        .unwrap();
+    let mut other_intent = fixture_intent("Review A");
+    other_intent.intent_id = other_id.clone();
+    let other_document = CanonicalDocument::Intent(other_intent);
+    assert_canonical_corruption_across_access_paths(&mut id_store, &other_document, &other_id);
+
+    let (kind_store, _dir, kind_path, _document, _id) = insert_intent_for_tamper();
+    let graph_id = record_id(RecordKind::Graph, "01J00000000000000000000010");
+    raw_connection(&kind_path)
+        .execute(
+            "UPDATE canonical_records SET kind = 'graph', record_id = ?1",
+            [graph_id.as_str()],
+        )
+        .unwrap();
+    assert_database_corruption(kind_store.load(SchemaKind::Graph, &graph_id));
+    assert_database_corruption(kind_store.load_canonical_bytes(SchemaKind::Graph, &graph_id));
+}
+
+fn binding_chain_for_tamper() -> (
+    Store,
+    tempfile::TempDir,
+    PathBuf,
+    ExecutionBinding,
+    ExecutionBinding,
+) {
+    let (mut store, dir, path) = test_store_with_path();
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    for binding in [&initial, &requested] {
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(binding.clone()))
+            .unwrap();
+    }
+    (store, dir, path, initial, requested)
+}
+
+fn assert_execution_corruption_across_access_paths(
+    store: &mut Store,
+    initial: &ExecutionBinding,
+    requested: &ExecutionBinding,
+) {
+    assert_database_corruption(store.execution_binding_revisions(&initial.attempt_id));
+    assert_database_corruption(store.load(SchemaKind::ExecutionBinding, &initial.attempt_id));
+    assert_database_corruption(
+        store.load_canonical_bytes(SchemaKind::ExecutionBinding, &initial.attempt_id),
+    );
+    assert_database_corruption(store.insert(&CanonicalDocument::ExecutionBinding(initial.clone())));
+    let append = fixture_next_termination_requested_revision(requested);
+    assert_database_corruption(store.insert(&CanonicalDocument::ExecutionBinding(append)));
+}
+
+#[test]
+fn execution_revision_chain_detects_blob_digest_link_schema_timestamp_and_gap_tamper() {
+    for case in [
+        "revision_blob",
+        "digest",
+        "previous_digest",
+        "schema",
+        "timestamp",
+        "gap",
+    ] {
+        let (mut store, _dir, path, initial, requested) = binding_chain_for_tamper();
+        let connection = raw_connection(&path);
+        connection
+            .pragma_update(None, "foreign_keys", false)
+            .unwrap();
+        match case {
+            "revision_blob" => {
+                let first: Vec<u8> = connection
+                    .query_row(
+                        "SELECT canonical_json FROM execution_binding_revisions WHERE revision = 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                connection
+                    .execute(
+                        "UPDATE execution_binding_revisions SET canonical_json = ?1 WHERE revision = 2",
+                        [first],
+                    )
+                    .unwrap();
+            }
+            "digest" => {
+                connection
+                    .execute(
+                        "UPDATE execution_binding_revisions SET digest = ?1 WHERE revision = 2",
+                        [fixture_other_digest().as_str()],
+                    )
+                    .unwrap();
+            }
+            "previous_digest" => {
+                connection
+                    .execute(
+                        "UPDATE execution_binding_revisions SET previous_revision_digest = ?1 WHERE revision = 2",
+                        [fixture_other_digest().as_str()],
+                    )
+                    .unwrap();
+            }
+            "schema" => {
+                connection
+                    .execute(
+                        "UPDATE execution_binding_revisions SET schema_version = 'psyche.intent.v1' WHERE revision = 2",
+                        [],
+                    )
+                    .unwrap();
+            }
+            "timestamp" => {
+                connection
+                    .execute(
+                        "UPDATE execution_binding_revisions SET created_at = '2026-08-05T12:00:00Z' WHERE revision = 2",
+                        [],
+                    )
+                    .unwrap();
+            }
+            "gap" => {
+                connection
+                    .execute(
+                        "UPDATE execution_binding_revisions SET revision = 3 WHERE revision = 2",
+                        [],
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        drop(connection);
+        assert_execution_corruption_across_access_paths(&mut store, &initial, &requested);
+    }
+}
+
+#[test]
+fn execution_revision_chain_detects_attempt_metadata_tamper() {
+    let (store, _dir, path, _initial, _requested) = binding_chain_for_tamper();
+    let other_attempt = fixture_other_attempt_id();
+    let connection = raw_connection(&path);
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE execution_binding_revisions SET attempt_id = ?1 WHERE revision = 2",
+            [other_attempt.as_str()],
+        )
+        .unwrap();
+    drop(connection);
+    assert_database_corruption(store.execution_binding_revisions(&other_attempt));
+    assert_database_corruption(store.load(SchemaKind::ExecutionBinding, &other_attempt));
+    assert_database_corruption(
+        store.load_canonical_bytes(SchemaKind::ExecutionBinding, &other_attempt),
+    );
 }
 
 proptest::proptest! {

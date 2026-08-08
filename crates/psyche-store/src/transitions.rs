@@ -38,6 +38,16 @@ struct TransitionDigestInput<'a> {
     created_at: time::OffsetDateTime,
 }
 
+struct StoredTransition {
+    kind: String,
+    record_id: String,
+    from_state: Option<String>,
+    to_state: String,
+    record_version: i64,
+    transition_digest: String,
+    created_at: String,
+}
+
 impl Transition {
     /// Builds a transition and binds its canonical digest.
     pub fn new(
@@ -141,6 +151,53 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<StoredTransition> = transaction
+            .query_row(
+                "
+                    SELECT
+                        kind,
+                        record_id,
+                        from_state,
+                        to_state,
+                        record_version,
+                        transition_digest,
+                        created_at
+                    FROM transitions
+                    WHERE kind = ?1 AND record_id = ?2 AND record_version = ?3
+                    ",
+                params![
+                    records::kind_key(transition.kind),
+                    transition.record_id.as_str(),
+                    sql_version,
+                ],
+                |row| {
+                    Ok(StoredTransition {
+                        kind: row.get(0)?,
+                        record_id: row.get(1)?,
+                        from_state: row.get(2)?,
+                        to_state: row.get(3)?,
+                        record_version: row.get(4)?,
+                        transition_digest: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()?;
+        if let Some(stored) = existing {
+            if stored.kind == records::kind_key(transition.kind)
+                && stored.record_id == transition.record_id.as_str()
+                && stored.from_state == transition.from_state
+                && stored.to_state == transition.to_state
+                && stored.record_version == sql_version
+                && stored.transition_digest == transition.transition_digest.as_str()
+                && stored.created_at == created_at
+            {
+                transaction.commit()?;
+                return Ok(());
+            }
+            return Err(transition_conflict(transition));
+        }
+
         let latest: Option<(i64, String)> = transaction
             .query_row(
                 "
@@ -161,7 +218,7 @@ impl Store {
             None => transition.record_version == 1,
             Some((previous_version, previous_state)) => {
                 let previous_version =
-                    u64::try_from(previous_version).map_err(|_| StoreError::DatabaseOperation)?;
+                    u64::try_from(previous_version).map_err(|_| StoreError::DatabaseCorruption)?;
                 previous_version
                     .checked_add(1)
                     .is_some_and(|next| next == transition.record_version)
