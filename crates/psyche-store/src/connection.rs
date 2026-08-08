@@ -1,6 +1,6 @@
 use std::{
-    fs::{self, OpenOptions},
-    io::ErrorKind,
+    fs::{self, File, OpenOptions},
+    io::{BufReader, ErrorKind, Read},
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -13,19 +13,65 @@ use crate::StoreError;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const CONFIGURATION_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(50);
 const CONFIGURATION_RETRY_DELAY: Duration = Duration::from_millis(10);
+const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
+const SQLITE_HEADER_SIZE: usize = 100;
+const WAL_HEADER_SIZE: usize = 32;
+const WAL_FRAME_HEADER_SIZE: usize = 24;
+const WAL_FORMAT_VERSION: u32 = 3_007_000;
+const WAL_MAGIC: u32 = 0x377f_0682;
 
-pub(crate) fn open(path: &Path) -> Result<(Connection, PathBuf), StoreError> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DatabaseFileState {
+    Existing,
+    Created,
+}
+
+pub(crate) fn prepare(path: &Path) -> Result<(PathBuf, DatabaseFileState), StoreError> {
     validate_path(path)?;
     prepare_parent_directory(path)?;
-    prepare_database_file(path)?;
+    let state = prepare_database_file(path)?;
     let open_path = database_open_path(path)?;
+    Ok((open_path, state))
+}
 
+pub(crate) fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let connection = Connection::open_with_flags(path, flags)?;
+    connection.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(connection)
+}
+
+pub(crate) fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    let connection = Connection::open_with_flags(&open_path, flags)?;
+    let connection = Connection::open_with_flags(path, flags)?;
     connection.busy_timeout(BUSY_TIMEOUT)?;
-    Ok((connection, open_path))
+    Ok(connection)
+}
+
+pub(crate) fn file_user_version(path: &Path) -> Result<Option<u32>, StoreError> {
+    // A read-only WAL query may update reader marks in `-shm`. Read committed
+    // page-one frames first so a future schema can be rejected without that.
+    let [journal_path, wal_path, _] = sqlite_sidecar_paths(path);
+    if existing_file_len(&journal_path)?.is_some_and(|len| len > 0) {
+        return Ok(None);
+    }
+
+    let Some((main_version, page_size)) = main_file_header(path)? else {
+        return Ok(None);
+    };
+    if page_size == 0 {
+        return Ok(Some(main_version));
+    }
+
+    match wal_file_user_version(&wal_path, page_size)? {
+        WalFileVersion::Absent => Ok(Some(main_version)),
+        WalFileVersion::Invalid => Ok(None),
+        WalFileVersion::Valid(version) => Ok(Some(version.unwrap_or(main_version))),
+    }
 }
 
 pub(crate) fn enforce_database_permissions(path: &Path) -> Result<(), StoreError> {
@@ -149,6 +195,162 @@ fn sqlite_sidecar_paths(path: &Path) -> [PathBuf; 3] {
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WalFileVersion {
+    Absent,
+    Invalid,
+    Valid(Option<u32>),
+}
+
+fn existing_file_len(path: &Path) -> Result<Option<u64>, StoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            validate_database_metadata(&metadata)?;
+            Ok(Some(metadata.len()))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(StoreError::file_operation(error)),
+    }
+}
+
+fn main_file_header(path: &Path) -> Result<Option<(u32, u32)>, StoreError> {
+    let mut file = File::open(path).map_err(StoreError::file_operation)?;
+    let len = file.metadata().map_err(StoreError::file_operation)?.len();
+    if len == 0 {
+        return Ok(Some((0, 0)));
+    }
+    if len < SQLITE_HEADER_SIZE as u64 {
+        return Ok(None);
+    }
+
+    let mut header = [0_u8; SQLITE_HEADER_SIZE];
+    file.read_exact(&mut header)
+        .map_err(StoreError::file_operation)?;
+    if &header[..SQLITE_HEADER.len()] != SQLITE_HEADER {
+        return Ok(None);
+    }
+
+    let encoded_page_size = u16::from_be_bytes([header[16], header[17]]);
+    let page_size = if encoded_page_size == 1 {
+        65_536
+    } else {
+        u32::from(encoded_page_size)
+    };
+    if !(512..=65_536).contains(&page_size) || !page_size.is_power_of_two() {
+        return Ok(None);
+    }
+
+    Ok(Some((read_u32_be(&header[60..64]), page_size)))
+}
+
+fn wal_file_user_version(
+    path: &Path,
+    expected_page_size: u32,
+) -> Result<WalFileVersion, StoreError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(WalFileVersion::Absent);
+        }
+        Err(error) => return Err(StoreError::file_operation(error)),
+    };
+    if file.metadata().map_err(StoreError::file_operation)?.len() < WAL_HEADER_SIZE as u64 {
+        return Ok(WalFileVersion::Absent);
+    }
+
+    let mut reader = BufReader::new(file);
+    let mut header = [0_u8; WAL_HEADER_SIZE];
+    reader
+        .read_exact(&mut header)
+        .map_err(StoreError::file_operation)?;
+    let magic = read_u32_be(&header[..4]);
+    let page_size = read_u32_be(&header[8..12]);
+    if magic & !1 != WAL_MAGIC
+        || read_u32_be(&header[4..8]) != WAL_FORMAT_VERSION
+        || page_size != expected_page_size
+    {
+        return Ok(WalFileVersion::Invalid);
+    }
+
+    let checksum_big_endian = magic & 1 == 1;
+    let mut checksum = [0_u32; 2];
+    extend_wal_checksum(&header[..24], checksum_big_endian, &mut checksum);
+    if checksum != [read_u32_be(&header[24..28]), read_u32_be(&header[28..])] {
+        return Ok(WalFileVersion::Invalid);
+    }
+
+    let salt = &header[16..24];
+    let mut frame_header = [0_u8; WAL_FRAME_HEADER_SIZE];
+    let mut page = vec![0_u8; page_size as usize];
+    let mut pending_page_one = None;
+    let mut committed_page_one = None;
+    loop {
+        if !read_exact_frame_part(&mut reader, &mut frame_header)?
+            || !read_exact_frame_part(&mut reader, &mut page)?
+        {
+            break;
+        }
+        if read_u32_be(&frame_header[..4]) == 0 || &frame_header[8..16] != salt {
+            break;
+        }
+
+        let mut frame_checksum = checksum;
+        extend_wal_checksum(&frame_header[..8], checksum_big_endian, &mut frame_checksum);
+        extend_wal_checksum(&page, checksum_big_endian, &mut frame_checksum);
+        if frame_checksum
+            != [
+                read_u32_be(&frame_header[16..20]),
+                read_u32_be(&frame_header[20..]),
+            ]
+        {
+            break;
+        }
+        checksum = frame_checksum;
+
+        if read_u32_be(&frame_header[..4]) == 1 {
+            pending_page_one = Some(read_u32_be(&page[60..64]));
+        }
+        if read_u32_be(&frame_header[4..8]) != 0 {
+            if let Some(version) = pending_page_one.take() {
+                committed_page_one = Some(version);
+            }
+        }
+    }
+
+    Ok(WalFileVersion::Valid(committed_page_one))
+}
+
+fn read_exact_frame_part(reader: &mut impl Read, buffer: &mut [u8]) -> Result<bool, StoreError> {
+    match reader.read_exact(buffer) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(StoreError::file_operation(error)),
+    }
+}
+
+fn extend_wal_checksum(bytes: &[u8], big_endian: bool, checksum: &mut [u32; 2]) {
+    debug_assert_eq!(bytes.len() % 8, 0);
+    for words in bytes.chunks_exact(8) {
+        let first = read_checksum_word(&words[..4], big_endian);
+        checksum[0] = checksum[0].wrapping_add(first).wrapping_add(checksum[1]);
+        let second = read_checksum_word(&words[4..], big_endian);
+        checksum[1] = checksum[1].wrapping_add(second).wrapping_add(checksum[0]);
+    }
+}
+
+fn read_checksum_word(bytes: &[u8], big_endian: bool) -> u32 {
+    let bytes = [bytes[0], bytes[1], bytes[2], bytes[3]];
+    if big_endian {
+        u32::from_be_bytes(bytes)
+    } else {
+        u32::from_le_bytes(bytes)
+    }
+}
+
+fn read_u32_be(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
 fn enforce_existing_sidecar_permissions(path: &Path) -> Result<(), StoreError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => validate_database_metadata(&metadata)?,
@@ -213,6 +415,16 @@ fn validate_parent_metadata(metadata: &fs::Metadata) -> Result<(), StoreError> {
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(StoreError::InvalidDatabasePath);
     }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if metadata.permissions().mode() & 0o777 != 0o700 {
+            return Err(StoreError::InvalidDatabasePath);
+        }
+    }
+
     Ok(())
 }
 
@@ -234,21 +446,24 @@ fn create_parent_directory(parent: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn prepare_database_file(path: &Path) -> Result<(), StoreError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => validate_database_metadata(&metadata)?,
+fn prepare_database_file(path: &Path) -> Result<DatabaseFileState, StoreError> {
+    let state = match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            validate_database_metadata(&metadata)?;
+            DatabaseFileState::Existing
+        }
         Err(error) if error.kind() == ErrorKind::NotFound => match create_database_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Ok(()) => DatabaseFileState::Created,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => DatabaseFileState::Existing,
             Err(error) => return Err(StoreError::file_operation(error)),
         },
         Err(error) => return Err(StoreError::file_operation(error)),
-    }
+    };
 
     let metadata = fs::symlink_metadata(path).map_err(StoreError::file_operation)?;
     validate_database_metadata(&metadata)?;
 
-    Ok(())
+    Ok(state)
 }
 
 fn database_open_path(path: &Path) -> Result<PathBuf, StoreError> {
@@ -287,14 +502,15 @@ fn create_database_file(path: &Path) -> std::io::Result<()> {
 mod tests {
     use rusqlite::Connection;
 
-    use super::{configure, open};
+    use super::{configure, open_read_write, prepare};
 
     #[test]
     fn configure_sets_every_required_pragma() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("private").join("psyche.sqlite3");
 
-        let (connection, _) = open(&path).unwrap();
+        let (path, _) = prepare(&path).unwrap();
+        let connection = open_read_write(&path).unwrap();
         configure(&connection).unwrap();
 
         assert_eq!(
