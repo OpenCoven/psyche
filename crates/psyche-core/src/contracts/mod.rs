@@ -64,6 +64,7 @@ pub use surface::{Delivery, SurfaceEffect, SurfaceEvent};
 
 /// Maximum accepted encoded or embedded canonical document size.
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 /// Reasons a contract primitive failed to validate.
 ///
@@ -106,15 +107,19 @@ pub enum ContractError {
     /// A digest was not exactly 64 lowercase hex characters after the prefix.
     #[error("digest is not exactly 64 lowercase hex characters")]
     MalformedDigest,
-    /// The value could not be serialized into canonical JSON — e.g. a
-    /// non-string map key, or a number requiring more than double precision.
-    /// The nested reason describes the *shape* problem `serde_json` found,
-    /// never the value's own field content.
+    /// The value could not be serialized into canonical JSON — e.g. because
+    /// it contains a non-string map key.
+    /// The nested reason describes the serialization *shape* problem, never
+    /// the value's own field content.
     #[error("value could not be canonicalized: {reason}")]
     CanonicalizationFailed {
-        /// `serde_json`'s description of the shape problem.
+        /// The serializer's description of the shape problem.
         reason: String,
     },
+    /// A JSON integer was outside the exact range interoperable with IEEE-754
+    /// implementations under I-JSON.
+    #[error("JSON number is outside the interoperable safe-integer range")]
+    NonInteroperableNumber,
     /// A known schema did not have its exact v1 field shape or valid values.
     #[error("invalid {schema:?} document shape at {field}")]
     InvalidShape {
@@ -568,6 +573,7 @@ pub fn decode_document(bytes: &[u8]) -> Result<CanonicalDocument, ContractError>
     }
     let value: Value =
         serde_json::from_slice(bytes).map_err(|_| invalid(SchemaKind::Error, "json"))?;
+    crate::digest::validate_json_domain(&value)?;
     let schema_text = value
         .as_object()
         .and_then(|v| v.get("schema_version"))
@@ -644,6 +650,18 @@ pub(crate) fn bounded(
     field: &'static str,
 ) -> Result<(), ContractError> {
     if !value.is_empty() && value.len() <= max {
+        Ok(())
+    } else {
+        Err(invalid(schema, field))
+    }
+}
+
+pub(crate) fn safe_integer(
+    value: u64,
+    schema: SchemaKind,
+    field: &'static str,
+) -> Result<(), ContractError> {
+    if value <= MAX_SAFE_INTEGER {
         Ok(())
     } else {
         Err(invalid(schema, field))

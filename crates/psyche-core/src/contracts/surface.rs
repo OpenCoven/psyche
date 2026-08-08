@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded, object,
-    require_id, require_schema,
+    require_id, require_schema, safe_integer,
 };
 use crate::digest::{Sha256Digest, digest};
 use crate::id::RecordId;
@@ -226,6 +226,8 @@ impl Delivery {
         if (self.state == DeliveryState::Sent) != self.telegram_message_id.is_some() {
             return Err(super::invalid(s, "telegram_message_id"));
         }
+        safe_integer(u64::from(self.logical_part), s, "logical_part")?;
+        safe_integer(u64::from(self.attempt_count), s, "attempt_count")?;
         Ok(())
     }
 }

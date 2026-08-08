@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded, require_id,
-    require_schema,
+    require_schema, safe_integer,
 };
 use crate::digest::Sha256Digest;
 use crate::id::RecordId;
@@ -50,6 +50,7 @@ impl IdentitySnapshot {
         if self.revision == 0 {
             return Err(super::invalid(schema, "revision"));
         }
+        safe_integer(self.revision, schema, "revision")?;
         bounded(
             &self.provenance.familiar_home_id,
             255,

@@ -3,7 +3,7 @@
 
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded,
-    optional_bounded, require_id, require_schema, string_list,
+    optional_bounded, require_id, require_schema, safe_integer, string_list,
 };
 use crate::digest::Sha256Digest;
 use crate::id::RecordId;
@@ -81,7 +81,11 @@ impl Budget {
         require_schema(self.schema_version, s)?;
         require_id(&self.budget_id, RecordKind::Budget, s, "budget_id")?;
         require_id(&self.graph_id, RecordKind::Graph, s, "graph_id")?;
-        bounded(&self.resource_class, 256, s, "resource_class")
+        bounded(&self.resource_class, 256, s, "resource_class")?;
+        safe_integer(self.limit, s, "limit")?;
+        safe_integer(self.reserved, s, "reserved")?;
+        safe_integer(self.consumed, s, "consumed")?;
+        safe_integer(self.released, s, "released")
     }
 }
 versioned!(Budget, budget_id);
@@ -148,7 +152,7 @@ impl Evidence {
         ] {
             bounded(value, 256, s, field)?;
         }
-        Ok(())
+        safe_integer(self.size, s, "size")
     }
 }
 versioned!(Evidence, evidence_id);
@@ -211,7 +215,8 @@ impl Recovery {
         bounded(&self.lease_id, 255, s, "lease_id")?;
         bounded(&self.ambiguity, 256, s, "ambiguity")?;
         optional_bounded(&self.fence_token, 255, s, "fence_token")?;
-        optional_bounded(&self.operator_disposition, 256, s, "operator_disposition")
+        optional_bounded(&self.operator_disposition, 256, s, "operator_disposition")?;
+        safe_integer(self.reconciliation_count, s, "reconciliation_count")
     }
 }
 versioned!(Recovery, recovery_id);

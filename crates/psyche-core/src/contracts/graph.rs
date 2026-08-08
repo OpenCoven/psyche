@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded, require_id,
-    require_schema, string_list,
+    require_schema, safe_integer, string_list,
 };
 use crate::id::RecordId;
 
@@ -53,6 +53,7 @@ impl Graph {
         if self.version == 0 {
             return Err(super::invalid(schema, "version"));
         }
+        safe_integer(self.version, schema, "version")?;
         Ok(())
     }
 }
@@ -131,6 +132,7 @@ impl GraphNode {
         if self.version == 0 {
             return Err(super::invalid(schema, "version"));
         }
+        safe_integer(self.version, schema, "version")?;
         Ok(())
     }
 }

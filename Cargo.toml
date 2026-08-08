@@ -48,6 +48,7 @@ time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 ulid = { version = "1", features = ["serde"] }
 proptest = "1"
 serde = { version = "1", features = ["derive"] }
+serde-value = "0.7"
 toml = "1"
 thiserror = "2"
 # "env": `--config` falls back to $PSYCHE_CONFIG, which is how a container image

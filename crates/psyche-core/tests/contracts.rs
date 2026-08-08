@@ -7,7 +7,8 @@ use psyche_core::contracts::execution::{
     CancellationState, CancellationUnresolvedEvidence, ExecutionBinding,
     TerminationRequestCorrelation,
 };
-use psyche_core::contracts::foundation::{Approval, Evidence, Verdict};
+use psyche_core::contracts::foundation::{Approval, Budget, Evidence, Recovery, Verdict};
+use psyche_core::contracts::graph::{Graph, GraphNode};
 use psyche_core::contracts::identity::IdentitySnapshot;
 use psyche_core::contracts::intent::Intent;
 use psyche_core::contracts::surface::{
@@ -104,6 +105,34 @@ fn directly_constructed_typed_timestamps_still_enforce_cross_field_windows() {
             field: "request_valid_until"
         })
     ));
+}
+
+#[test]
+fn execution_binding_requires_a_utc_revision_timestamp_when_directly_constructed() {
+    let mut binding = valid_binding(CancellationState::NotRequested);
+    binding.revision_created_at = timestamp("2026-08-05T01:00:00+01:00");
+
+    assert_eq!(
+        binding.validate(),
+        Err(ContractError::InvalidShape {
+            schema: SchemaKind::ExecutionBinding,
+            field: "revision_created_at",
+        })
+    );
+}
+
+#[test]
+fn execution_binding_requires_a_utc_revision_timestamp_when_decoded() {
+    let mut value = binding_value(CancellationState::NotRequested);
+    value["revision_created_at"] = json!("2026-08-05T01:00:00+01:00");
+
+    assert_eq!(
+        decode_document(&serde_json::to_vec(&value).unwrap()),
+        Err(ContractError::InvalidShape {
+            schema: SchemaKind::ExecutionBinding,
+            field: "revision_created_at",
+        })
+    );
 }
 
 #[test]
@@ -1016,6 +1045,185 @@ fn directly_constructed_values_are_revalidated() {
             .validate()
             .is_err()
     );
+}
+
+#[test]
+fn typed_u64_fields_accept_the_safe_boundary_and_reject_one_over() {
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    const ONE_OVER: u64 = MAX_SAFE_INTEGER + 1;
+    let digest = format!("sha256:{}", "a".repeat(64));
+
+    let mut identity: IdentitySnapshot = serde_json::from_value(json!({
+        "schema_version": "psyche.identity_snapshot.v1",
+        "snapshot_id": format!("ids_{ULID_A}"),
+        "familiar_id": "familiar:one",
+        "principal_id": "principal:one",
+        "revision": 1,
+        "declaration_digest": digest,
+        "identity_file_digest": digest,
+        "identity_digest": digest,
+        "soul_digest": digest,
+        "role_skill_digest": digest,
+        "provenance": {"familiar_home_id": "home:one", "resolver_version": "1"},
+        "resolved_at": "2026-08-01T00:00:00Z"
+    }))
+    .unwrap();
+    identity.revision = MAX_SAFE_INTEGER;
+    identity.validate().unwrap();
+    identity.revision = ONE_OVER;
+    assert_invalid_numeric_field(
+        identity.validate(),
+        SchemaKind::IdentitySnapshot,
+        "revision",
+    );
+
+    let mut graph: Graph = serde_json::from_value(json!({
+        "schema_version": "psyche.graph.v1",
+        "graph_id": format!("grf_{ULID_A}"),
+        "root_intent_id": format!("int_{ULID_A}"),
+        "owner_principal_id": "principal:one",
+        "policy_revision": "policy:one",
+        "state": "draft",
+        "version": 1
+    }))
+    .unwrap();
+    graph.version = MAX_SAFE_INTEGER;
+    graph.validate().unwrap();
+    graph.version = ONE_OVER;
+    assert_invalid_numeric_field(graph.validate(), SchemaKind::Graph, "version");
+
+    let CanonicalDocument::GraphNode(mut node) = decode("node-root.json") else {
+        panic!("expected graph node");
+    };
+    let _: &GraphNode = &node;
+    node.version = MAX_SAFE_INTEGER;
+    node.validate().unwrap();
+    node.version = ONE_OVER;
+    assert_invalid_numeric_field(node.validate(), SchemaKind::GraphNode, "version");
+
+    let mut budget: Budget = serde_json::from_value(json!({
+        "schema_version": "psyche.budget.v1",
+        "budget_id": format!("bud_{ULID_A}"),
+        "graph_id": format!("grf_{ULID_A}"),
+        "resource_class": "tokens",
+        "limit": 1,
+        "reserved": 1,
+        "consumed": 1,
+        "released": 1
+    }))
+    .unwrap();
+    budget.limit = MAX_SAFE_INTEGER;
+    budget.reserved = MAX_SAFE_INTEGER;
+    budget.consumed = MAX_SAFE_INTEGER;
+    budget.released = MAX_SAFE_INTEGER;
+    budget.validate().unwrap();
+    for field in ["limit", "reserved", "consumed", "released"] {
+        let mut unsafe_budget = budget.clone();
+        match field {
+            "limit" => unsafe_budget.limit = ONE_OVER,
+            "reserved" => unsafe_budget.reserved = ONE_OVER,
+            "consumed" => unsafe_budget.consumed = ONE_OVER,
+            "released" => unsafe_budget.released = ONE_OVER,
+            _ => unreachable!(),
+        }
+        assert_invalid_numeric_field(unsafe_budget.validate(), SchemaKind::Budget, field);
+    }
+
+    let mut evidence: Evidence = serde_json::from_value(json!({
+        "schema_version": "psyche.evidence.v1",
+        "evidence_id": format!("evd_{ULID_A}"),
+        "node_id": format!("nod_{ULID_A}"),
+        "attempt_id": format!("att_{ULID_A}"),
+        "content_digest": digest,
+        "producer": "test",
+        "collection_method": "test",
+        "media_type": "text/plain",
+        "size": 1,
+        "created_at": "2026-08-01T00:00:00Z",
+        "retention_policy": "default"
+    }))
+    .unwrap();
+    evidence.size = MAX_SAFE_INTEGER;
+    evidence.validate().unwrap();
+    evidence.size = ONE_OVER;
+    assert_invalid_numeric_field(evidence.validate(), SchemaKind::Evidence, "size");
+
+    let mut recovery: Recovery = serde_json::from_value(json!({
+        "schema_version": "psyche.recovery.v1",
+        "recovery_id": format!("rcv_{ULID_A}"),
+        "attempt_id": format!("att_{ULID_A}"),
+        "lease_id": "lease:one",
+        "fence_token": null,
+        "ambiguity": "none",
+        "reconciliation_count": 1,
+        "operator_disposition": null
+    }))
+    .unwrap();
+    recovery.reconciliation_count = MAX_SAFE_INTEGER;
+    recovery.validate().unwrap();
+    recovery.reconciliation_count = ONE_OVER;
+    assert_invalid_numeric_field(
+        recovery.validate(),
+        SchemaKind::Recovery,
+        "reconciliation_count",
+    );
+
+    let mut binding = valid_binding(CancellationState::NotRequested);
+    binding.previous_revision_digest = Some(digest.try_into().unwrap());
+    binding.revision = MAX_SAFE_INTEGER;
+    binding.validate().unwrap();
+    binding.revision = ONE_OVER;
+    assert_invalid_numeric_field(binding.validate(), SchemaKind::ExecutionBinding, "revision");
+}
+
+#[test]
+fn typed_u32_delivery_fields_remain_within_the_safe_integer_domain() {
+    let CanonicalDocument::Delivery(mut delivery) = decode("delivery-ready.json") else {
+        panic!("expected delivery");
+    };
+    delivery.logical_part = u32::MAX;
+    delivery.attempt_count = u32::MAX;
+
+    delivery.validate().unwrap();
+}
+
+#[test]
+fn canonical_document_validation_rejects_nested_unsafe_integers() {
+    let CanonicalDocument::Intent(mut intent) = decode("intent-local.json") else {
+        panic!("expected intent");
+    };
+    intent.constraints.insert(
+        "nested".into(),
+        json!({"array": [9_007_199_254_740_992_u64]}),
+    );
+
+    assert_eq!(
+        CanonicalDocument::Intent(intent).validate(),
+        Err(ContractError::NonInteroperableNumber)
+    );
+}
+
+#[test]
+fn decoded_document_rejects_nested_unsafe_integers() {
+    let bytes = mutate("surface-event.json", |object| {
+        object.insert(
+            "content".into(),
+            json!({"nested": [9_007_199_254_740_992_u64]}),
+        );
+    });
+
+    assert_eq!(
+        decode_document(&bytes),
+        Err(ContractError::NonInteroperableNumber)
+    );
+}
+
+fn assert_invalid_numeric_field(
+    result: Result<(), ContractError>,
+    schema: SchemaKind,
+    field: &'static str,
+) {
+    assert_eq!(result, Err(ContractError::InvalidShape { schema, field }));
 }
 
 #[test]

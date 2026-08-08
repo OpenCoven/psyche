@@ -8,12 +8,14 @@ use std::fmt;
 use std::fmt::Write as _;
 
 use serde::Serialize;
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::contracts::ContractError;
+use crate::contracts::{ContractError, MAX_SAFE_INTEGER};
 
 /// Length of the hex-encoded digest after the `sha256:` prefix.
 const HEX_DIGEST_LEN: usize = 64;
+const MIN_SAFE_INTEGER: i64 = -(MAX_SAFE_INTEGER as i64);
 
 /// The RFC 8785 canonical JSON bytes for `value`.
 ///
@@ -21,9 +23,73 @@ const HEX_DIGEST_LEN: usize = 64;
 /// order produce identical bytes — canonicalisation, not merely
 /// serialization, is the point of this function.
 pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, ContractError> {
-    serde_json_canonicalizer::to_vec(value).map_err(|err| ContractError::CanonicalizationFailed {
-        reason: err.to_string(),
-    })
+    let value = serde_value::to_value(value).map_err(canonicalization_failed)?;
+    validate_serialized_domain(&value)?;
+    serde_json_canonicalizer::to_vec(&value).map_err(canonicalization_failed)
+}
+
+fn canonicalization_failed(error: impl ToString) -> ContractError {
+    ContractError::CanonicalizationFailed {
+        reason: error.to_string(),
+    }
+}
+
+pub(crate) fn validate_json_domain(value: &Value) -> Result<(), ContractError> {
+    match value {
+        Value::Array(values) => values.iter().try_for_each(validate_json_domain),
+        Value::Object(values) => values.values().try_for_each(validate_json_domain),
+        Value::Number(number) => {
+            let interoperable = if let Some(value) = number.as_i64() {
+                value >= MIN_SAFE_INTEGER && value <= MAX_SAFE_INTEGER as i64
+            } else if let Some(value) = number.as_u64() {
+                value <= MAX_SAFE_INTEGER
+            } else if let Some(value) = number.as_f64() {
+                value.is_finite()
+                    && (value.fract() != 0.0
+                        || (value >= MIN_SAFE_INTEGER as f64 && value <= MAX_SAFE_INTEGER as f64))
+            } else {
+                false
+            };
+            if interoperable {
+                Ok(())
+            } else {
+                Err(ContractError::NonInteroperableNumber)
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::String(_) => Ok(()),
+    }
+}
+
+fn validate_serialized_domain(value: &serde_value::Value) -> Result<(), ContractError> {
+    use serde_value::Value::{
+        Bool, Bytes, Char, F32, F64, I8, I16, I32, I64, Map, Newtype, Option, Seq, String, U8, U16,
+        U32, U64, Unit,
+    };
+
+    match value {
+        U64(value) if *value > MAX_SAFE_INTEGER => Err(ContractError::NonInteroperableNumber),
+        I64(value) if *value < MIN_SAFE_INTEGER || *value > MAX_SAFE_INTEGER as i64 => {
+            Err(ContractError::NonInteroperableNumber)
+        }
+        F32(value) => validate_float(f64::from(*value)),
+        F64(value) => validate_float(*value),
+        Option(Some(value)) | Newtype(value) => validate_serialized_domain(value),
+        Seq(values) => values.iter().try_for_each(validate_serialized_domain),
+        Map(values) => values.values().try_for_each(validate_serialized_domain),
+        Bool(_) | U8(_) | U16(_) | U32(_) | U64(_) | I8(_) | I16(_) | I32(_) | I64(_) | Char(_)
+        | String(_) | Unit | Option(None) | Bytes(_) => Ok(()),
+    }
+}
+
+fn validate_float(value: f64) -> Result<(), ContractError> {
+    if value.is_finite()
+        && (value.fract() != 0.0
+            || (value >= MIN_SAFE_INTEGER as f64 && value <= MAX_SAFE_INTEGER as f64))
+    {
+        Ok(())
+    } else {
+        Err(ContractError::NonInteroperableNumber)
+    }
 }
 
 /// The [`Sha256Digest`] of `value`'s canonical JSON bytes.
@@ -133,6 +199,61 @@ mod tests {
             hex.chars()
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         );
+    }
+
+    #[test]
+    fn canonicalization_accepts_safe_integer_boundaries_and_fractional_numbers() {
+        let value = json!({
+            "nested": [
+                -9_007_199_254_740_991_i64,
+                {"maximum": 9_007_199_254_740_991_u64},
+                1.5
+            ]
+        });
+
+        canonical_bytes(&value).unwrap();
+        digest(&value).unwrap();
+    }
+
+    #[test]
+    fn canonicalization_rejects_unsafe_integers_anywhere_in_the_json_domain() {
+        for value in [
+            json!({"unsafe": 9_007_199_254_740_992_u64}),
+            json!([{"nested": -9_007_199_254_740_992_i64}]),
+            json!(u64::MAX),
+            json!(9_007_199_254_740_992.0_f64),
+        ] {
+            assert_eq!(
+                canonical_bytes(&value),
+                Err(crate::contracts::ContractError::NonInteroperableNumber)
+            );
+        }
+    }
+
+    #[test]
+    fn adjacent_unsafe_integers_cannot_collapse_to_one_successful_digest() {
+        let first = digest(&9_007_199_254_740_992_u64);
+        let second = digest(&9_007_199_254_740_993_u64);
+
+        assert!(first.is_err());
+        assert!(second.is_err());
+    }
+
+    #[test]
+    fn canonicalization_rejects_non_finite_numbers_before_they_become_null() {
+        #[derive(Serialize)]
+        struct NestedFloat {
+            values: Vec<f64>,
+        }
+
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                canonical_bytes(&NestedFloat {
+                    values: vec![value],
+                }),
+                Err(crate::contracts::ContractError::NonInteroperableNumber)
+            );
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::contracts::{
     ContractError, RecordKind, SchemaKind, SchemaVersion, VersionedRecord, bounded,
-    optional_bounded, reason_code, require_id, require_schema,
+    optional_bounded, reason_code, require_id, require_schema, safe_integer,
 };
 use crate::digest::Sha256Digest;
 use crate::id::{RecordId, RequestId};
@@ -335,6 +335,10 @@ impl ExecutionBinding {
         )?;
         if self.revision == 0 || (self.revision == 1) != self.previous_revision_digest.is_none() {
             return Err(super::invalid(s, "revision"));
+        }
+        safe_integer(self.revision, s, "revision")?;
+        if self.revision_created_at.offset() != time::UtcOffset::UTC {
+            return Err(super::invalid(s, "revision_created_at"));
         }
         bounded(&self.project_id, 255, s, "project_id")?;
         bounded(
