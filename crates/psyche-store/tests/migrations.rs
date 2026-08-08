@@ -118,6 +118,75 @@ fn existing_v1_fixture_opens_without_reapplying_migration() {
 }
 
 #[test]
+fn user_version_one_without_foundation_schema_is_rejected_as_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    set_mode(dir.path(), 0o700);
+    let path = dir.path().join("forged-v1.sqlite3");
+    execute_batch(
+        &path,
+        "
+        CREATE TABLE unrelated_operator_data (value TEXT NOT NULL) STRICT;
+        INSERT INTO unrelated_operator_data (value) VALUES ('preserve-me');
+        PRAGMA user_version = 1;
+        ",
+    );
+
+    assert_database_corruption(Store::open(&path));
+    assert_eq!(
+        scalar_text(&path, "SELECT value FROM unrelated_operator_data"),
+        "preserve-me"
+    );
+}
+
+#[test]
+fn altered_foundation_columns_indexes_and_constraints_are_rejected_as_corruption() {
+    for tamper in ["column", "index", "constraint"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = fixture_db(dir.path(), Fixture::Version1);
+        match tamper {
+            "column" => execute_batch(
+                &path,
+                "ALTER TABLE canonical_records ADD COLUMN injected TEXT",
+            ),
+            "index" => execute_batch(
+                &path,
+                "CREATE INDEX injected_index ON canonical_records(kind)",
+            ),
+            "constraint" => execute_batch(
+                &path,
+                "
+                PRAGMA foreign_keys = OFF;
+                ALTER TABLE canonical_records RENAME TO canonical_records_original;
+                CREATE TABLE canonical_records (
+                  kind TEXT NOT NULL,
+                  record_id TEXT NOT NULL,
+                  schema_version TEXT NOT NULL,
+                  digest TEXT NOT NULL,
+                  canonical_json BLOB NOT NULL,
+                  created_at TEXT NOT NULL,
+                  PRIMARY KEY (kind, record_id)
+                ) STRICT;
+                DROP TABLE canonical_records_original;
+                ",
+            ),
+            _ => unreachable!(),
+        }
+
+        assert_database_corruption(Store::open(&path));
+    }
+}
+
+#[test]
+fn user_version_and_migration_ledger_disagreement_is_rejected_as_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture_db(dir.path(), Fixture::Version1);
+    execute_batch(&path, "DELETE FROM schema_migrations WHERE version = 1");
+
+    assert_database_corruption(Store::open(&path));
+}
+
+#[test]
 fn v1_quarantine_schema_contains_durable_integrity_metadata() {
     let dir = tempfile::tempdir().unwrap();
     #[cfg(unix)]
@@ -697,6 +766,19 @@ fn symlink_database_is_rejected_without_mutating_its_target() {
 fn assert_invalid_database_path(path: &Path) {
     let error = Store::open(path).unwrap_err();
     assert_eq!(error.to_string(), "store database path is invalid");
+}
+
+fn assert_database_corruption<T: std::fmt::Debug>(result: Result<T, StoreError>) {
+    let error = result.unwrap_err();
+    assert!(matches!(error, StoreError::DatabaseCorruption));
+    assert_eq!(
+        error.to_string(),
+        "stored database content failed integrity validation"
+    );
+    assert_eq!(
+        format!("{error:?}"),
+        "StoreError(stored database content failed integrity validation)"
+    );
 }
 
 #[cfg(unix)]

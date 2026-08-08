@@ -99,6 +99,7 @@ impl Store {
             }
             transaction.pragma_update(None, "user_version", CURRENT_DATABASE_VERSION)?;
         }
+        migrations::validate_current_schema(&transaction)?;
         transaction.commit()?;
 
         Ok(Self { connection })

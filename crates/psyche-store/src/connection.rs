@@ -32,10 +32,143 @@ pub(crate) fn prepare(path: &Path) -> Result<(PathBuf, DatabaseFileState), Store
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    ensure_local_filesystem(parent)?;
     prepare_data_dir(parent)?;
     let state = prepare_database_file(path)?;
     let open_path = database_open_path(path)?;
     Ok((open_path, state))
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+fn ensure_local_filesystem(path: &Path) -> Result<(), StoreError> {
+    let existing_ancestor = path
+        .ancestors()
+        .map(|candidate| {
+            if candidate.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                candidate
+            }
+        })
+        .find(|candidate| match fs::symlink_metadata(candidate) {
+            Ok(_) => true,
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(_) => true,
+        })
+        .ok_or(StoreError::InvalidDatabasePath)?;
+    let statistics = rustix::fs::statfs(existing_ancestor)
+        .map_err(|error| StoreError::directory_operation(error.into()))?;
+
+    if filesystem_is_network(&statistics) {
+        Err(StoreError::InvalidDatabasePath)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))
+))]
+fn ensure_local_filesystem(_path: &Path) -> Result<(), StoreError> {
+    Err(StoreError::InvalidDatabasePath)
+}
+
+#[cfg(not(unix))]
+fn ensure_local_filesystem(path: &Path) -> Result<(), StoreError> {
+    if path_is_network_share(path) {
+        Err(StoreError::InvalidDatabasePath)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn filesystem_is_network(statistics: &rustix::fs::StatFs) -> bool {
+    filesystem_magic_is_network(statistics.f_type as u64)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn filesystem_magic_is_network(magic: u64) -> bool {
+    matches!(
+        magic,
+        0x0000_6969 // NFS
+            | 0x0000_517b // SMB
+            | 0xff53_4d42 // CIFS
+            | 0x7375_7245 // Coda
+            | 0x5346_414f // AFS
+            | 0x0000_564c // NCP
+            | 0x00c3_6400 // Ceph
+            | 0x0102_1997 // 9P
+            | 0x6573_5546 // FUSE, including sshfs and other remote transports
+    )
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+fn filesystem_is_network(statistics: &rustix::fs::StatFs) -> bool {
+    let name = statistics
+        .f_fstypename
+        .iter()
+        .take_while(|character| **character != 0)
+        .map(|character| *character as u8)
+        .collect::<Vec<_>>();
+    match std::str::from_utf8(&name) {
+        Ok(name) => filesystem_name_is_network(name),
+        Err(_) => true,
+    }
+}
+
+fn filesystem_name_is_network(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "nfs"
+            | "nfs4"
+            | "smb"
+            | "smbfs"
+            | "cifs"
+            | "afp"
+            | "afpfs"
+            | "webdav"
+            | "9p"
+            | "ceph"
+            | "sshfs"
+            | "fusefs"
+            | "osxfuse"
+            | "macfuse"
+    )
+}
+
+#[cfg(not(unix))]
+fn path_is_network_share(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _))
+    )
 }
 
 pub(crate) fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
@@ -507,7 +640,56 @@ fn create_database_file(path: &Path) -> std::io::Result<()> {
 mod tests {
     use rusqlite::Connection;
 
-    use super::{configure, open_read_write, prepare};
+    use super::{
+        configure, ensure_local_filesystem, filesystem_name_is_network, open_read_write, prepare,
+    };
+
+    #[test]
+    fn network_filesystem_name_classifier_is_fail_closed_for_known_remote_types() {
+        for name in [
+            "nfs", "NFS4", "smbfs", "cifs", "afpfs", "webdav", "9p", "ceph", "sshfs", "fusefs",
+            "osxfuse", "macfuse",
+        ] {
+            assert!(
+                filesystem_name_is_network(name),
+                "expected {name} to be remote"
+            );
+        }
+        for name in ["apfs", "ext4", "tmpfs", "xfs", "btrfs", "zfs"] {
+            assert!(
+                !filesystem_name_is_network(name),
+                "expected {name} to be local"
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn network_filesystem_magic_classifier_rejects_remote_and_fuse_types() {
+        use super::filesystem_magic_is_network;
+
+        for magic in [
+            0x0000_6969,
+            0x0000_517b,
+            0xff53_4d42,
+            0x7375_7245,
+            0x5346_414f,
+            0x0000_564c,
+            0x00c3_6400,
+            0x0102_1997,
+            0x6573_5546,
+        ] {
+            assert!(filesystem_magic_is_network(magic));
+        }
+        assert!(!filesystem_magic_is_network(0xef53));
+        assert!(!filesystem_magic_is_network(0x0102_1994));
+    }
+
+    #[test]
+    fn local_temp_directory_passes_filesystem_integration_check() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_local_filesystem(dir.path()).unwrap();
+    }
 
     #[test]
     fn configure_sets_every_required_pragma() {

@@ -697,6 +697,7 @@ dependencies = [
  "proptest",
  "psyche-core",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
