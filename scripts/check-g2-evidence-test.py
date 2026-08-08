@@ -96,6 +96,17 @@ class G2EvidenceCheckerTests(unittest.TestCase):
     def test_valid_exact_manifest_and_candidate_evidence(self) -> None:
         self.assert_valid()
 
+    def test_delivery_v1_documentation_rejects_field_order_mutation(self) -> None:
+        path = "docs/SCHEMAS.md"
+        schemas = (ROOT / path).read_text()
+        mutated = schemas.replace(
+            "`effect`, `effect_digest`, `surface_decision`",
+            "`effect_digest`, `effect`, `surface_decision`",
+            1,
+        )
+        self.assertNotEqual(mutated, schemas)
+        self.assert_rejected(overrides={path: mutated})
+
     def test_zero_listed_tests_is_rejected(self) -> None:
         listed = dict(self.listed)
         listed["psyche-core/contracts"] = ""

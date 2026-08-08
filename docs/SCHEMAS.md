@@ -25,9 +25,11 @@ Delivery is authoritative at `del_`; the related delegation identity is the
 distinct derived `dlg_` prefix.
 
 The canonical delivery v1 fields are `schema_version`, `delivery_id`,
-`intent_id`, `surface`, `target`, `state`, `attempt`, `created_at`,
-`updated_at`, and `last_error`. Surface event/effect envelopes are core-owned,
-bounded, schema-versioned types; adapters cannot add fields or widen payloads.
+`intent_id`, `action_class`, `account_id`, `chat_id`, `topic`, `relationship`,
+`effect`, `effect_digest`, `surface_decision`, `logical_response_id`,
+`logical_part`, `state`, `attempt_count`, and `telegram_message_id`. Surface
+event/effect envelopes are core-owned, bounded, schema-versioned types;
+adapters cannot add fields or widen payloads.
 
 The store-owned `Transition` validates record identity, nonempty from/to state,
 strictly increasing version, canonical UTC `created_at`, and its canonical

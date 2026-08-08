@@ -749,6 +749,16 @@ def validate_docs(root: pathlib.Path, overrides: Mapping[str, str]) -> None:
         "ResultBundle", "digest", "media_type", "size_bytes", "expires_at", "Attempt", "att_",
         "ExecutionBinding", "retention", "Deferred",
     ))
+    delivery_fields = (
+        "schema_version", "delivery_id", "intent_id", "action_class", "account_id", "chat_id",
+        "topic", "relationship", "effect", "effect_digest", "surface_decision",
+        "logical_response_id", "logical_part", "state", "attempt_count", "telegram_message_id",
+    )
+    ordered_delivery_shape = "The canonical delivery v1 fields are " + ", ".join(
+        f"`{field}`" for field in delivery_fields[:-1]
+    ) + f", and `{delivery_fields[-1]}`."
+    if ordered_delivery_shape not in " ".join(schemas.split()):
+        fail("docs/SCHEMAS.md does not freeze the exact ordered delivery v1 fields")
     testing = read_text(root, "docs/TESTING.md", overrides)
     require_terms("docs/TESTING.md", testing, (
         "scripts", "PROPTEST_CASES", "PROPTEST_RNG_SEED", "crash", "fault", "observation",
