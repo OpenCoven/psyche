@@ -45,6 +45,8 @@ CREATE TABLE quarantine_records (
   quarantine_id TEXT PRIMARY KEY,
   schema_version TEXT,
   payload_digest TEXT NOT NULL,
+  original_payload_len INTEGER NOT NULL CHECK (original_payload_len >= 0),
+  retained_payload_digest TEXT NOT NULL,
   bounded_payload BLOB NOT NULL,
   reason TEXT NOT NULL,
   discovered_at TEXT NOT NULL,

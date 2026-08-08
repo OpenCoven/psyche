@@ -306,6 +306,9 @@ fn rejected_document_hashes_full_raw_bytes_and_bounds_retained_payload() {
         small.payload_digest.as_str(),
         "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
+    assert_eq!(small.original_payload_len(), 3);
+    assert_eq!(small.retained_payload_digest(), small.payload_digest);
+    assert!(small.is_authentic());
 
     let mut left = vec![b'a'; 64 * 1024 + 1];
     let mut right = left.clone();
@@ -331,6 +334,14 @@ fn rejected_document_hashes_full_raw_bytes_and_bounds_retained_payload() {
     assert_eq!(right.bounded_payload.len(), 64 * 1024);
     assert_eq!(left.bounded_payload, right.bounded_payload);
     assert_ne!(left.payload_digest, right.payload_digest);
+    assert_eq!(left.original_payload_len(), 64 * 1024 + 1);
+    assert_eq!(right.original_payload_len(), 64 * 1024 + 1);
+    assert_eq!(
+        left.retained_payload_digest(),
+        right.retained_payload_digest()
+    );
+    assert!(left.is_authentic());
+    assert!(right.is_authentic());
 }
 
 #[test]
