@@ -649,11 +649,11 @@ pub fn decode_document(bytes: &[u8]) -> Result<CanonicalDocument, ContractError>
         return Err(ContractError::DocumentTooLarge);
     }
     let value = strict_json(bytes)?;
-    crate::digest::validate_json_domain(&value)?;
     let probe: VersionProbe = serde_json::from_value(value.clone())
         .map_err(|_| invalid(SchemaKind::Error, "schema_version"))?;
     let schema = SchemaVersion::parse(&probe.schema_version)?;
     inspect_typed_enums(&value, schema.kind)?;
+    crate::digest::validate_json_domain(&value)?;
     let document = match schema.kind {
         SchemaKind::IdentitySnapshot => {
             decode(value, CanonicalDocument::IdentitySnapshot, schema.kind)?

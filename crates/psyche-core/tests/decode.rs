@@ -353,6 +353,77 @@ fn rejected_document_debug_never_prints_payload_or_schema_values() {
 }
 
 #[test]
+fn unsupported_major_takes_precedence_over_a_nested_unsafe_integer() {
+    let sentinel = "unsafe-major-secret";
+    let bytes = format!(
+        r#"{{"schema_version":"psyche.intent.v2","raw":"{sentinel}","constraints":{{"nested":9007199254740992}}}}"#
+    );
+    let error = decode_document(bytes.as_bytes()).unwrap_err();
+    assert_eq!(
+        error,
+        ContractError::UnsupportedMajor {
+            found: 2,
+            supported: 1,
+        }
+    );
+    assert_redacted(&error, sentinel);
+}
+
+#[test]
+fn unknown_schema_takes_precedence_over_a_nested_unsafe_integer() {
+    let sentinel = "unsafe-unknown-schema-secret";
+    let bytes = format!(
+        r#"{{"schema_version":"psyche.not_a_real_schema.v1","raw":"{sentinel}","constraints":{{"nested":9007199254740992}}}}"#
+    );
+    let error = decode_document(bytes.as_bytes()).unwrap_err();
+    assert_eq!(error, ContractError::UnknownSchema);
+    assert_redacted(&error, sentinel);
+}
+
+#[test]
+fn unknown_enum_value_takes_precedence_over_a_nested_unsafe_integer() {
+    let sentinel = "unsafe-enum-secret";
+    let mut value = graph();
+    value["state"] = json!("future_state");
+    value["policy_revision"] = json!(sentinel);
+    value["nested"] = json!({"unsafe": 9_007_199_254_740_992_u64});
+    let error = decode_document(&serde_json::to_vec(&value).unwrap()).unwrap_err();
+    assert_eq!(
+        error,
+        ContractError::UnknownEnumValue {
+            schema: SchemaKind::Graph,
+            field: "state",
+        }
+    );
+    assert_redacted(&error, sentinel);
+}
+
+#[test]
+fn recognized_schema_and_known_enums_still_reject_a_nested_unsafe_integer() {
+    let mut value = graph();
+    value["nested"] = json!({"unsafe": 9_007_199_254_740_992_u64});
+    let error = decode_document(&serde_json::to_vec(&value).unwrap()).unwrap_err();
+    assert_eq!(error, ContractError::NonInteroperableNumber);
+}
+
+#[test]
+fn duplicate_key_takes_precedence_over_unsupported_major() {
+    let sentinel = "duplicate-major-secret";
+    let bytes = format!(
+        r#"{{"schema_version":"psyche.intent.v1","schema_version":"psyche.intent.v2","raw":"{sentinel}"}}"#
+    );
+    let error = decode_document(bytes.as_bytes()).unwrap_err();
+    assert!(matches!(
+        error,
+        ContractError::InvalidShape {
+            schema: SchemaKind::Error,
+            ..
+        }
+    ));
+    assert_redacted(&error, sentinel);
+}
+
+#[test]
 fn rejected_document_handles_oversized_and_invalid_utf8_input() {
     let oversized = vec![0xff; MAX_DOCUMENT_BYTES + 1];
     let rejected = RejectedDocument::from_bytes(&oversized, RejectionReason::TooLarge);
