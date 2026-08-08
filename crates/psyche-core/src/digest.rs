@@ -13,10 +13,11 @@ use serde::ser::{
     self, Impossible, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
     SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
-use serde_json::Value;
+use serde_json::{Number, Value};
 use sha2::{Digest as _, Sha256};
 
 use crate::contracts::{ContractError, MAX_SAFE_INTEGER};
+use crate::serde_json_number;
 
 /// Length of the hex-encoded digest after the `sha256:` prefix.
 const HEX_DIGEST_LEN: usize = 64;
@@ -32,7 +33,7 @@ const MIN_SAFE_INTEGER_I128: i128 = -MAX_SAFE_INTEGER_I128;
 /// serialized exactly once into a validated representation, including map
 /// keys, before that representation is passed to the canonicalizer.
 pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, ContractError> {
-    let collected = value.serialize(ValueCollector).map_err(validation_failed)?;
+    let collected = collect(value).map_err(validation_failed)?;
     let canonicalizer_input = collected.into_json().map_err(validation_failed)?;
     serde_json_canonicalizer::to_vec(&canonicalizer_input).map_err(canonicalization_failed)
 }
@@ -52,25 +53,27 @@ pub(crate) fn validate_json_domain(value: &Value) -> Result<(), ContractError> {
     match value {
         Value::Array(values) => values.iter().try_for_each(validate_json_domain),
         Value::Object(values) => values.values().try_for_each(validate_json_domain),
-        Value::Number(number) => {
-            let interoperable = if let Some(value) = number.as_i64() {
-                value >= MIN_SAFE_INTEGER && value <= MAX_SAFE_INTEGER as i64
-            } else if let Some(value) = number.as_u64() {
-                value <= MAX_SAFE_INTEGER
-            } else if let Some(value) = number.as_f64() {
-                value.is_finite()
-                    && (value.fract() != 0.0
-                        || (value >= MIN_SAFE_INTEGER as f64 && value <= MAX_SAFE_INTEGER as f64))
-            } else {
-                false
-            };
-            if interoperable {
-                Ok(())
-            } else {
-                Err(ContractError::NonInteroperableNumber)
-            }
-        }
+        Value::Number(number) => validate_json_number(number),
         Value::Null | Value::Bool(_) | Value::String(_) => Ok(()),
+    }
+}
+
+fn validate_json_number(number: &Number) -> Result<(), ContractError> {
+    let interoperable = if let Some(value) = number.as_i64() {
+        value >= MIN_SAFE_INTEGER && value <= MAX_SAFE_INTEGER as i64
+    } else if let Some(value) = number.as_u64() {
+        value <= MAX_SAFE_INTEGER
+    } else if let Some(value) = number.as_f64() {
+        value.is_finite()
+            && (value.fract() != 0.0
+                || (value >= MIN_SAFE_INTEGER as f64 && value <= MAX_SAFE_INTEGER as f64))
+    } else {
+        false
+    };
+    if interoperable {
+        Ok(())
+    } else {
+        Err(ContractError::NonInteroperableNumber)
     }
 }
 
@@ -109,7 +112,9 @@ impl ser::Error for ValidationError {
 }
 
 #[derive(Clone, Copy)]
-struct ValueCollector;
+struct ValueCollector {
+    allow_private_number: bool,
+}
 
 enum CollectedValue {
     Null,
@@ -117,6 +122,7 @@ enum CollectedValue {
     Signed(i64),
     Unsigned(u64),
     Float(f64),
+    Number(Number),
     String(String),
     Array(Vec<Self>),
     Object(BTreeMap<String, Self>),
@@ -129,9 +135,10 @@ impl CollectedValue {
             Self::Bool(value) => Ok(Value::Bool(value)),
             Self::Signed(value) => Ok(Value::Number(value.into())),
             Self::Unsigned(value) => Ok(Value::Number(value.into())),
-            Self::Float(value) => serde_json::Number::from_f64(value)
+            Self::Float(value) => Number::from_f64(value)
                 .map(Value::Number)
                 .ok_or(ValidationError::NonInteroperableNumber),
+            Self::Number(value) => Ok(Value::Number(value)),
             Self::String(value) => Ok(Value::String(value)),
             Self::Array(values) => values
                 .into_iter()
@@ -145,6 +152,12 @@ impl CollectedValue {
                 .map(Value::Object),
         }
     }
+}
+
+fn collect<T: ?Sized + Serialize>(value: &T) -> Result<CollectedValue, ValidationError> {
+    value.serialize(ValueCollector {
+        allow_private_number: serde_json_number::source_may_emit_private_number::<T>(),
+    })
 }
 
 fn validate_signed(value: i128) -> Result<(), ValidationError> {
@@ -254,7 +267,7 @@ impl Serializer for ValueCollector {
     }
 
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Self::Ok, Self::Error> {
-        value.serialize(self)
+        collect(value)
     }
 
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
@@ -279,7 +292,7 @@ impl Serializer for ValueCollector {
         _name: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        value.serialize(self)
+        collect(value)
     }
 
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
@@ -289,7 +302,7 @@ impl Serializer for ValueCollector {
         variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        singleton_object(variant, value.serialize(self)?)
+        singleton_object(variant, collect(value)?)
     }
 
     fn serialize_seq(self, length: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
@@ -324,10 +337,18 @@ impl Serializer for ValueCollector {
 
     fn serialize_struct(
         self,
-        _name: &'static str,
-        _length: usize,
+        name: &'static str,
+        length: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        Ok(ObjectCollector::new(None))
+        if name == serde_json_number::TOKEN {
+            if self.allow_private_number && length == 1 {
+                Ok(ObjectCollector::private_number())
+            } else {
+                Err(ValidationError::SerializationFailed)
+            }
+        } else {
+            Ok(ObjectCollector::new(None))
+        }
     }
 
     fn serialize_struct_variant(
@@ -363,6 +384,9 @@ fn collect_float(value: f64) -> Result<CollectedValue, ValidationError> {
 }
 
 fn singleton_object(key: &str, value: CollectedValue) -> Result<CollectedValue, ValidationError> {
+    if key == serde_json_number::TOKEN {
+        return Err(ValidationError::SerializationFailed);
+    }
     Ok(CollectedValue::Object(BTreeMap::from([(
         key.to_owned(),
         value,
@@ -383,7 +407,7 @@ impl SequenceCollector {
     }
 
     fn push<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), ValidationError> {
-        self.values.push(value.serialize(ValueCollector)?);
+        self.values.push(collect(value)?);
         Ok(())
     }
 
@@ -452,6 +476,7 @@ struct ObjectCollector {
     values: BTreeMap<String, CollectedValue>,
     next_key: Option<String>,
     variant: Option<&'static str>,
+    private_number: Option<Option<Number>>,
 }
 
 impl ObjectCollector {
@@ -460,11 +485,24 @@ impl ObjectCollector {
             values: BTreeMap::new(),
             next_key: None,
             variant,
+            private_number: None,
+        }
+    }
+
+    fn private_number() -> Self {
+        Self {
+            values: BTreeMap::new(),
+            next_key: None,
+            variant: None,
+            private_number: Some(None),
         }
     }
 
     fn insert(&mut self, key: String, value: CollectedValue) -> Result<(), ValidationError> {
-        if self.values.insert(key, value).is_some() {
+        if self.private_number.is_some()
+            || key == serde_json_number::TOKEN
+            || self.values.insert(key, value).is_some()
+        {
             Err(ValidationError::SerializationFailed)
         } else {
             Ok(())
@@ -474,6 +512,11 @@ impl ObjectCollector {
     fn finish(self) -> Result<CollectedValue, ValidationError> {
         if self.next_key.is_some() {
             return Err(ValidationError::SerializationFailed);
+        }
+        if let Some(number) = self.private_number {
+            return number
+                .map(CollectedValue::Number)
+                .ok_or(ValidationError::SerializationFailed);
         }
         let value = CollectedValue::Object(self.values);
         match self.variant {
@@ -488,7 +531,7 @@ impl SerializeMap for ObjectCollector {
     type Error = ValidationError;
 
     fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), Self::Error> {
-        if self.next_key.is_some() {
+        if self.private_number.is_some() || self.next_key.is_some() {
             return Err(ValidationError::SerializationFailed);
         }
         self.next_key = Some(key.serialize(MapKeyCollector)?);
@@ -496,11 +539,14 @@ impl SerializeMap for ObjectCollector {
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        if self.private_number.is_some() {
+            return Err(ValidationError::SerializationFailed);
+        }
         let key = self
             .next_key
             .take()
             .ok_or(ValidationError::SerializationFailed)?;
-        self.insert(key, value.serialize(ValueCollector)?)
+        self.insert(key, collect(value)?)
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
@@ -517,7 +563,21 @@ impl SerializeStruct for ObjectCollector {
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
-        self.insert(key.to_owned(), value.serialize(ValueCollector)?)
+        if let Some(number) = &mut self.private_number {
+            if key != serde_json_number::TOKEN || number.is_some() {
+                return Err(ValidationError::SerializationFailed);
+            }
+            let CollectedValue::String(text) = collect(value)? else {
+                return Err(ValidationError::SerializationFailed);
+            };
+            let parsed = serde_json_number::parse_exact(&text)
+                .ok_or(ValidationError::SerializationFailed)?;
+            validate_json_number(&parsed).map_err(|_| ValidationError::NonInteroperableNumber)?;
+            *number = Some(parsed);
+            Ok(())
+        } else {
+            self.insert(key.to_owned(), collect(value)?)
+        }
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
@@ -534,7 +594,7 @@ impl SerializeStructVariant for ObjectCollector {
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
-        self.insert(key.to_owned(), value.serialize(ValueCollector)?)
+        self.insert(key.to_owned(), collect(value)?)
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
@@ -779,16 +839,6 @@ impl Sha256Digest {
         Ok(Sha256Digest(value.to_string()))
     }
 
-    pub(crate) fn from_raw_bytes(bytes: &[u8]) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        Self(format!(
-            "{}{}",
-            Self::PREFIX,
-            to_lower_hex(hasher.finalize().as_slice())
-        ))
-    }
-
     /// The full digest string, e.g. `"sha256:<64 lowercase hex chars>"`.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -864,6 +914,66 @@ mod tests {
 
         canonical_bytes(&value).unwrap();
         digest(&value).unwrap();
+    }
+
+    #[test]
+    fn arbitrary_precision_values_keep_numeric_canonical_representation() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"safe":9007199254740991,"negative":-9007199254740991,"fraction":1.2300}"#,
+        )
+        .unwrap();
+
+        let canonical = String::from_utf8(canonical_bytes(&value).unwrap()).unwrap();
+        assert_eq!(
+            canonical,
+            r#"{"fraction":1.23,"negative":-9007199254740991,"safe":9007199254740991}"#
+        );
+        assert!(!canonical.contains("$serde_json::private::Number"));
+    }
+
+    #[test]
+    fn arbitrary_precision_values_reject_non_interoperable_number_text() {
+        for source in [
+            "9007199254740992",
+            "-9007199254740992",
+            "18446744073709551616",
+            "1e400",
+        ] {
+            let value: serde_json::Value = serde_json::from_str(source).unwrap();
+            assert_eq!(
+                canonical_bytes(&value),
+                Err(ContractError::NonInteroperableNumber),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn private_number_marker_lookalikes_cannot_smuggle_numbers_or_objects() {
+        const TOKEN: &str = "$serde_json::private::Number";
+
+        #[derive(Serialize)]
+        #[serde(rename = "$serde_json::private::Number")]
+        struct SpoofedNumber<'a> {
+            #[serde(rename = "$serde_json::private::Number")]
+            text: &'a str,
+        }
+
+        assert_eq!(
+            canonical_bytes(&SpoofedNumber { text: "1.5" }),
+            Err(ContractError::CanonicalizationFailed)
+        );
+
+        for lookalike in [
+            json!({TOKEN: "1.5"}),
+            json!({TOKEN: 1.5}),
+            json!({TOKEN: "1.5", "extra": true}),
+        ] {
+            assert_eq!(
+                canonical_bytes(&lookalike),
+                Err(ContractError::CanonicalizationFailed)
+            );
+        }
     }
 
     #[test]

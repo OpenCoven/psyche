@@ -42,6 +42,29 @@ fn mutate(name: &str, f: impl FnOnce(&mut serde_json::Map<String, Value>)) -> Ve
     serde_json::to_vec(&value).unwrap()
 }
 
+fn replace_fixture_once(name: &str, from: &str, to: &str) -> Vec<u8> {
+    let source = String::from_utf8(fixture(name)).unwrap();
+    assert_eq!(source.matches(from).count(), 1, "{name}: {from}");
+    source.replacen(from, to, 1).into_bytes()
+}
+
+fn duplicate_fixture_fragment(name: &str, fragment: &str) -> Vec<u8> {
+    replace_fixture_once(name, fragment, &format!("{fragment}, {fragment}"))
+}
+
+fn assert_duplicate_json_rejected(bytes: &[u8], location: &str) {
+    assert!(
+        matches!(
+            decode_document(bytes),
+            Err(ContractError::InvalidShape {
+                schema: SchemaKind::Error,
+                field: "json",
+            })
+        ),
+        "{location}"
+    );
+}
+
 fn timestamp(value: &str) -> OffsetDateTime {
     OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).unwrap()
 }
@@ -965,6 +988,9 @@ fn cancellation_binding_decode_maps_nested_wire_failures_to_evidence_mismatch() 
         ("acknowledgement timestamp", |value: &mut Value| {
             value["cancellation_acknowledgement"]["acknowledged_at"] = json!("tomorrow");
         }),
+        ("acknowledgement kind", |value: &mut Value| {
+            value["cancellation_acknowledgement"]["kind"] = json!("future_kind");
+        }),
         ("termination request id", |value: &mut Value| {
             value["termination_request"]["termination_request_id"] = json!("not-a-request");
         }),
@@ -996,16 +1022,6 @@ fn cancellation_binding_decode_maps_nested_wire_failures_to_evidence_mismatch() 
         );
     }
 
-    let mut unknown_kind = binding_value(CancellationState::AcknowledgedTerminated);
-    unknown_kind["cancellation_acknowledgement"]["kind"] = json!("future_kind");
-    assert!(matches!(
-        decode_document(&serde_json::to_vec(&unknown_kind).unwrap()),
-        Err(ContractError::UnknownEnumValue {
-            schema: SchemaKind::ExecutionBinding,
-            field: "cancellation_acknowledgement.kind",
-        })
-    ));
-
     let mut unknown = binding_value(CancellationState::TerminationRequested);
     unknown["cancellation_state"] = json!("cancelled");
     assert!(decode_document(&serde_json::to_vec(&unknown).unwrap()).is_err());
@@ -1025,7 +1041,143 @@ fn strict_probe_and_document_limit_fail_closed() {
         decode_document(br#"{"schema_version":"psyche.unknown.v1"}"#),
         Err(ContractError::UnknownSchema)
     ));
+    assert!(matches!(
+        decode_document(br#"{"schema_version":"psyche.intent.v2"}"#),
+        Err(ContractError::UnsupportedMajor { .. })
+    ));
     assert!(decode_document(&vec![b' '; 1_048_577]).is_err());
+}
+
+#[test]
+fn duplicate_schema_versions_are_rejected_before_version_dispatch() {
+    for (order, bytes) in [
+        (
+            "unsupported then supported",
+            replace_fixture_once(
+                "intent-local.json",
+                r#""schema_version": "psyche.intent.v1""#,
+                r#""schema_version": "psyche.intent.v2", "schema_version": "psyche.intent.v1""#,
+            ),
+        ),
+        (
+            "supported then unsupported",
+            replace_fixture_once(
+                "intent-local.json",
+                r#""schema_version": "psyche.intent.v1""#,
+                r#""schema_version": "psyche.intent.v1", "schema_version": "psyche.intent.v2""#,
+            ),
+        ),
+    ] {
+        assert_duplicate_json_rejected(&bytes, order);
+    }
+}
+
+#[test]
+fn duplicate_top_level_contract_fields_are_rejected() {
+    for (field, bytes) in [
+        (
+            "intent_id",
+            duplicate_fixture_fragment(
+                "intent-local.json",
+                r#""intent_id": "int_01ARZ3NDEKTSV4RRFFQ69G5FAV""#,
+            ),
+        ),
+        (
+            "digest",
+            duplicate_fixture_fragment(
+                "intent-local.json",
+                r#""digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef""#,
+            ),
+        ),
+    ] {
+        assert_duplicate_json_rejected(&bytes, field);
+    }
+}
+
+#[test]
+fn duplicate_nested_contract_fields_are_rejected_recursively() {
+    for (location, bytes) in [
+        (
+            "intent constraints",
+            replace_fixture_once(
+                "intent-local.json",
+                r#""constraints": {}"#,
+                r#""constraints": {"outer": {"mode": "strict", "mode": "strict"}}"#,
+            ),
+        ),
+        (
+            "surface actor",
+            duplicate_fixture_fragment("surface-event.json", r#""type": "user""#),
+        ),
+        (
+            "surface locator",
+            duplicate_fixture_fragment("surface-event.json", r#""message_id": "42""#),
+        ),
+        (
+            "surface content",
+            duplicate_fixture_fragment("surface-event.json", r#""text": "Please review this.""#),
+        ),
+        (
+            "surface effect locator",
+            duplicate_fixture_fragment("surface-effect.json", r#""chat_id": "-100123""#),
+        ),
+        (
+            "surface effect",
+            duplicate_fixture_fragment("surface-effect.json", r#""text": "Review complete.""#),
+        ),
+        (
+            "delivery topic",
+            duplicate_fixture_fragment("delivery-ready.json", r#""kind": "forum""#),
+        ),
+        (
+            "delivery effect",
+            duplicate_fixture_fragment("delivery-ready.json", r#""format": "html""#),
+        ),
+        (
+            "delivery surface_decision",
+            duplicate_fixture_fragment(
+                "delivery-ready.json",
+                r#""policy_revision": "policy:sha256:0123456789abcdef""#,
+            ),
+        ),
+        (
+            "error details",
+            br#"{
+                "schema_version": "psyche.error.v1",
+                "error": {
+                    "code": "storage_unavailable",
+                    "message": "temporarily unavailable",
+                    "retryable": true,
+                    "correlation_id": "corr-1",
+                    "details": {"scope": "public", "scope": "public"}
+                }
+            }"#
+            .to_vec(),
+        ),
+    ] {
+        assert_duplicate_json_rejected(&bytes, location);
+    }
+}
+
+#[test]
+fn duplicate_key_errors_do_not_expose_attacker_controlled_text() {
+    let marker = "SENTINEL_DUPLICATE_KEY_XYZ";
+    let bytes = replace_fixture_once(
+        "intent-local.json",
+        r#""constraints": {}"#,
+        &format!(r#""constraints": {{"{marker}": 1, "{marker}": 2}}"#),
+    );
+
+    let error = decode_document(&bytes).unwrap_err();
+    assert_eq!(
+        error,
+        ContractError::InvalidShape {
+            schema: SchemaKind::Error,
+            field: "json",
+        }
+    );
+    assert!(!format!("{error:?}").contains(marker));
+    assert!(!format!("{error}").contains(marker));
 }
 
 #[test]
@@ -1223,6 +1375,45 @@ fn decoded_document_rejects_nested_unsafe_integers() {
         decode_document(&bytes),
         Err(ContractError::NonInteroperableNumber)
     );
+}
+
+#[test]
+fn decoded_document_preserves_interoperable_arbitrary_precision_numbers() {
+    let bytes = replace_fixture_once(
+        "intent-local.json",
+        r#""constraints": {}"#,
+        r#""constraints": {"safe": 9007199254740991, "fraction": 1.2300}"#,
+    );
+
+    let CanonicalDocument::Intent(intent) = decode_document(&bytes).unwrap() else {
+        panic!("expected intent");
+    };
+    assert_eq!(
+        canonical_bytes(&intent.constraints).unwrap(),
+        br#"{"fraction":1.23,"safe":9007199254740991}"#
+    );
+}
+
+#[test]
+fn decoded_document_rejects_private_number_marker_lookalikes() {
+    for constraints in [
+        r#"{"$serde_json::private::Number": "1.5"}"#,
+        r#"{"$serde_json::private::Number": 1.5}"#,
+        r#"{"$serde_json::private::Number": "1.5", "extra": true}"#,
+    ] {
+        let bytes = replace_fixture_once(
+            "intent-local.json",
+            r#""constraints": {}"#,
+            &format!(r#""constraints": {constraints}"#),
+        );
+        assert!(matches!(
+            decode_document(&bytes),
+            Err(ContractError::InvalidShape {
+                schema: SchemaKind::Error,
+                field: "json",
+            })
+        ));
+    }
 }
 
 fn assert_invalid_numeric_field(

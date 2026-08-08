@@ -9,3 +9,5 @@ pub mod digest;
 pub mod id;
 pub mod schema;
 pub mod secret;
+
+mod serde_json_number;
