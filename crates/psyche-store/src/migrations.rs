@@ -50,6 +50,10 @@ fn current_schema_matches(transaction: &Transaction<'_>) -> rusqlite::Result<boo
         return Ok(false);
     }
 
+    if !persisted_objects_are_inert(transaction)? {
+        return Ok(false);
+    }
+
     for table in FOUNDATION_TABLES {
         let actual_sql = transaction
             .query_row(
@@ -86,6 +90,54 @@ fn current_schema_matches(transaction: &Transaction<'_>) -> rusqlite::Result<boo
         .query_map([], |row| row.get::<_, u32>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(versions == [CURRENT_DATABASE_VERSION])
+}
+
+fn persisted_objects_are_inert(transaction: &Transaction<'_>) -> rusqlite::Result<bool> {
+    let mut statement = transaction
+        .prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name")?;
+    let objects = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+
+    for object in objects {
+        let (kind, name, table, sql) = object?;
+        match kind.as_str() {
+            "table" => {
+                let Some(sql) = sql else {
+                    return Ok(false);
+                };
+                if name != table || sql_is_virtual_table(&sql) {
+                    return Ok(false);
+                }
+            }
+            "index" => {
+                if name == table {
+                    return Ok(false);
+                }
+            }
+            "trigger" | "view" => return Ok(false),
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+fn sql_is_virtual_table(sql: &str) -> bool {
+    let mut tokens = sql.split_whitespace();
+    tokens
+        .next()
+        .is_some_and(|token| token.eq_ignore_ascii_case("CREATE"))
+        && tokens
+            .next()
+            .is_some_and(|token| token.eq_ignore_ascii_case("VIRTUAL"))
+        && tokens
+            .next()
+            .is_some_and(|token| token.eq_ignore_ascii_case("TABLE"))
 }
 
 fn foundation_indexes(table: &str) -> &'static [&'static str] {

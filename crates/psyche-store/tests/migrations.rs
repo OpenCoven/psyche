@@ -187,6 +187,69 @@ fn user_version_and_migration_ledger_disagreement_is_rejected_as_corruption() {
 }
 
 #[test]
+fn trigger_on_foundation_table_is_rejected_as_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture_db(dir.path(), Fixture::Version1);
+    execute_batch(
+        &path,
+        "
+        CREATE TRIGGER injected_foundation_trigger
+        AFTER INSERT ON canonical_records
+        BEGIN
+          SELECT 1;
+        END;
+        ",
+    );
+
+    assert_database_corruption(Store::open(&path));
+}
+
+#[test]
+fn trigger_on_unrelated_table_that_writes_foundation_state_is_rejected_as_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture_db(dir.path(), Fixture::Version1);
+    execute_batch(
+        &path,
+        "
+        CREATE TABLE unrelated_input (value TEXT NOT NULL) STRICT;
+        CREATE TRIGGER injected_unrelated_trigger
+        AFTER INSERT ON unrelated_input
+        BEGIN
+          INSERT INTO audit_events (
+            event_code, correlation_id, public_details_json, created_at
+          ) VALUES ('injected', NEW.value, X'7b7d', '2026-08-08T00:00:00Z');
+        END;
+        ",
+    );
+
+    assert_database_corruption(Store::open(&path));
+}
+
+#[test]
+fn persisted_view_is_rejected_as_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture_db(dir.path(), Fixture::Version1);
+    execute_batch(
+        &path,
+        "CREATE VIEW injected_view AS SELECT * FROM canonical_records",
+    );
+
+    assert_database_corruption(Store::open(&path));
+}
+
+#[test]
+fn virtual_table_is_rejected_as_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture_db(dir.path(), Fixture::Version1);
+    execute_batch(
+        &path,
+        "CREATE VIRTUAL TABLE injected_virtual_table USING fts5(content)",
+    );
+
+    assert_database_corruption(Store::open(&path));
+}
+
+#[test]
 fn v1_quarantine_schema_contains_durable_integrity_metadata() {
     let dir = tempfile::tempdir().unwrap();
     #[cfg(unix)]

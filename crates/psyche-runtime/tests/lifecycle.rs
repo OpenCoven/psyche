@@ -58,3 +58,30 @@ async fn future_database_version_fails_start_before_running_is_published() {
         ))
     ));
 }
+
+#[tokio::test]
+async fn malformed_current_store_fails_start_before_running_is_published() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path().join("private");
+    let database = data_dir.join("psyche.sqlite3");
+    drop(Store::open(&database).unwrap());
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "
+            CREATE TRIGGER injected_runtime_trigger
+            AFTER INSERT ON canonical_records
+            BEGIN
+              SELECT 1;
+            END;
+            ",
+        )
+        .unwrap();
+    drop(connection);
+
+    let result = Runtime::start(test_config(&data_dir)).await;
+    assert!(matches!(
+        result,
+        Err(RuntimeError::Store(StoreError::DatabaseCorruption))
+    ));
+}

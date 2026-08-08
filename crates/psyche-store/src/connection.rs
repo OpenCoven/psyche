@@ -32,10 +32,10 @@ pub(crate) fn prepare(path: &Path) -> Result<(PathBuf, DatabaseFileState), Store
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    ensure_local_filesystem(parent)?;
     prepare_data_dir(parent)?;
     let state = prepare_database_file(path)?;
     let open_path = database_open_path(path)?;
+    ensure_local_database_file(&open_path)?;
     Ok((open_path, state))
 }
 
@@ -49,28 +49,14 @@ pub(crate) fn prepare(path: &Path) -> Result<(PathBuf, DatabaseFileState), Store
     target_os = "dragonfly"
 ))]
 fn ensure_local_filesystem(path: &Path) -> Result<(), StoreError> {
-    let existing_ancestor = path
-        .ancestors()
-        .map(|candidate| {
-            if candidate.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                candidate
-            }
-        })
-        .find(|candidate| match fs::symlink_metadata(candidate) {
-            Ok(_) => true,
-            Err(error) if error.kind() == ErrorKind::NotFound => false,
-            Err(_) => true,
-        })
-        .ok_or(StoreError::InvalidDatabasePath)?;
-    let statistics = rustix::fs::statfs(existing_ancestor)
+    let existing_ancestor = existing_ancestor(path)?;
+    let statistics = rustix::fs::statfs(&existing_ancestor)
         .map_err(|error| StoreError::directory_operation(error.into()))?;
 
-    if filesystem_is_network(&statistics) {
-        Err(StoreError::InvalidDatabasePath)
-    } else {
+    if filesystem_is_local(&statistics) {
         Ok(())
+    } else {
+        Err(StoreError::InvalidDatabasePath)
     }
 }
 
@@ -90,33 +76,69 @@ fn ensure_local_filesystem(_path: &Path) -> Result<(), StoreError> {
     Err(StoreError::InvalidDatabasePath)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn ensure_local_filesystem(path: &Path) -> Result<(), StoreError> {
-    if path_is_network_share(path) {
-        Err(StoreError::InvalidDatabasePath)
-    } else {
+    let canonical =
+        fs::canonicalize(existing_ancestor(path)?).map_err(StoreError::directory_operation)?;
+    let canonical = canonical.to_str().ok_or(StoreError::InvalidDatabasePath)?;
+    let volume =
+        winsafe::GetVolumePathName(canonical).map_err(|_| StoreError::InvalidDatabasePath)?;
+    if windows_drive_type_is_local(winsafe::GetDriveType(Some(&volume))) {
         Ok(())
+    } else {
+        Err(StoreError::InvalidDatabasePath)
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn filesystem_is_network(statistics: &rustix::fs::StatFs) -> bool {
-    filesystem_magic_is_network(statistics.f_type as u64)
+fn existing_ancestor(path: &Path) -> Result<PathBuf, StoreError> {
+    path.ancestors()
+        .map(|candidate| {
+            if candidate.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                candidate
+            }
+        })
+        .find(|candidate| match fs::symlink_metadata(candidate) {
+            Ok(_) => true,
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(_) => true,
+        })
+        .map(Path::to_path_buf)
+        .ok_or(StoreError::InvalidDatabasePath)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn ensure_local_filesystem(_path: &Path) -> Result<(), StoreError> {
+    Err(StoreError::InvalidDatabasePath)
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn filesystem_magic_is_network(magic: u64) -> bool {
+fn filesystem_is_local(statistics: &rustix::fs::StatFs) -> bool {
+    filesystem_magic_is_supported_local(statistics.f_type as u64)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn filesystem_magic_is_supported_local(magic: u64) -> bool {
     matches!(
         magic,
-        0x0000_6969 // NFS
-            | 0x0000_517b // SMB
-            | 0xff53_4d42 // CIFS
-            | 0x7375_7245 // Coda
-            | 0x5346_414f // AFS
-            | 0x0000_564c // NCP
-            | 0x00c3_6400 // Ceph
-            | 0x0102_1997 // 9P
-            | 0x6573_5546 // FUSE, including sshfs and other remote transports
+        0x0000_ef53 // ext2/ext3/ext4
+            | 0x5846_5342 // XFS
+            | 0x9123_683e // Btrfs
+            | 0x0102_1994 // tmpfs
+            | 0x8584_58f6 // ramfs
+            | 0x794c_7630 // overlayfs
+            | 0x2fc1_2fc1 // ZFS
+            | 0x3153_464a // JFS
+            | 0x5265_4973 // ReiserFS
+            | 0xf2f5_2010 // F2FS
+            | 0x2405_1905 // UBIFS
+            | 0x0000_4d44 // FAT
+            | 0x2011_bab0 // exFAT
+            | 0x5346_544e // NTFS
+            | 0x0000_4244 // HFS
+            | 0x0000_482b // HFS+
+            | 0x0000_f15f // eCryptfs
     )
 }
 
@@ -127,48 +149,67 @@ fn filesystem_magic_is_network(magic: u64) -> bool {
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
-fn filesystem_is_network(statistics: &rustix::fs::StatFs) -> bool {
-    let name = statistics
-        .f_fstypename
-        .iter()
-        .take_while(|character| **character != 0)
-        .map(|character| *character as u8)
-        .collect::<Vec<_>>();
-    match std::str::from_utf8(&name) {
-        Ok(name) => filesystem_name_is_network(name),
-        Err(_) => true,
+fn filesystem_is_local(statistics: &rustix::fs::StatFs) -> bool {
+    mount_flags_are_local(statistics.f_flags as u64)
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+fn mount_flags_are_local(flags: u64) -> bool {
+    flags & libc::MNT_LOCAL as u64 != 0
+}
+
+#[cfg(windows)]
+fn windows_drive_type_is_local(drive_type: winsafe::co::DRIVE) -> bool {
+    drive_type == winsafe::co::DRIVE::FIXED
+        || drive_type == winsafe::co::DRIVE::REMOVABLE
+        || drive_type == winsafe::co::DRIVE::RAMDISK
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+fn ensure_local_database_file(path: &Path) -> Result<(), StoreError> {
+    let file = File::open(path).map_err(StoreError::file_operation)?;
+    let statistics =
+        rustix::fs::fstatfs(&file).map_err(|error| StoreError::file_operation(error.into()))?;
+    if filesystem_is_local(&statistics) {
+        Ok(())
+    } else {
+        Err(StoreError::InvalidDatabasePath)
     }
 }
 
-fn filesystem_name_is_network(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "nfs"
-            | "nfs4"
-            | "smb"
-            | "smbfs"
-            | "cifs"
-            | "afp"
-            | "afpfs"
-            | "webdav"
-            | "9p"
-            | "ceph"
-            | "sshfs"
-            | "fusefs"
-            | "osxfuse"
-            | "macfuse"
-    )
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))
+))]
+fn ensure_local_database_file(_path: &Path) -> Result<(), StoreError> {
+    Err(StoreError::InvalidDatabasePath)
 }
 
 #[cfg(not(unix))]
-fn path_is_network_share(path: &Path) -> bool {
-    use std::path::{Component, Prefix};
-
-    matches!(
-        path.components().next(),
-        Some(Component::Prefix(prefix))
-            if matches!(prefix.kind(), Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _))
-    )
+fn ensure_local_database_file(path: &Path) -> Result<(), StoreError> {
+    ensure_local_filesystem(path)
 }
 
 pub(crate) fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
@@ -176,6 +217,7 @@ pub(crate) fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
     let connection = Connection::open_with_flags(path, flags)?;
+    ensure_local_database_file(path)?;
     connection.busy_timeout(BUSY_TIMEOUT)?;
     Ok(connection)
 }
@@ -185,6 +227,7 @@ pub(crate) fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
     let connection = Connection::open_with_flags(path, flags)?;
+    ensure_local_database_file(path)?;
     connection.busy_timeout(BUSY_TIMEOUT)?;
     Ok(connection)
 }
@@ -531,6 +574,7 @@ fn validate_path(path: &Path) -> Result<(), StoreError> {
 }
 
 pub(crate) fn prepare_data_dir(path: &Path) -> Result<bool, StoreError> {
+    ensure_local_filesystem(path)?;
     let existed = match fs::symlink_metadata(path) {
         Ok(metadata) => {
             validate_parent_metadata(&metadata)?;
@@ -545,6 +589,8 @@ pub(crate) fn prepare_data_dir(path: &Path) -> Result<bool, StoreError> {
 
     let metadata = fs::symlink_metadata(path).map_err(StoreError::directory_operation)?;
     validate_parent_metadata(&metadata)?;
+    let canonical = fs::canonicalize(path).map_err(StoreError::directory_operation)?;
+    ensure_local_filesystem(&canonical)?;
 
     Ok(existed)
 }
@@ -640,49 +686,59 @@ fn create_database_file(path: &Path) -> std::io::Result<()> {
 mod tests {
     use rusqlite::Connection;
 
-    use super::{
-        configure, ensure_local_filesystem, filesystem_name_is_network, open_read_write, prepare,
-    };
-
-    #[test]
-    fn network_filesystem_name_classifier_is_fail_closed_for_known_remote_types() {
-        for name in [
-            "nfs", "NFS4", "smbfs", "cifs", "afpfs", "webdav", "9p", "ceph", "sshfs", "fusefs",
-            "osxfuse", "macfuse",
-        ] {
-            assert!(
-                filesystem_name_is_network(name),
-                "expected {name} to be remote"
-            );
-        }
-        for name in ["apfs", "ext4", "tmpfs", "xfs", "btrfs", "zfs"] {
-            assert!(
-                !filesystem_name_is_network(name),
-                "expected {name} to be local"
-            );
-        }
-    }
+    use super::{configure, ensure_local_filesystem, open_read_write, prepare};
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
-    fn network_filesystem_magic_classifier_rejects_remote_and_fuse_types() {
-        use super::filesystem_magic_is_network;
+    fn filesystem_magic_classifier_allows_known_local_and_rejects_unknown_remote_and_fuse() {
+        use super::filesystem_magic_is_supported_local;
 
         for magic in [
+            0x0000_ef53,
+            0x5846_5342,
+            0x9123_683e,
+            0x0102_1994,
+            0x794c_7630,
+        ] {
+            assert!(filesystem_magic_is_supported_local(magic));
+        }
+        for magic in [
+            0,
+            0xdead_beef,
             0x0000_6969,
-            0x0000_517b,
             0xff53_4d42,
-            0x7375_7245,
-            0x5346_414f,
-            0x0000_564c,
-            0x00c3_6400,
             0x0102_1997,
             0x6573_5546,
         ] {
-            assert!(filesystem_magic_is_network(magic));
+            assert!(!filesystem_magic_is_supported_local(magic));
         }
-        assert!(!filesystem_magic_is_network(0xef53));
-        assert!(!filesystem_magic_is_network(0x0102_1994));
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))]
+    #[test]
+    fn bsd_mount_flags_require_mnt_local() {
+        use super::mount_flags_are_local;
+
+        assert!(!mount_flags_are_local(0));
+        assert!(!mount_flags_are_local((libc::MNT_LOCAL as u64) << 1));
+        assert!(mount_flags_are_local(libc::MNT_LOCAL as u64));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_classifier_rejects_mapped_and_unknown_drives() {
+        use super::windows_drive_type_is_local;
+
+        assert!(windows_drive_type_is_local(winsafe::co::DRIVE::FIXED));
+        assert!(windows_drive_type_is_local(winsafe::co::DRIVE::REMOVABLE));
+        assert!(!windows_drive_type_is_local(winsafe::co::DRIVE::REMOTE));
+        assert!(!windows_drive_type_is_local(winsafe::co::DRIVE::UNKNOWN));
     }
 
     #[test]

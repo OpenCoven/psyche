@@ -694,6 +694,7 @@ dependencies = [
 name = "psyche-store"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "proptest",
  "psyche-core",
  "rusqlite",
@@ -704,6 +705,7 @@ dependencies = [
  "thiserror",
  "time",
  "ulid",
+ "winsafe",
 ]
 
 [[package]]
@@ -1385,6 +1387,12 @@ name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+
+[[package]]
+name = "winsafe"
+version = "0.0.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
 
 [[package]]
 name = "wit-bindgen"
