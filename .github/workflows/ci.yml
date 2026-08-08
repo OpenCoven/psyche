@@ -23,20 +23,12 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      # Pinned to the MSRV rather than `@stable`, and stated explicitly rather
-      # than left to the action's default: `rust-toolchain.toml` already pins
-      # 1.85.0 and takes precedence over whatever cargo is invoked through, so
-      # `@stable` would download a toolchain the build then never uses — a
-      # slower job that silently tests nothing about the version we ship.
-      # The two pins must agree; Step 4 is what catches it if they drift.
-      #
-      # Verified: this action runs `rustup default <toolchain>` and does NOT
-      # export RUSTUP_TOOLCHAIN, so `rust-toolchain.toml` really does win. That
-      # is why the pin here is documentation rather than mechanism — and why the
-      # `supply-chain` job below has to escape it explicitly.
+      # `rust-toolchain.toml` controls the cargo/rustc version used in this
+      # checkout. The action pin avoids a redundant download; keep both pins
+      # aligned with the workspace MSRV.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85.0"
+          toolchain: "1.88.0"
           components: rustfmt, clippy
       # `RUSTFLAGS` is part of this action's cache key (it hashes every env var
       # whose name starts with CARGO/CC/CFLAGS/CXX/CMAKE/RUST). Setting it at
@@ -56,21 +48,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # NOT the MSRV pin, unlike the `rust` job. cargo-deny is a tool we run
-      # against the tree, not something we ship, so its build toolchain says
-      # nothing about what we support. It also cannot use the pin: cargo-deny
-      # 0.19.8 declares rust-version 1.88.0, and `cargo install` under 1.85.0
-      # refuses outright —
-      #   error: cannot install package `cargo-deny`, it requires rustc 1.88.0
-      #   or newer, while the currently active rustc version is 1.85.0
-      # No `components`: this job never runs fmt or clippy.
+      # cargo-deny is tooling, not a shipped dependency. The action and the
+      # explicit `+stable` install select its toolchain independently of the
+      # workspace pin. No components are needed here.
       - uses: dtolnay/rust-toolchain@stable
-      # `+stable` is load-bearing, not decoration. `rust-toolchain.toml` sits at
-      # the repo root and outranks `rustup default`, so a bare `cargo install`
-      # here would run under 1.85.0 and hit the error above no matter which
-      # toolchain the step above installed. An explicit `+toolchain` is the one
-      # thing that outranks the toolchain file.
-      #
       # Installed directly rather than via a third-party action: it is the same
       # binary and the same command engineers run locally in Task 7 Step 2, so
       # there is no CI-only path, and it adds no extra action to trust. Pinned

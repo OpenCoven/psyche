@@ -534,8 +534,6 @@ fn psyche_start_and_psyched_accept_the_same_flags() {
         let mut found = std::collections::BTreeSet::new();
         for token in help.split_whitespace() {
             let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
-            // Nested rather than a `let` chain: those stabilised after this
-            // workspace's 1.85 MSRV.
             if let Some(name) = token.strip_prefix("--") {
                 let plausible = !name.is_empty()
                     && name

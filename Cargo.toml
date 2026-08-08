@@ -1,7 +1,6 @@
 [workspace]
-# Resolver 3 is MSRV-aware. clap, assert_cmd, and toml all declare rust-version
-# 1.85 — exactly our pin — so under resolver 2 a routine `cargo update` would
-# select a release requiring a newer compiler and break the build.
+# Resolver 3 is MSRV-aware, so a routine `cargo update` respects the workspace
+# compiler floor instead of selecting a release that requires a newer compiler.
 resolver = "3"
 # Members are added by the task that creates each crate. Cargo loads every
 # declared member's manifest on ANY command — `--no-deps` and `--manifest-path`
@@ -20,12 +19,10 @@ members = [
 
 [workspace.package]
 version = "0.0.0"
-# Edition 2024 stabilised in Rust 1.85 — the version pinned above. Adopting it
-# now costs nothing; deferring means migrating four crates of real code later,
-# and the 2024 `if let` temporary-scope change alters when guards drop across
-# awaits, which is a behavioural migration best done at 50 lines.
+# Edition 2024 predates this workspace compiler floor. Rust 1.88 is required by
+# the patched `time` release used by the audited dependency graph.
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/OpenCoven/psyche"
 publish = false   # distributed via npm, never crates.io
@@ -44,7 +41,7 @@ async-trait = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json_canonicalizer = "0.3"
 sha2 = "0.10"
-time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+time = { version = "0.3.47", features = ["formatting", "parsing", "serde"] }
 ulid = { version = "1", features = ["serde"] }
 proptest = "1"
 serde = { version = "1", features = ["derive"] }
