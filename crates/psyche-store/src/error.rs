@@ -30,25 +30,13 @@ pub enum StoreError {
     },
     /// Creating the store's parent directory failed.
     #[error("store directory operation failed")]
-    DirectoryOperation {
-        /// Underlying filesystem error, retained without rendering its payload.
-        #[source]
-        source: std::io::Error,
-    },
+    DirectoryOperation,
     /// Preparing the database file failed.
     #[error("store file operation failed")]
-    FileOperation {
-        /// Underlying filesystem error, retained without rendering its payload.
-        #[source]
-        source: std::io::Error,
-    },
+    FileOperation,
     /// Opening, configuring, or querying SQLite failed.
     #[error("store database operation failed")]
-    DatabaseOperation {
-        /// Underlying SQLite error, retained without rendering its payload.
-        #[source]
-        source: rusqlite::Error,
-    },
+    DatabaseOperation,
 }
 
 impl fmt::Debug for StoreError {
@@ -58,37 +46,62 @@ impl fmt::Debug for StoreError {
 }
 
 impl StoreError {
-    pub(crate) fn directory_operation(source: std::io::Error) -> Self {
-        Self::DirectoryOperation { source }
+    pub(crate) fn directory_operation(_source: std::io::Error) -> Self {
+        Self::DirectoryOperation
     }
 
-    pub(crate) fn file_operation(source: std::io::Error) -> Self {
-        Self::FileOperation { source }
+    pub(crate) fn file_operation(_source: std::io::Error) -> Self {
+        Self::FileOperation
     }
 }
 
 impl From<rusqlite::Error> for StoreError {
-    fn from(source: rusqlite::Error) -> Self {
-        Self::DatabaseOperation { source }
+    fn from(_source: rusqlite::Error) -> Self {
+        Self::DatabaseOperation
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use super::StoreError;
 
     #[test]
-    fn debug_redacts_source_payloads() {
+    fn display_debug_and_full_source_chain_redact_payloads() {
         let marker = "sensitive-path-or-sql";
         let errors = [
-            StoreError::directory_operation(std::io::Error::other(marker)),
-            StoreError::file_operation(std::io::Error::other(marker)),
-            StoreError::from(rusqlite::Error::InvalidParameterName(marker.to_owned())),
+            (
+                StoreError::directory_operation(std::io::Error::other(marker)),
+                "store directory operation failed",
+            ),
+            (
+                StoreError::file_operation(std::io::Error::other(marker)),
+                "store file operation failed",
+            ),
+            (
+                StoreError::from(rusqlite::Error::InvalidParameterName(marker.to_owned())),
+                "store database operation failed",
+            ),
         ];
 
-        for error in errors {
-            assert!(!error.to_string().contains(marker));
-            assert!(!format!("{error:?}").contains(marker));
+        for (error, expected_display) in errors {
+            assert_eq!(error.to_string(), expected_display);
+            assert_eq!(
+                format!("{error:?}"),
+                format!("StoreError({expected_display})")
+            );
+
+            let mut current: &dyn Error = &error;
+            loop {
+                assert!(!current.to_string().contains(marker));
+                assert!(!format!("{current:?}").contains(marker));
+                let Some(source) = current.source() else {
+                    break;
+                };
+                current = source;
+            }
+            assert!(error.source().is_none());
         }
     }
 }
