@@ -18,6 +18,7 @@ validated_struct! {
         pub familiar_snapshot_id: RecordId,
         pub project_id: String,
         pub requested_outcome: String,
+        #[serde(with = "super::strict_json_object")]
         pub constraints: Map<String, Value>,
         pub required_evidence: Vec<String>,
         pub surface_event_id: Option<RecordId>,

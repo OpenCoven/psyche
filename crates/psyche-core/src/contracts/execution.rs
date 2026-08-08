@@ -261,9 +261,13 @@ struct ExecutionWire {
     adoption_state: AdoptionState,
     event_cursor: Option<String>,
     cancellation_state: CancellationState,
+    #[serde(deserialize_with = "super::strict_json_optional_value::deserialize")]
     termination_request: Option<Value>,
+    #[serde(deserialize_with = "super::strict_json_optional_value::deserialize")]
     termination_reason_code: Option<Value>,
+    #[serde(deserialize_with = "super::strict_json_optional_value::deserialize")]
     cancellation_acknowledgement: Option<Value>,
+    #[serde(deserialize_with = "super::strict_json_optional_value::deserialize")]
     cancellation_unresolved: Option<Value>,
     terminal_state: Option<String>,
 }

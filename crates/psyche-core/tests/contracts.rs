@@ -1188,6 +1188,23 @@ fn duplicate_key_errors_do_not_expose_attacker_controlled_text() {
 }
 
 #[test]
+fn typed_deserialization_rejects_duplicate_keys_in_embedded_json_values() {
+    let intent = replace_fixture_once(
+        "intent-local.json",
+        r#""constraints": {}"#,
+        r#""constraints": {"scope": "public", "scope": "public"}"#,
+    );
+    assert!(serde_json::from_slice::<Intent>(&intent).is_err());
+
+    let binding =
+        serde_json::to_string(&valid_binding(CancellationState::AcknowledgedTerminated)).unwrap();
+    let session = r#""session_id":"session-1""#;
+    assert_eq!(binding.matches(session).count(), 1);
+    let binding = binding.replacen(session, &format!("{session},{session}"), 1);
+    assert!(serde_json::from_str::<ExecutionBinding>(&binding).is_err());
+}
+
+#[test]
 fn directly_constructed_document_rejects_oversized_canonical_bytes() {
     let CanonicalDocument::Intent(mut intent) = decode("intent-local.json") else {
         panic!("expected intent");

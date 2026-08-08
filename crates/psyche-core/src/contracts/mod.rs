@@ -50,6 +50,83 @@ macro_rules! validated_struct {
     };
 }
 
+pub(crate) mod strict_json_value {
+    use serde::Serialize as _;
+    use serde_json::Value;
+
+    pub(crate) fn serialize<S: serde::Serializer>(
+        value: &Value,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.serialize(serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Value, D::Error> {
+        serde::de::DeserializeSeed::deserialize(super::StrictValueSeed { depth: 0 }, deserializer)
+    }
+}
+
+pub(crate) mod strict_json_object {
+    use serde::Serialize as _;
+    use serde_json::{Map, Value};
+
+    pub(crate) fn serialize<S: serde::Serializer>(
+        value: &Map<String, Value>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.serialize(serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Map<String, Value>, D::Error> {
+        match super::strict_json_value::deserialize(deserializer)? {
+            Value::Object(value) => Ok(value),
+            _ => Err(serde::de::Error::custom("expected a JSON object")),
+        }
+    }
+}
+
+pub(crate) mod strict_json_optional_value {
+    use std::fmt;
+
+    use serde::de::Visitor;
+    use serde_json::Value;
+
+    pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Value>, D::Error> {
+        deserializer.deserialize_option(OptionalValueVisitor)
+    }
+
+    struct OptionalValueVisitor;
+
+    impl<'de> Visitor<'de> for OptionalValueVisitor {
+        type Value = Option<Value>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an optional JSON value")
+        }
+
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D: serde::Deserializer<'de>>(
+            self,
+            deserializer: D,
+        ) -> Result<Self::Value, D::Error> {
+            super::strict_json_value::deserialize(deserializer).map(Some)
+        }
+    }
+}
+
 pub mod error;
 pub mod execution;
 pub mod foundation;

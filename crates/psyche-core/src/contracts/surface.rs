@@ -17,11 +17,14 @@ validated_struct! {
         pub surface_event_id: RecordId,
         pub adapter_id: String,
         pub account_id: String,
+        #[serde(with = "super::strict_json_value")]
         pub actor: Value,
+        #[serde(with = "super::strict_json_value")]
         pub locator: Value,
         pub adapter_event_digest: Sha256Digest,
         #[serde(with = "time::serde::rfc3339")]
         pub received_at: time::OffsetDateTime,
+        #[serde(with = "super::strict_json_value")]
         pub content: Value,
     }
 }
@@ -66,7 +69,9 @@ validated_struct! {
         pub project_id: String,
         pub action_class: String,
         pub account_id: String,
+        #[serde(with = "super::strict_json_value")]
         pub locator: Value,
+        #[serde(with = "super::strict_json_value")]
         pub effect: Value,
         pub effect_digest: Sha256Digest,
         #[serde(with = "time::serde::rfc3339")]
@@ -181,6 +186,7 @@ validated_struct! {
         pub chat_id: String,
         pub topic: DeliveryTopic,
         pub relationship: DeliveryRelationship,
+        #[serde(with = "super::strict_json_value")]
         pub effect: Value,
         pub effect_digest: Sha256Digest,
         pub surface_decision: DeliverySurfaceDecision,
