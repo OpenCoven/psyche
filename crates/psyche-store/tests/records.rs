@@ -505,70 +505,484 @@ fn direct_insert_rejects_acknowledged_state_without_termination_correlation() {
 
 #[test]
 fn direct_insert_rejects_mismatched_cancellation_evidence() {
-    let baseline = fixture_acknowledged_execution_binding();
-    let mut cases = Vec::new();
+    fn mutation(
+        name: &'static str,
+        baseline: &ExecutionBinding,
+        mutate: impl FnOnce(&mut ExecutionBinding),
+    ) -> (&'static str, ExecutionBinding) {
+        baseline.validate().unwrap();
+        let before = serde_json::to_value(baseline).unwrap();
+        let mut binding = baseline.clone();
+        mutate(&mut binding);
+        let after = serde_json::to_value(&binding).unwrap();
+        let changed_fields = before
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|field| before.get(*field) != after.get(*field))
+            .count();
+        assert_eq!(changed_fields, 1, "{name} must mutate exactly one field");
+        (name, binding)
+    }
 
-    let mut changed = baseline.clone();
-    changed
+    fn assert_no_writes(store: &Store, attempt_id: &RecordId, name: &str) {
+        assert!(
+            store
+                .execution_binding_revisions(attempt_id)
+                .unwrap()
+                .is_empty(),
+            "{name} wrote an execution-binding revision"
+        );
+        assert_eq!(
+            store.count_records(SchemaKind::ExecutionBinding).unwrap(),
+            0,
+            "{name} wrote an execution-binding record"
+        );
+        assert_eq!(
+            store.total_record_count().unwrap(),
+            0,
+            "{name} wrote a canonical record"
+        );
+        assert_eq!(
+            store.count_transitions().unwrap(),
+            0,
+            "{name} wrote a transition"
+        );
+    }
+
+    let not_requested = fixture_execution_binding();
+    let acknowledged_terminated = fixture_acknowledged_execution_binding();
+    let mut acknowledged_already_terminal = fixture_acknowledged_execution_binding();
+    acknowledged_already_terminal.cancellation_state =
+        CancellationState::AcknowledgedAlreadyTerminal;
+    acknowledged_already_terminal
         .cancellation_acknowledgement
         .as_mut()
         .unwrap()
-        .execution_request_digest = fixture_other_digest();
-    cases.push(changed);
+        .kind = CancellationAcknowledgementKind::AlreadyAuthoritativelyTerminal;
+    let termination_unknown = fixture_unresolved_execution_binding();
 
-    let mut changed = baseline.clone();
-    changed
-        .cancellation_acknowledgement
-        .as_mut()
-        .unwrap()
-        .execution_request_id = fixture_other_request_id();
-    cases.push(changed);
+    for baseline in [
+        &not_requested,
+        &acknowledged_terminated,
+        &acknowledged_already_terminal,
+        &termination_unknown,
+    ] {
+        baseline.validate().unwrap();
+    }
 
-    let mut changed = baseline.clone();
-    changed
-        .cancellation_acknowledgement
-        .as_mut()
-        .unwrap()
-        .termination_request_id = fixture_other_request_id();
-    cases.push(changed);
+    let cases = vec![
+        mutation(
+            "acknowledged terminated without evidence",
+            &acknowledged_terminated,
+            |binding| binding.cancellation_acknowledgement = None,
+        ),
+        mutation(
+            "acknowledged already terminal without evidence",
+            &acknowledged_already_terminal,
+            |binding| binding.cancellation_acknowledgement = None,
+        ),
+        mutation(
+            "termination unknown without evidence",
+            &termination_unknown,
+            |binding| binding.cancellation_unresolved = None,
+        ),
+        mutation(
+            "acknowledged terminated with wrong kind",
+            &acknowledged_terminated,
+            |binding| {
+                binding.cancellation_acknowledgement.as_mut().unwrap().kind =
+                    CancellationAcknowledgementKind::AlreadyAuthoritativelyTerminal;
+            },
+        ),
+        mutation(
+            "acknowledged already terminal with wrong kind",
+            &acknowledged_already_terminal,
+            |binding| {
+                binding.cancellation_acknowledgement.as_mut().unwrap().kind =
+                    CancellationAcknowledgementKind::Terminated;
+            },
+        ),
+        mutation(
+            "acknowledged terminated with unresolved evidence",
+            &acknowledged_terminated,
+            |binding| binding.cancellation_unresolved = Some(unresolved(binding)),
+        ),
+        mutation(
+            "acknowledged already terminal with unresolved evidence",
+            &acknowledged_already_terminal,
+            |binding| binding.cancellation_unresolved = Some(unresolved(binding)),
+        ),
+        mutation(
+            "termination unknown with acknowledgement evidence",
+            &termination_unknown,
+            |binding| {
+                binding.cancellation_acknowledgement = Some(acknowledgement(binding));
+            },
+        ),
+        mutation(
+            "acknowledgement with wrong session",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .session_id = "session-b".to_owned();
+            },
+        ),
+        mutation(
+            "acknowledgement with empty session",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .session_id = String::new();
+            },
+        ),
+        mutation(
+            "acknowledgement with oversized session",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .session_id = "s".repeat(256);
+            },
+        ),
+        mutation(
+            "empty acknowledgement id",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .acknowledgement_id = String::new();
+            },
+        ),
+        mutation(
+            "oversized acknowledgement id",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .acknowledgement_id = "a".repeat(256);
+            },
+        ),
+        mutation(
+            "acknowledgement with wrong termination request id",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .termination_request_id = fixture_other_request_id();
+            },
+        ),
+        mutation(
+            "acknowledgement with wrong execution request id",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .execution_request_id = fixture_other_request_id();
+            },
+        ),
+        mutation(
+            "acknowledgement with wrong execution digest",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .execution_request_digest = fixture_other_digest();
+            },
+        ),
+        mutation(
+            "termination request id reused as execution request id",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .termination_request
+                    .as_mut()
+                    .unwrap()
+                    .termination_request_id = binding.request_id.clone();
+            },
+        ),
+        mutation(
+            "missing termination correlation",
+            &acknowledged_terminated,
+            |binding| binding.termination_request = None,
+        ),
+        mutation(
+            "mismatched termination correlation",
+            &acknowledged_terminated,
+            |binding| {
+                binding
+                    .termination_request
+                    .as_mut()
+                    .unwrap()
+                    .termination_request_id = fixture_other_request_id();
+            },
+        ),
+        mutation(
+            "empty termination window",
+            &acknowledged_terminated,
+            |binding| {
+                let created_at = binding.termination_request.as_ref().unwrap().created_at;
+                binding.termination_request.as_mut().unwrap().valid_until = created_at;
+            },
+        ),
+        mutation(
+            "inverted termination window",
+            &acknowledged_terminated,
+            |binding| {
+                let created_at = binding.termination_request.as_ref().unwrap().created_at;
+                binding.termination_request.as_mut().unwrap().valid_until =
+                    created_at - time::Duration::nanoseconds(1);
+            },
+        ),
+        mutation(
+            "termination before execution request",
+            &acknowledged_terminated,
+            |binding| {
+                binding.termination_request.as_mut().unwrap().created_at =
+                    binding.request_created_at - time::Duration::nanoseconds(1);
+            },
+        ),
+        mutation(
+            "absent termination reason",
+            &acknowledged_terminated,
+            |binding| binding.termination_reason_code = None,
+        ),
+        mutation("unexpected termination reason", &not_requested, |binding| {
+            binding.termination_reason_code = Some("operator_request".to_owned());
+        }),
+        mutation(
+            "empty termination reason",
+            &acknowledged_terminated,
+            |binding| binding.termination_reason_code = Some(String::new()),
+        ),
+        mutation(
+            "oversized termination reason",
+            &acknowledged_terminated,
+            |binding| binding.termination_reason_code = Some("a".repeat(129)),
+        ),
+        mutation(
+            "invalid termination reason",
+            &acknowledged_terminated,
+            |binding| binding.termination_reason_code = Some("OperatorRequest".to_owned()),
+        ),
+        mutation(
+            "acknowledgement before termination start",
+            &acknowledged_terminated,
+            |binding| {
+                let before_start = binding.termination_request.as_ref().unwrap().created_at
+                    - time::Duration::nanoseconds(1);
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .acknowledged_at = before_start;
+            },
+        ),
+        mutation(
+            "acknowledgement after termination deadline",
+            &acknowledged_terminated,
+            |binding| {
+                let after_deadline = binding.termination_request.as_ref().unwrap().valid_until
+                    + time::Duration::nanoseconds(1);
+                binding
+                    .cancellation_acknowledgement
+                    .as_mut()
+                    .unwrap()
+                    .acknowledged_at = after_deadline;
+            },
+        ),
+        mutation(
+            "unresolved evidence with wrong session",
+            &termination_unknown,
+            |binding| {
+                binding.cancellation_unresolved.as_mut().unwrap().session_id =
+                    "session-b".to_owned();
+            },
+        ),
+        mutation(
+            "unresolved evidence with empty session",
+            &termination_unknown,
+            |binding| {
+                binding.cancellation_unresolved.as_mut().unwrap().session_id = String::new();
+            },
+        ),
+        mutation(
+            "unresolved evidence with oversized session",
+            &termination_unknown,
+            |binding| {
+                binding.cancellation_unresolved.as_mut().unwrap().session_id = "s".repeat(256);
+            },
+        ),
+        mutation("empty disposition id", &termination_unknown, |binding| {
+            binding
+                .cancellation_unresolved
+                .as_mut()
+                .unwrap()
+                .disposition_id = String::new();
+        }),
+        mutation(
+            "oversized disposition id",
+            &termination_unknown,
+            |binding| {
+                binding
+                    .cancellation_unresolved
+                    .as_mut()
+                    .unwrap()
+                    .disposition_id = "d".repeat(256);
+            },
+        ),
+        mutation(
+            "unresolved evidence with wrong termination request id",
+            &termination_unknown,
+            |binding| {
+                binding
+                    .cancellation_unresolved
+                    .as_mut()
+                    .unwrap()
+                    .termination_request_id = fixture_other_request_id();
+            },
+        ),
+        mutation(
+            "unresolved evidence with wrong execution request id",
+            &termination_unknown,
+            |binding| {
+                binding
+                    .cancellation_unresolved
+                    .as_mut()
+                    .unwrap()
+                    .execution_request_id = fixture_other_request_id();
+            },
+        ),
+        mutation(
+            "unresolved evidence with wrong execution digest",
+            &termination_unknown,
+            |binding| {
+                binding
+                    .cancellation_unresolved
+                    .as_mut()
+                    .unwrap()
+                    .execution_request_digest = fixture_other_digest();
+            },
+        ),
+        mutation(
+            "unresolved evidence with empty reason",
+            &termination_unknown,
+            |binding| {
+                binding
+                    .cancellation_unresolved
+                    .as_mut()
+                    .unwrap()
+                    .reason_code = String::new();
+            },
+        ),
+        mutation(
+            "unresolved evidence with oversized reason",
+            &termination_unknown,
+            |binding| {
+                binding
+                    .cancellation_unresolved
+                    .as_mut()
+                    .unwrap()
+                    .reason_code = "r".repeat(129);
+            },
+        ),
+        mutation(
+            "unresolved evidence with invalid reason",
+            &termination_unknown,
+            |binding| {
+                binding
+                    .cancellation_unresolved
+                    .as_mut()
+                    .unwrap()
+                    .reason_code = "TimedOut".to_owned();
+            },
+        ),
+        mutation(
+            "unresolved evidence before termination start",
+            &termination_unknown,
+            |binding| {
+                let before_start = binding.termination_request.as_ref().unwrap().created_at
+                    - time::Duration::nanoseconds(1);
+                binding
+                    .cancellation_unresolved
+                    .as_mut()
+                    .unwrap()
+                    .recorded_at = before_start;
+            },
+        ),
+        mutation(
+            "unresolved evidence after termination deadline",
+            &termination_unknown,
+            |binding| {
+                let after_deadline = binding.termination_request.as_ref().unwrap().valid_until
+                    + time::Duration::nanoseconds(1);
+                binding
+                    .cancellation_unresolved
+                    .as_mut()
+                    .unwrap()
+                    .recorded_at = after_deadline;
+            },
+        ),
+    ];
 
-    let mut changed = baseline.clone();
-    changed
-        .cancellation_acknowledgement
-        .as_mut()
-        .unwrap()
-        .session_id = "session-b".to_owned();
-    cases.push(changed);
-
-    let mut changed = baseline.clone();
-    changed.cancellation_acknowledgement.as_mut().unwrap().kind =
-        CancellationAcknowledgementKind::AlreadyAuthoritativelyTerminal;
-    cases.push(changed);
-
-    let mut changed = baseline.clone();
-    changed.cancellation_unresolved = Some(unresolved(&changed));
-    cases.push(changed);
-
-    let mut changed = baseline;
-    changed.cancellation_state = CancellationState::TerminationUnknown;
-    cases.push(changed);
-
-    for binding in cases {
+    for (name, binding) in cases {
         let (mut store, _dir) = test_store();
         let attempt_id = binding.attempt_id.clone();
-        assert!(matches!(
-            store.insert(&CanonicalDocument::ExecutionBinding(binding)),
+        let result = store.insert(&CanonicalDocument::ExecutionBinding(binding));
+        assert!(
+            matches!(
+                result,
+                Err(StoreError::Contract(
+                    ContractError::CancellationEvidenceMismatch
+                ))
+            ),
+            "{name} returned {result:?}"
+        );
+        assert_no_writes(&store, &attempt_id, name);
+    }
+
+    // `Sha256Digest` rejects malformed text at construction, so mutate its wire
+    // field while retaining the same store-boundary and no-write assertions.
+    let invalid_authority_digest = format!("sha256:{}", "g".repeat(64));
+    assert!(Sha256Digest::parse(&invalid_authority_digest).is_err());
+    let mut invalid_authority = serde_json::to_value(&acknowledged_terminated).unwrap();
+    invalid_authority["cancellation_acknowledgement"]["authority_evidence_digest"] =
+        json!(invalid_authority_digest);
+    let invalid_authority = serde_json::to_vec(&invalid_authority).unwrap();
+    let (mut store, _dir) = test_store();
+    let result = store.ingest(&invalid_authority);
+    assert!(
+        matches!(
+            result,
             Err(StoreError::Contract(
                 ContractError::CancellationEvidenceMismatch
             ))
-        ));
-        assert!(
-            store
-                .execution_binding_revisions(&attempt_id)
-                .unwrap()
-                .is_empty()
-        );
-    }
+        ),
+        "invalid authority digest returned {result:?}"
+    );
+    assert_no_writes(
+        &store,
+        &acknowledged_terminated.attempt_id,
+        "invalid authority digest",
+    );
 }
 
 #[test]
