@@ -965,9 +965,6 @@ fn cancellation_binding_decode_maps_nested_wire_failures_to_evidence_mismatch() 
         ("acknowledgement timestamp", |value: &mut Value| {
             value["cancellation_acknowledgement"]["acknowledged_at"] = json!("tomorrow");
         }),
-        ("acknowledgement kind", |value: &mut Value| {
-            value["cancellation_acknowledgement"]["kind"] = json!("future_kind");
-        }),
         ("termination request id", |value: &mut Value| {
             value["termination_request"]["termination_request_id"] = json!("not-a-request");
         }),
@@ -998,6 +995,16 @@ fn cancellation_binding_decode_maps_nested_wire_failures_to_evidence_mismatch() 
             "{label}"
         );
     }
+
+    let mut unknown_kind = binding_value(CancellationState::AcknowledgedTerminated);
+    unknown_kind["cancellation_acknowledgement"]["kind"] = json!("future_kind");
+    assert!(matches!(
+        decode_document(&serde_json::to_vec(&unknown_kind).unwrap()),
+        Err(ContractError::UnknownEnumValue {
+            schema: SchemaKind::ExecutionBinding,
+            field: "cancellation_acknowledgement.kind",
+        })
+    ));
 
     let mut unknown = binding_value(CancellationState::TerminationRequested);
     unknown["cancellation_state"] = json!("cancelled");

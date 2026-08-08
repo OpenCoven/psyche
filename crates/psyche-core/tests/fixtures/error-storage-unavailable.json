@@ -1,0 +1,13 @@
+{
+  "schema_version": "psyche.error.v1",
+  "error": {
+    "code": "storage_unavailable",
+    "message": "Storage is temporarily unavailable.",
+    "retryable": true,
+    "correlation_id": "corr-storage-1",
+    "details": {
+      "component": "sqlite",
+      "operation": "write"
+    }
+  }
+}

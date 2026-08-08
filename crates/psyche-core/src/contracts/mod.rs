@@ -6,12 +6,15 @@
 //! Task 2 stops at these primitives: no `records`, no `CanonicalDocument`, no
 //! store validation, and no `QuarantineId` — those are store-owned and land
 //! in later tasks (`QuarantineId` explicitly in Task 7).
+use std::collections::HashSet;
 use std::fmt;
 use std::str::FromStr;
 
 use serde::Serialize;
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
+use crate::digest::Sha256Digest;
 use crate::id::RecordId;
 
 macro_rules! validated_struct {
@@ -82,8 +85,13 @@ pub enum ContractError {
     /// The kind is known but this build does not accept the declared major.
     /// The rejected string is intentionally not retained: attacker-controlled
     /// schema text must not propagate into error payloads or logs.
-    #[error("schema version declares an unsupported major")]
-    UnsupportedMajor,
+    #[error("schema version declares unsupported major {found}; supported major is {supported}")]
+    UnsupportedMajor {
+        /// Parsed unsupported major. Malformed major syntax is reported as zero.
+        found: u16,
+        /// Major accepted by this build.
+        supported: u16,
+    },
     /// A record identifier did not carry the exact prefix its requested
     /// `RecordKind` requires. The required prefix is [`RecordKind::prefix`],
     /// not stored redundantly on this error.
@@ -348,6 +356,9 @@ impl SchemaKind {
 /// presently at major 1, and a kind reaching major 2 is a deliberate,
 /// reviewed change to this file rather than a silent range extension.
 const SUPPORTED_MAJOR: u16 = 1;
+const MAX_JSON_DEPTH: usize = 64;
+const MAX_REJECTED_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_RETAINED_SCHEMA_VERSION_BYTES: usize = 128;
 
 /// A validated `psyche.<kind>.v<major>` contract schema version.
 ///
@@ -388,10 +399,13 @@ impl SchemaVersion {
 
         let kind = SchemaKind::from_name(kind_segment).ok_or_else(unknown)?;
 
-        let unsupported_major = || ContractError::UnsupportedMajor;
+        let unsupported_major = |found| ContractError::UnsupportedMajor {
+            found,
+            supported: SUPPORTED_MAJOR,
+        };
         let digits = major_segment
             .strip_prefix('v')
-            .ok_or_else(unsupported_major)?;
+            .ok_or_else(|| unsupported_major(0))?;
         // Reject a leading zero on a multi-digit major ("v01"): it parses to
         // the same integer as "v1" but is not the canonical string, and the
         // registry only accepts the canonical form.
@@ -399,11 +413,11 @@ impl SchemaVersion {
             || (digits.len() > 1 && digits.starts_with('0'))
             || !digits.bytes().all(|b| b.is_ascii_digit())
         {
-            return Err(unsupported_major());
+            return Err(unsupported_major(0));
         }
-        let major: u16 = digits.parse().map_err(|_| unsupported_major())?;
+        let major: u16 = digits.parse().map_err(|_| unsupported_major(0))?;
         if major != SUPPORTED_MAJOR {
-            return Err(unsupported_major());
+            return Err(unsupported_major(major));
         }
         Ok(SchemaVersion { kind, major })
     }
@@ -443,6 +457,78 @@ pub trait VersionedRecord: Serialize {
     fn schema_version(&self) -> SchemaVersion;
     /// The record's durable identifier.
     fn record_id(&self) -> &RecordId;
+}
+
+/// Payload-light classification attached to bytes retained for quarantine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectionReason {
+    /// The raw input exceeded [`MAX_DOCUMENT_BYTES`].
+    TooLarge,
+    /// The schema kind is not in this build's registry.
+    UnknownSchema,
+    /// The schema kind is known but its major is unsupported.
+    UnsupportedMajor {
+        /// Parsed unsupported major.
+        found: u16,
+        /// Major accepted by this build.
+        supported: u16,
+    },
+    /// A typed enum field used an unknown spelling.
+    UnknownEnumValue {
+        /// Schema containing the enum.
+        schema: SchemaKind,
+        /// Static field path.
+        field: &'static str,
+    },
+    /// JSON or typed document shape was invalid.
+    InvalidShape {
+        /// Schema associated with the failure.
+        schema: SchemaKind,
+        /// Static field or validation category.
+        field: &'static str,
+    },
+}
+
+/// Bounded raw input and metadata suitable for a later quarantine store.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RejectedDocument {
+    /// Safely bounded schema text, when a strict JSON parse can extract it.
+    pub schema_version: Option<String>,
+    /// SHA-256 over the complete raw input, including bytes not retained.
+    pub payload_digest: Sha256Digest,
+    /// At most 64 KiB from the beginning of the raw input.
+    pub bounded_payload: Vec<u8>,
+    /// Payload-light rejection classification.
+    pub reason: RejectionReason,
+}
+
+impl RejectedDocument {
+    /// Builds quarantine input without requiring valid UTF-8 or valid JSON.
+    pub fn from_bytes(bytes: &[u8], reason: RejectionReason) -> Self {
+        let schema_version = if bytes.len() <= MAX_DOCUMENT_BYTES {
+            strict_json(bytes)
+                .ok()
+                .and_then(|value| retained_schema_version(&value))
+        } else {
+            None
+        };
+        Self {
+            schema_version,
+            payload_digest: Sha256Digest::from_raw_bytes(bytes),
+            bounded_payload: bytes[..bytes.len().min(MAX_REJECTED_PAYLOAD_BYTES)].to_vec(),
+            reason,
+        }
+    }
+}
+
+impl fmt::Debug for RejectedDocument {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RejectedDocument")
+            .field("bounded_payload_bytes", &self.bounded_payload.len())
+            .field("payload_digest", &self.payload_digest)
+            .field("reason", &self.reason)
+            .finish()
+    }
 }
 
 /// Every canonical document accepted by this build.
@@ -561,15 +647,12 @@ pub fn decode_document(bytes: &[u8]) -> Result<CanonicalDocument, ContractError>
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(ContractError::DocumentTooLarge);
     }
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| invalid(SchemaKind::Error, "json"))?;
+    let value = strict_json(bytes)?;
     crate::digest::validate_json_domain(&value)?;
-    let schema_text = value
-        .as_object()
-        .and_then(|v| v.get("schema_version"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid(SchemaKind::Error, "schema_version"))?;
-    let schema = SchemaVersion::parse(schema_text)?;
+    let probe: VersionProbe = serde_json::from_value(value.clone())
+        .map_err(|_| invalid(SchemaKind::Error, "schema_version"))?;
+    let schema = SchemaVersion::parse(&probe.schema_version)?;
+    inspect_typed_enums(&value, schema.kind)?;
     let document = match schema.kind {
         SchemaKind::IdentitySnapshot => {
             decode(value, CanonicalDocument::IdentitySnapshot, schema.kind)?
@@ -590,12 +673,344 @@ pub fn decode_document(bytes: &[u8]) -> Result<CanonicalDocument, ContractError>
         SchemaKind::Addon => decode(value, CanonicalDocument::Addon, schema.kind)?,
         SchemaKind::SurfaceEffect => decode(value, CanonicalDocument::SurfaceEffect, schema.kind)?,
         SchemaKind::Delivery => decode(value, CanonicalDocument::Delivery, schema.kind)?,
-        SchemaKind::Error => {
-            return ErrorEnvelope::decode(value).map(CanonicalDocument::Error);
-        }
+        SchemaKind::Error => CanonicalDocument::Error(ErrorEnvelope::decode(value)?),
     };
     document.validate()?;
     Ok(document)
+}
+
+#[derive(serde::Deserialize)]
+struct VersionProbe {
+    schema_version: String,
+}
+
+fn strict_json(bytes: &[u8]) -> Result<Value, ContractError> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let value = StrictValueSeed { depth: 0 }
+        .deserialize(&mut deserializer)
+        .map_err(|_| invalid(SchemaKind::Error, "json"))?;
+    deserializer
+        .end()
+        .map_err(|_| invalid(SchemaKind::Error, "json"))?;
+    Ok(value)
+}
+
+#[derive(Clone, Copy)]
+struct StrictValueSeed {
+    depth: usize,
+}
+
+impl<'de> DeserializeSeed<'de> for StrictValueSeed {
+    type Value = Value;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        if self.depth > MAX_JSON_DEPTH {
+            return Err(serde::de::Error::custom("JSON nesting limit exceeded"));
+        }
+        deserializer.deserialize_any(StrictValueVisitor { depth: self.depth })
+    }
+}
+
+struct StrictValueVisitor {
+    depth: usize,
+}
+
+impl<'de> Visitor<'de> for StrictValueVisitor {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .ok_or_else(|| serde::de::Error::custom("non-finite JSON number"))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(Value::String(value.to_owned()))
+    }
+
+    fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+        Ok(Value::String(value))
+    }
+
+    fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        StrictValueSeed { depth: self.depth }.deserialize(deserializer)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
+        let mut values = Vec::with_capacity(sequence.size_hint().unwrap_or(0));
+        while let Some(value) = sequence.next_element_seed(StrictValueSeed {
+            depth: self.depth + 1,
+        })? {
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut object: A) -> Result<Self::Value, A::Error> {
+        let mut keys = HashSet::with_capacity(object.size_hint().unwrap_or(0));
+        let mut values = serde_json::Map::with_capacity(object.size_hint().unwrap_or(0));
+        while let Some(key) = object.next_key::<String>()? {
+            if !keys.insert(key.clone()) {
+                return Err(serde::de::Error::custom("duplicate JSON object key"));
+            }
+            let value = object.next_value_seed(StrictValueSeed {
+                depth: self.depth + 1,
+            })?;
+            values.insert(key, value);
+        }
+        Ok(Value::Object(values))
+    }
+}
+
+fn retained_schema_version(value: &Value) -> Option<String> {
+    let schema = value.as_object()?.get("schema_version")?.as_str()?;
+    if schema.len() <= MAX_RETAINED_SCHEMA_VERSION_BYTES
+        && schema.starts_with("psyche.")
+        && schema.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_')
+        })
+    {
+        Some(schema.to_owned())
+    } else {
+        None
+    }
+}
+
+fn inspect_typed_enums(value: &Value, schema: SchemaKind) -> Result<(), ContractError> {
+    match schema {
+        SchemaKind::Graph => inspect_enum(
+            value,
+            &["state"],
+            &[
+                "draft",
+                "admitted",
+                "rejected",
+                "running",
+                "waiting_approval",
+                "waiting_evidence",
+                "cancelling",
+                "completed",
+                "failed",
+                "cancelled",
+                "recovery_required",
+            ],
+            schema,
+            "state",
+        ),
+        SchemaKind::GraphNode => inspect_enum(
+            value,
+            &["state"],
+            &[
+                "proposed",
+                "admitted",
+                "rejected",
+                "blocked",
+                "ready",
+                "skipped",
+                "reserved",
+                "dispatching",
+                "adopted",
+                "adoption_unknown",
+                "proven_not_adopted",
+                "failed",
+                "running",
+                "waiting_approval",
+                "candidate",
+                "awaiting_verification",
+                "verified",
+                "escalation_required",
+                "cancelling",
+                "cancelled",
+                "termination_unknown",
+                "recovery_required",
+            ],
+            schema,
+            "state",
+        ),
+        SchemaKind::ExecutionBinding => {
+            inspect_enum(
+                value,
+                &["adoption_state"],
+                &[
+                    "not_submitted",
+                    "submitting",
+                    "adopted",
+                    "proven_not_adopted",
+                    "adoption_unknown",
+                    "fenced",
+                ],
+                schema,
+                "adoption_state",
+            )?;
+            inspect_enum(
+                value,
+                &["cancellation_state"],
+                &[
+                    "not_requested",
+                    "termination_requested",
+                    "acknowledged_terminated",
+                    "acknowledged_already_terminal",
+                    "termination_unknown",
+                ],
+                schema,
+                "cancellation_state",
+            )?;
+            inspect_enum(
+                value,
+                &["cancellation_acknowledgement", "kind"],
+                &["terminated", "already_authoritatively_terminal"],
+                schema,
+                "cancellation_acknowledgement.kind",
+            )
+        }
+        SchemaKind::Delivery => {
+            inspect_enum(
+                value,
+                &["relationship"],
+                &[
+                    "reply_same_dm",
+                    "reply_same_group",
+                    "reply_same_topic",
+                    "cross_chat",
+                    "broadcast",
+                ],
+                schema,
+                "relationship",
+            )?;
+            inspect_enum(
+                value,
+                &["state"],
+                &[
+                    "ready",
+                    "sending",
+                    "sent",
+                    "retryable",
+                    "delivery_unknown",
+                    "failed",
+                    "abandoned",
+                    "dead_letter",
+                    "resolving_unknown",
+                    "compensated",
+                ],
+                schema,
+                "state",
+            )?;
+            inspect_enum(
+                value,
+                &["surface_decision", "state"],
+                &["reserved", "consumed"],
+                schema,
+                "surface_decision.state",
+            )
+        }
+        SchemaKind::Error => inspect_enum(
+            value,
+            &["error", "code"],
+            &[
+                "config_invalid",
+                "secret_unavailable",
+                "telegram_unauthorized",
+                "telegram_bot_identity_mismatch",
+                "telegram_conflict",
+                "telegram_rate_limited",
+                "telegram_unavailable",
+                "webhook_auth_failed",
+                "storage_unavailable",
+                "event_schema_unsupported",
+                "principal_mapping_invalid",
+                "graph_invalid",
+                "delegation_widened",
+                "budget_unenforceable",
+                "evidence_incomplete",
+                "verdict_invalid",
+                "route_not_found",
+                "route_ambiguous",
+                "sender_unauthorized",
+                "identity_invalid",
+                "identity_changed",
+                "coven_unavailable",
+                "coven_version_unsupported",
+                "coven_capability_missing",
+                "coven_policy_denied",
+                "coven_execution_binding_invalid",
+                "coven_binding_mismatch",
+                "coven_artifact_rejected",
+                "coven_intent_conflict",
+                "coven_adoption_unknown",
+                "coven_cancellation_unknown",
+                "coven_session_failed",
+                "delivery_unknown",
+                "preview_finalize_blocked",
+                "media_rejected",
+                "callback_invalid",
+            ],
+            schema,
+            "code",
+        ),
+        SchemaKind::IdentitySnapshot
+        | SchemaKind::Intent
+        | SchemaKind::SurfaceEvent
+        | SchemaKind::Delegation
+        | SchemaKind::Budget
+        | SchemaKind::Approval
+        | SchemaKind::Evidence
+        | SchemaKind::Verdict
+        | SchemaKind::Recovery
+        | SchemaKind::Addon
+        | SchemaKind::SurfaceEffect => Ok(()),
+    }
+}
+
+fn inspect_enum(
+    value: &Value,
+    path: &[&str],
+    accepted: &[&str],
+    schema: SchemaKind,
+    field: &'static str,
+) -> Result<(), ContractError> {
+    let mut current = value;
+    for segment in path {
+        let Some(next) = current.as_object().and_then(|object| object.get(*segment)) else {
+            return Ok(());
+        };
+        current = next;
+    }
+    if let Some(spelling) = current.as_str() {
+        if !accepted.contains(&spelling) {
+            return Err(ContractError::UnknownEnumValue { schema, field });
+        }
+    }
+    Ok(())
 }
 
 fn decode<T: serde::de::DeserializeOwned>(
@@ -764,7 +1179,7 @@ mod tests {
         let attacker = format!("psyche.intent.v{}{}", marker, "9".repeat(900_000));
         let err = SchemaVersion::parse(&attacker).unwrap_err();
         assert!(
-            matches!(err, ContractError::UnsupportedMajor),
+            matches!(err, ContractError::UnsupportedMajor { .. }),
             "expected UnsupportedMajor, got {err:?}"
         );
         let debug = format!("{err:?}");
@@ -838,7 +1253,7 @@ mod tests {
     #[test]
     fn schema_version_rejects_a_known_kind_with_the_wrong_major() {
         let err = SchemaVersion::parse("psyche.intent.v2").unwrap_err();
-        assert!(matches!(err, ContractError::UnsupportedMajor));
+        assert!(matches!(err, ContractError::UnsupportedMajor { .. }));
     }
 
     #[test]
@@ -889,7 +1304,7 @@ mod tests {
                 );
             } else {
                 assert!(
-                    matches!(err, ContractError::UnsupportedMajor),
+                    matches!(err, ContractError::UnsupportedMajor { .. }),
                     "expected UnsupportedMajor for {near:?}, got {err:?}"
                 );
             }

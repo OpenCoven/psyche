@@ -779,6 +779,16 @@ impl Sha256Digest {
         Ok(Sha256Digest(value.to_string()))
     }
 
+    pub(crate) fn from_raw_bytes(bytes: &[u8]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        Self(format!(
+            "{}{}",
+            Self::PREFIX,
+            to_lower_hex(hasher.finalize().as_slice())
+        ))
+    }
+
     /// The full digest string, e.g. `"sha256:<64 lowercase hex chars>"`.
     pub fn as_str(&self) -> &str {
         &self.0
