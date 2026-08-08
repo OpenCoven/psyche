@@ -25,8 +25,8 @@ use psyche_store::{IngestOutcome, Store, StoreError, Transition};
 use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{Map, json};
-use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::{OffsetDateTime, UtcOffset};
 
 fn test_store() -> (Store, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -1014,6 +1014,160 @@ fn assert_next_revision_conflict(mutate: impl FnOnce(&mut ExecutionBinding)) {
             .execution_binding_revisions(&initial.attempt_id)
             .unwrap(),
         vec![initial]
+    );
+}
+
+fn with_different_offset(timestamp: OffsetDateTime) -> OffsetDateTime {
+    timestamp.to_offset(UtcOffset::from_hms(1, 0, 0).unwrap())
+}
+
+fn assert_offset_only_next_revision_conflict(
+    persisted: Vec<ExecutionBinding>,
+    candidate: ExecutionBinding,
+    original_timestamp: OffsetDateTime,
+    changed_timestamp: OffsetDateTime,
+) {
+    assert_eq!(original_timestamp, changed_timestamp);
+    assert_ne!(original_timestamp.offset(), changed_timestamp.offset());
+    assert_ne!(
+        original_timestamp.format(&Rfc3339).unwrap(),
+        changed_timestamp.format(&Rfc3339).unwrap()
+    );
+    candidate.validate().unwrap();
+    let previous = persisted.last().unwrap();
+    assert_eq!(
+        candidate.previous_revision_digest.as_ref(),
+        Some(&digest(previous).unwrap())
+    );
+
+    let (mut store, _dir) = test_store();
+    for binding in &persisted {
+        store
+            .insert(&CanonicalDocument::ExecutionBinding(binding.clone()))
+            .unwrap();
+    }
+    assert!(matches!(
+        store.insert(&CanonicalDocument::ExecutionBinding(candidate)),
+        Err(StoreError::ExecutionBindingRevisionConflict { .. })
+    ));
+    assert_eq!(
+        store
+            .execution_binding_revisions(&previous.attempt_id)
+            .unwrap(),
+        persisted
+    );
+}
+
+#[test]
+fn execution_binding_revision_freezes_request_timestamp_offsets() {
+    let initial = fixture_execution_binding_revision_1();
+    let mut changed_created_at = next_revision(&initial);
+    let original_created_at = changed_created_at.request_created_at;
+    changed_created_at.request_created_at = with_different_offset(original_created_at);
+    assert_offset_only_next_revision_conflict(
+        vec![initial.clone()],
+        changed_created_at,
+        original_created_at,
+        with_different_offset(original_created_at),
+    );
+
+    let mut changed_valid_until = next_revision(&initial);
+    let original_valid_until = changed_valid_until.request_valid_until;
+    changed_valid_until.request_valid_until = with_different_offset(original_valid_until);
+    assert_offset_only_next_revision_conflict(
+        vec![initial],
+        changed_valid_until,
+        original_valid_until,
+        with_different_offset(original_valid_until),
+    );
+}
+
+#[test]
+fn execution_binding_revision_freezes_termination_timestamp_offsets() {
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    let mut changed_created_at = next_revision(&requested);
+    let original_created_at = changed_created_at
+        .termination_request
+        .as_ref()
+        .unwrap()
+        .created_at;
+    changed_created_at
+        .termination_request
+        .as_mut()
+        .unwrap()
+        .created_at = with_different_offset(original_created_at);
+    assert_offset_only_next_revision_conflict(
+        vec![initial.clone(), requested.clone()],
+        changed_created_at,
+        original_created_at,
+        with_different_offset(original_created_at),
+    );
+
+    let mut changed_valid_until = next_revision(&requested);
+    let original_valid_until = changed_valid_until
+        .termination_request
+        .as_ref()
+        .unwrap()
+        .valid_until;
+    changed_valid_until
+        .termination_request
+        .as_mut()
+        .unwrap()
+        .valid_until = with_different_offset(original_valid_until);
+    assert_offset_only_next_revision_conflict(
+        vec![initial, requested],
+        changed_valid_until,
+        original_valid_until,
+        with_different_offset(original_valid_until),
+    );
+}
+
+#[test]
+fn execution_binding_revision_freezes_acknowledgement_timestamp_offset() {
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    let acknowledged = fixture_acknowledged_revision(&requested);
+    let mut candidate = next_revision(&acknowledged);
+    let original = candidate
+        .cancellation_acknowledgement
+        .as_ref()
+        .unwrap()
+        .acknowledged_at;
+    candidate
+        .cancellation_acknowledgement
+        .as_mut()
+        .unwrap()
+        .acknowledged_at = with_different_offset(original);
+    assert_offset_only_next_revision_conflict(
+        vec![initial, requested, acknowledged],
+        candidate,
+        original,
+        with_different_offset(original),
+    );
+}
+
+#[test]
+fn execution_binding_revision_freezes_unresolved_timestamp_offset() {
+    let initial = fixture_execution_binding_revision_1();
+    let requested = fixture_termination_requested_revision(&initial);
+    let unresolved = fixture_unresolved_revision(&requested);
+    let mut candidate = next_revision(&unresolved);
+    let original = candidate
+        .cancellation_unresolved
+        .as_ref()
+        .unwrap()
+        .recorded_at;
+    candidate
+        .cancellation_unresolved
+        .as_mut()
+        .unwrap()
+        .recorded_at = with_different_offset(original);
+    assert_offset_only_next_revision_conflict(
+        vec![initial, requested, unresolved],
+        candidate,
+        original,
+        with_different_offset(original),
     );
 }
 

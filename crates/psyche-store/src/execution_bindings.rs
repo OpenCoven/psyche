@@ -1,4 +1,7 @@
-use psyche_core::contracts::execution::CancellationState;
+use psyche_core::contracts::execution::{
+    CancellationAcknowledgementEvidence, CancellationState, CancellationUnresolvedEvidence,
+    TerminationRequestCorrelation,
+};
 use psyche_core::contracts::{CanonicalDocument, ContractError, ExecutionBinding, SchemaKind};
 use psyche_core::digest::{Sha256Digest, canonical_bytes, digest};
 use psyche_core::id::RecordId;
@@ -253,9 +256,16 @@ fn frozen_execution_fields_match(initial: &ExecutionBinding, candidate: &Executi
         && initial.project_id == candidate.project_id
         && initial.request_id == candidate.request_id
         && initial.request_digest == candidate.request_digest
-        && initial.request_created_at == candidate.request_created_at
-        && initial.request_valid_until == candidate.request_valid_until
+        && canonical_timestamps_match(initial.request_created_at, candidate.request_created_at)
+        && canonical_timestamps_match(initial.request_valid_until, candidate.request_valid_until)
         && initial.coven_contract_version == candidate.coven_contract_version
+}
+
+fn canonical_timestamps_match(
+    previous: time::OffsetDateTime,
+    candidate: time::OffsetDateTime,
+) -> bool {
+    previous == candidate && previous.offset() == candidate.offset()
 }
 
 fn session_binding_is_append_only(latest: &ExecutionBinding, candidate: &ExecutionBinding) -> bool {
@@ -273,10 +283,22 @@ fn termination_binding_is_append_only(
     match &latest.termination_request {
         None => true,
         Some(previous) => {
-            candidate.termination_request.as_ref() == Some(previous)
+            candidate
+                .termination_request
+                .as_ref()
+                .is_some_and(|candidate| termination_requests_match(previous, candidate))
                 && candidate.termination_reason_code == latest.termination_reason_code
         }
     }
+}
+
+fn termination_requests_match(
+    previous: &TerminationRequestCorrelation,
+    candidate: &TerminationRequestCorrelation,
+) -> bool {
+    previous == candidate
+        && canonical_timestamps_match(previous.created_at, candidate.created_at)
+        && canonical_timestamps_match(previous.valid_until, candidate.valid_until)
 }
 
 fn cancellation_binding_is_append_only(
@@ -299,9 +321,43 @@ fn cancellation_binding_is_append_only(
         | CancellationState::AcknowledgedAlreadyTerminal
         | CancellationState::TerminationUnknown => {
             candidate.cancellation_state == latest.cancellation_state
-                && candidate.cancellation_acknowledgement == latest.cancellation_acknowledgement
-                && candidate.cancellation_unresolved == latest.cancellation_unresolved
+                && cancellation_acknowledgements_match(
+                    latest.cancellation_acknowledgement.as_ref(),
+                    candidate.cancellation_acknowledgement.as_ref(),
+                )
+                && cancellation_unresolved_evidence_matches(
+                    latest.cancellation_unresolved.as_ref(),
+                    candidate.cancellation_unresolved.as_ref(),
+                )
         }
+    }
+}
+
+fn cancellation_acknowledgements_match(
+    previous: Option<&CancellationAcknowledgementEvidence>,
+    candidate: Option<&CancellationAcknowledgementEvidence>,
+) -> bool {
+    match (previous, candidate) {
+        (None, None) => true,
+        (Some(previous), Some(candidate)) => {
+            previous == candidate
+                && canonical_timestamps_match(previous.acknowledged_at, candidate.acknowledged_at)
+        }
+        _ => false,
+    }
+}
+
+fn cancellation_unresolved_evidence_matches(
+    previous: Option<&CancellationUnresolvedEvidence>,
+    candidate: Option<&CancellationUnresolvedEvidence>,
+) -> bool {
+    match (previous, candidate) {
+        (None, None) => true,
+        (Some(previous), Some(candidate)) => {
+            previous == candidate
+                && canonical_timestamps_match(previous.recorded_at, candidate.recorded_at)
+        }
+        _ => false,
     }
 }
 
