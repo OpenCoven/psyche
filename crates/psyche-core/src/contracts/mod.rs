@@ -642,23 +642,37 @@ pub struct RejectedDocument {
     pub bounded_payload: Vec<u8>,
     /// Payload-light rejection classification.
     pub reason: RejectionReason,
+    attestation: RejectedDocumentAttestation,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RejectedDocumentAttestation {
+    original_len: usize,
+    material_digest: Sha256Digest,
 }
 
 impl RejectedDocument {
     /// Builds quarantine input without requiring valid UTF-8 or valid JSON.
     pub fn from_bytes(bytes: &[u8], reason: RejectionReason) -> Self {
-        let schema_version = if bytes.len() <= MAX_DOCUMENT_BYTES {
-            strict_json(bytes)
-                .ok()
-                .and_then(|value| retained_schema_version(&value))
-        } else {
-            None
+        let schema_version = retained_schema_version_from_bytes(bytes);
+        let payload_digest = Sha256Digest::from_raw_bytes(bytes);
+        let bounded_payload = bytes[..bytes.len().min(MAX_REJECTED_PAYLOAD_BYTES)].to_vec();
+        let attestation = RejectedDocumentAttestation {
+            original_len: bytes.len(),
+            material_digest: rejected_document_attestation(
+                bytes.len(),
+                &schema_version,
+                &payload_digest,
+                &bounded_payload,
+                &reason,
+            ),
         };
         Self {
             schema_version,
-            payload_digest: Sha256Digest::from_raw_bytes(bytes),
-            bounded_payload: bytes[..bytes.len().min(MAX_REJECTED_PAYLOAD_BYTES)].to_vec(),
+            payload_digest,
+            bounded_payload,
             reason,
+            attestation,
         }
     }
 
@@ -693,6 +707,40 @@ impl RejectedDocument {
         };
         Self::from_bytes(bytes, reason)
     }
+
+    /// Returns the complete raw-input length captured by the constructor.
+    pub fn original_payload_len(&self) -> usize {
+        self.attestation.original_len
+    }
+
+    /// Returns the SHA-256 digest of the retained payload bytes.
+    pub fn retained_payload_digest(&self) -> Sha256Digest {
+        Sha256Digest::from_raw_bytes(&self.bounded_payload)
+    }
+
+    /// Returns whether the public fields still match constructor-attested input.
+    pub fn is_authentic(&self) -> bool {
+        let expected_bounded_len = self
+            .attestation
+            .original_len
+            .min(MAX_REJECTED_PAYLOAD_BYTES);
+        if self.bounded_payload.len() != expected_bounded_len {
+            return false;
+        }
+        if self.attestation.original_len <= MAX_REJECTED_PAYLOAD_BYTES
+            && (Sha256Digest::from_raw_bytes(&self.bounded_payload) != self.payload_digest
+                || retained_schema_version_from_bytes(&self.bounded_payload) != self.schema_version)
+        {
+            return false;
+        }
+        rejected_document_attestation(
+            self.attestation.original_len,
+            &self.schema_version,
+            &self.payload_digest,
+            &self.bounded_payload,
+            &self.reason,
+        ) == self.attestation.material_digest
+    }
 }
 
 impl fmt::Debug for RejectedDocument {
@@ -703,6 +751,74 @@ impl fmt::Debug for RejectedDocument {
             .field("reason", &self.reason)
             .finish()
     }
+}
+
+fn retained_schema_version_from_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return None;
+    }
+    strict_json(bytes)
+        .ok()
+        .and_then(|value| retained_schema_version(&value))
+}
+
+fn rejected_document_attestation(
+    original_len: usize,
+    schema_version: &Option<String>,
+    payload_digest: &Sha256Digest,
+    bounded_payload: &[u8],
+    reason: &RejectionReason,
+) -> Sha256Digest {
+    let mut material = b"psyche.rejected-document.attestation.v1".to_vec();
+    append_attestation_frame(&mut material, b"original_len", &original_len.to_be_bytes());
+    match schema_version {
+        Some(schema_version) => {
+            append_attestation_frame(&mut material, b"schema_present", b"true");
+            append_attestation_frame(&mut material, b"schema_version", schema_version.as_bytes());
+        }
+        None => append_attestation_frame(&mut material, b"schema_present", b"false"),
+    }
+    append_attestation_frame(
+        &mut material,
+        b"payload_digest",
+        payload_digest.as_str().as_bytes(),
+    );
+    append_attestation_frame(&mut material, b"bounded_payload", bounded_payload);
+    append_rejection_reason_attestation(&mut material, reason);
+    Sha256Digest::from_raw_bytes(&material)
+}
+
+fn append_rejection_reason_attestation(material: &mut Vec<u8>, reason: &RejectionReason) {
+    match reason {
+        RejectionReason::TooLarge => {
+            append_attestation_frame(material, b"reason", b"too_large");
+        }
+        RejectionReason::UnknownSchema => {
+            append_attestation_frame(material, b"reason", b"unknown_schema");
+        }
+        RejectionReason::UnsupportedMajor { found, supported } => {
+            append_attestation_frame(material, b"reason", b"unsupported_major");
+            append_attestation_frame(material, b"found", &found.to_be_bytes());
+            append_attestation_frame(material, b"supported", &supported.to_be_bytes());
+        }
+        RejectionReason::UnknownEnumValue { schema, field } => {
+            append_attestation_frame(material, b"reason", b"unknown_enum_value");
+            append_attestation_frame(material, b"schema", schema.name().as_bytes());
+            append_attestation_frame(material, b"field", field.as_bytes());
+        }
+        RejectionReason::InvalidShape { schema, field } => {
+            append_attestation_frame(material, b"reason", b"invalid_shape");
+            append_attestation_frame(material, b"schema", schema.name().as_bytes());
+            append_attestation_frame(material, b"field", field.as_bytes());
+        }
+    }
+}
+
+fn append_attestation_frame(material: &mut Vec<u8>, label: &[u8], value: &[u8]) {
+    material.extend_from_slice(&label.len().to_be_bytes());
+    material.extend_from_slice(label);
+    material.extend_from_slice(&value.len().to_be_bytes());
+    material.extend_from_slice(value);
 }
 
 /// Every canonical document accepted by this build.

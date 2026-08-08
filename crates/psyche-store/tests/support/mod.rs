@@ -146,6 +146,18 @@ pub(super) fn table_exists(path: &Path, name: &str) -> bool {
         .unwrap()
 }
 
+pub(super) fn table_columns(path: &Path, name: &str) -> Vec<String> {
+    let connection = Connection::open(path).unwrap();
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({name})"))
+        .unwrap();
+    statement
+        .query_map([], |row| row.get(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
 pub(super) fn scalar_text(path: &Path, sql: &str) -> String {
     let connection = Connection::open(path).unwrap();
     connection.query_row(sql, [], |row| row.get(0)).unwrap()
@@ -206,6 +218,8 @@ CREATE TABLE quarantine_records (
   quarantine_id TEXT PRIMARY KEY,
   schema_version TEXT,
   payload_digest TEXT NOT NULL,
+  original_payload_len INTEGER NOT NULL CHECK (original_payload_len >= 0),
+  retained_payload_digest TEXT NOT NULL,
   bounded_payload BLOB NOT NULL,
   reason TEXT NOT NULL,
   discovered_at TEXT NOT NULL,
