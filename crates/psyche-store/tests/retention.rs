@@ -525,6 +525,40 @@ fn dedupe_rejects_corrupt_integrity_metadata() {
 }
 
 #[test]
+fn dedupe_rejects_corrupt_lookup_keys_before_inserting() {
+    for column in ["payload_digest", "reason"] {
+        let (mut store, _dir, path) = test_store();
+        let payload = vec![b'x'; 64 * 1024 + 17];
+        let rejected = RejectedDocument::from_bytes(&payload, RejectionReason::TooLarge);
+        let id = store.quarantine(rejected.clone()).unwrap();
+        let connection = raw_connection(&path);
+        let sql = match column {
+            "payload_digest" => {
+                "UPDATE quarantine_records SET payload_digest = \
+                 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' \
+                 WHERE quarantine_id = ?1"
+            }
+            "reason" => {
+                "UPDATE quarantine_records SET reason = 'unknown_schema' \
+                 WHERE quarantine_id = ?1"
+            }
+            _ => unreachable!(),
+        };
+        connection.execute(sql, [id.as_str()]).unwrap();
+        drop(connection);
+
+        assert_database_corruption(store.quarantine(rejected));
+        assert_eq!(
+            raw_connection(&path)
+                .query_row("SELECT COUNT(*) FROM quarantine_records", [], |row| row
+                    .get::<_, u64>(0))
+                .unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
 fn quarantine_replay_validates_persisted_integrity_metadata() {
     let (mut store, _dir, path) = test_store();
     let payload = vec![b'x'; 64 * 1024 + 1];

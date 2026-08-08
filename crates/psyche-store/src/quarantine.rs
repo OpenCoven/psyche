@@ -324,17 +324,16 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing = stored_by_digest_and_reason(
-            &transaction,
-            rejected.payload_digest.as_str(),
-            reason.as_str(),
-        )?;
+        let existing = all_records(&transaction)?
+            .into_iter()
+            .filter(|record| {
+                record.payload_digest == rejected.payload_digest && record.reason == reason
+            })
+            .collect::<Vec<_>>();
         if existing.len() > 1 {
             return Err(StoreError::DatabaseCorruption);
         }
-        if let Some(stored) = existing.into_iter().next() {
-            let record = validate_stored(stored)?;
-            validate_record_audit(&transaction, &record)?;
+        if let Some(record) = existing.into_iter().next() {
             if record.schema_version == rejected.schema_version
                 && record.payload_digest == rejected.payload_digest
                 && record.original_payload_len == original_payload_len
@@ -640,37 +639,6 @@ fn stored_by_id(
             stored_quarantine_from_row,
         )
         .optional()
-        .map_err(|_| StoreError::DatabaseCorruption)
-}
-
-fn stored_by_digest_and_reason(
-    connection: &Connection,
-    payload_digest: &str,
-    reason: &str,
-) -> Result<Vec<StoredQuarantineRecord>, StoreError> {
-    let mut statement = connection.prepare(
-        "
-        SELECT
-            quarantine_id,
-            schema_version,
-            payload_digest,
-            original_payload_len,
-            retained_payload_digest,
-            integrity_digest,
-            bounded_payload,
-            reason,
-            discovered_at,
-            resolved_at,
-            resolution_code,
-            resolution_digest
-        FROM quarantine_records
-        WHERE payload_digest = ?1 AND reason = ?2
-        ORDER BY quarantine_id
-        ",
-    )?;
-    statement
-        .query_map(params![payload_digest, reason], stored_quarantine_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|_| StoreError::DatabaseCorruption)
 }
 
