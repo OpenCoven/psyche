@@ -39,6 +39,7 @@ struct TransitionDigestInput<'a> {
 }
 
 struct StoredTransition {
+    sequence: i64,
     kind: String,
     record_id: String,
     from_state: Option<String>,
@@ -251,6 +252,7 @@ fn authenticated_history(
     let mut statement = connection.prepare(
         "
         SELECT
+            sequence,
             kind,
             record_id,
             from_state,
@@ -268,13 +270,14 @@ fn authenticated_history(
             params![records::kind_key(kind), record_id.as_str()],
             |row| {
                 Ok(StoredTransition {
-                    kind: row.get(0)?,
-                    record_id: row.get(1)?,
-                    from_state: row.get(2)?,
-                    to_state: row.get(3)?,
-                    record_version: row.get(4)?,
-                    transition_digest: row.get(5)?,
-                    created_at: row.get(6)?,
+                    sequence: row.get(0)?,
+                    kind: row.get(1)?,
+                    record_id: row.get(2)?,
+                    from_state: row.get(3)?,
+                    to_state: row.get(4)?,
+                    record_version: row.get(5)?,
+                    transition_digest: row.get(6)?,
+                    created_at: row.get(7)?,
                 })
             },
         )?
@@ -291,8 +294,10 @@ fn authenticate_stored_history(
 ) -> Result<Vec<Transition>, StoreError> {
     let mut history = Vec::with_capacity(stored.len());
     let mut expected_version = 1_u64;
+    let mut previous_sequence = None;
 
     for row in stored {
+        let sequence = u64::try_from(row.sequence).map_err(|_| StoreError::DatabaseCorruption)?;
         let record_version =
             u64::try_from(row.record_version).map_err(|_| StoreError::DatabaseCorruption)?;
         let created_at = time::OffsetDateTime::parse(&row.created_at, &Rfc3339)
@@ -311,7 +316,9 @@ fn authenticate_stored_history(
             .format(&Rfc3339)
             .map_err(|_| StoreError::DatabaseCorruption)?;
 
-        if row.kind != records::kind_key(reconstructed.kind)
+        if sequence == 0
+            || previous_sequence.is_some_and(|previous| sequence <= previous)
+            || row.kind != records::kind_key(reconstructed.kind)
             || row.record_id != reconstructed.record_id.as_str()
             || row.from_state != reconstructed.from_state
             || row.to_state != reconstructed.to_state
@@ -331,6 +338,7 @@ fn authenticate_stored_history(
         expected_version = expected_version
             .checked_add(1)
             .ok_or(StoreError::DatabaseCorruption)?;
+        previous_sequence = Some(sequence);
         history.push(reconstructed);
     }
 

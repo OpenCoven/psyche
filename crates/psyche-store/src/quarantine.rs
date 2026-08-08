@@ -290,6 +290,7 @@ impl Store {
         }
         if let Some(stored) = existing.into_iter().next() {
             let record = validate_stored(stored)?;
+            validate_record_audit(&transaction, &record)?;
             if record.schema_version == rejected.schema_version
                 && record.payload_digest == rejected.payload_digest
                 && record.bounded_payload == rejected.bounded_payload

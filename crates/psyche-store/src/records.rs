@@ -4,6 +4,7 @@ use psyche_core::contracts::{
 use psyche_core::digest::{canonical_bytes, digest};
 use psyche_core::id::RecordId;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use time::format_description::well_known::Rfc3339;
 
 use crate::{Store, StoreError, execution_bindings};
 
@@ -13,6 +14,7 @@ struct StoredCanonicalRecord {
     schema_version: String,
     digest: String,
     canonical_json: Vec<u8>,
+    created_at: String,
 }
 
 /// Result of ingesting bytes at the store boundary.
@@ -146,6 +148,9 @@ impl Store {
         let bytes = canonical_bytes(document)?;
         let record_digest = digest(document)?;
         let schema_version = document.schema_version().to_string();
+        let created_at = time::OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .map_err(|_| StoreError::Contract(ContractError::CanonicalizationFailed))?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -171,7 +176,7 @@ impl Store {
                 canonical_json,
                 created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ",
             params![
                 kind_key(kind),
@@ -179,6 +184,7 @@ impl Store {
                 schema_version,
                 record_digest.as_str(),
                 bytes,
+                created_at,
             ],
         )?;
         transaction.commit()?;
@@ -194,7 +200,7 @@ fn stored_canonical_record(
     connection
         .query_row(
             "
-            SELECT kind, record_id, schema_version, digest, canonical_json
+            SELECT kind, record_id, schema_version, digest, canonical_json, created_at
             FROM canonical_records
             WHERE kind = ?1 AND record_id = ?2
             ",
@@ -206,6 +212,7 @@ fn stored_canonical_record(
                     schema_version: row.get(2)?,
                     digest: row.get(3)?,
                     canonical_json: row.get(4)?,
+                    created_at: row.get(5)?,
                 })
             },
         )
@@ -223,6 +230,11 @@ fn validate_stored_canonical_record(
     let canonical = canonical_bytes(&document).map_err(|_| StoreError::DatabaseCorruption)?;
     let recomputed_digest = digest(&document).map_err(|_| StoreError::DatabaseCorruption)?;
     let schema_version = document.schema_version();
+    let created_at = time::OffsetDateTime::parse(&stored.created_at, &Rfc3339)
+        .map_err(|_| StoreError::DatabaseCorruption)?;
+    let canonical_created_at = created_at
+        .format(&Rfc3339)
+        .map_err(|_| StoreError::DatabaseCorruption)?;
     if canonical != stored.canonical_json
         || stored.kind != kind_key(expected_kind)
         || stored.record_id != expected_id.as_str()
@@ -230,6 +242,8 @@ fn validate_stored_canonical_record(
         || stored.schema_version != schema_version.to_string()
         || stored.digest != recomputed_digest.as_str()
         || document.persistable_record_id() != Some(expected_id)
+        || created_at.offset() != time::UtcOffset::UTC
+        || stored.created_at != canonical_created_at
     {
         return Err(StoreError::DatabaseCorruption);
     }
@@ -304,7 +318,7 @@ pub(crate) fn schema_kind_for_id(id: &RecordId) -> SchemaKind {
 pub(crate) fn validate_all(connection: &rusqlite::Connection) -> Result<(), StoreError> {
     let mut statement = connection.prepare(
         "
-        SELECT kind, record_id, schema_version, digest, canonical_json
+        SELECT kind, record_id, schema_version, digest, canonical_json, created_at
         FROM canonical_records
         ORDER BY kind, record_id
         ",
@@ -317,6 +331,7 @@ pub(crate) fn validate_all(connection: &rusqlite::Connection) -> Result<(), Stor
                 schema_version: row.get(2)?,
                 digest: row.get(3)?,
                 canonical_json: row.get(4)?,
+                created_at: row.get(5)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()

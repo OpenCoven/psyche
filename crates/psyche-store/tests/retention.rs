@@ -6,7 +6,8 @@ use std::sync::{Arc, Barrier};
 
 use psyche_core::contracts::execution::{AdoptionState, CancellationState, ExecutionBinding};
 use psyche_core::contracts::{
-    CanonicalDocument, RecordKind, RejectedDocument, RejectionReason, SchemaKind, SchemaVersion,
+    CanonicalDocument, Intent, RecordKind, RejectedDocument, RejectionReason, SchemaKind,
+    SchemaVersion,
 };
 use psyche_core::digest::{Sha256Digest, canonical_bytes};
 use psyche_core::id::{RecordId, RequestId};
@@ -15,7 +16,7 @@ use psyche_store::{
     QuarantineResolutionCode, ResolveQuarantineOutcome, Store, StoreError, Transition,
 };
 use rusqlite::{Connection, params};
-use serde_json::json;
+use serde_json::{Map, json};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime, UtcOffset};
 
@@ -73,6 +74,22 @@ fn fixture_binding() -> ExecutionBinding {
         cancellation_acknowledgement: None,
         cancellation_unresolved: None,
         terminal_state: None,
+    }
+}
+
+fn fixture_intent() -> Intent {
+    Intent {
+        schema_version: SchemaVersion::parse("psyche.intent.v1").unwrap(),
+        intent_id: record_id(RecordKind::Intent, "01J00000000000000000000003"),
+        principal_id: "principal-a".to_owned(),
+        familiar_snapshot_id: fixture_snapshot_id(),
+        project_id: "project-a".to_owned(),
+        requested_outcome: "retain integrity".to_owned(),
+        constraints: Map::new(),
+        required_evidence: vec!["review".to_owned()],
+        surface_event_id: None,
+        created_at: at("2026-08-05T12:00:00Z"),
+        digest: fixture_digest('c'),
     }
 }
 
@@ -226,6 +243,67 @@ fn quarantine_resolution_is_durable_and_idempotent() {
     );
     assert_eq!(persisted.resolution_digest, Some(resolution_digest));
     assert_eq!(reopened.audit_events().unwrap().len(), 1);
+}
+
+#[test]
+fn exact_quarantine_replay_rejects_missing_corrupt_or_duplicate_resolution_audit() {
+    for tamper in ["delete", "corrupt", "duplicate"] {
+        let (mut store, _dir, path) = test_store();
+        let rejected = RejectedDocument::from_bytes(
+            br#"{"schema_version":"psyche.future.v1"}"#,
+            RejectionReason::UnknownSchema,
+        );
+        let id = store.quarantine(rejected.clone()).unwrap();
+        let discovered_at = store.quarantine_record(&id).unwrap().unwrap().discovered_at;
+        store
+            .resolve_quarantine(
+                &id,
+                &resolution(
+                    QuarantineResolutionCode::ConfirmedInvalid,
+                    discovered_at + Duration::seconds(1),
+                ),
+            )
+            .unwrap();
+
+        let connection = raw_connection(&path);
+        match tamper {
+            "delete" => {
+                connection
+                    .execute(
+                        "DELETE FROM audit_events WHERE correlation_id = ?1",
+                        [id.as_str()],
+                    )
+                    .unwrap();
+            }
+            "corrupt" => {
+                connection
+                    .execute(
+                        "UPDATE audit_events SET public_details_json = X'7B' WHERE correlation_id = ?1",
+                        [id.as_str()],
+                    )
+                    .unwrap();
+            }
+            "duplicate" => {
+                connection
+                    .execute(
+                        "
+                        INSERT INTO audit_events (
+                            event_code, correlation_id, public_details_json, created_at
+                        )
+                        SELECT event_code, correlation_id, public_details_json, created_at
+                        FROM audit_events
+                        WHERE correlation_id = ?1
+                        ",
+                        [id.as_str()],
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        drop(connection);
+
+        assert_database_corruption(store.quarantine(rejected));
+    }
 }
 
 #[test]
@@ -450,6 +528,35 @@ fn malformed_persisted_quarantine_id_fails_prune_before_deleting_valid_rows() {
 
     assert_database_corruption(store.prune(discovered_at + Duration::days(1)));
     assert!(store.quarantine_record(&id).unwrap().is_some());
+}
+
+#[test]
+fn malformed_canonical_created_at_fails_prune_before_deleting_eligible_quarantine() {
+    for tampered in [
+        "not-a-timestamp",
+        "2026-08-05T13:00:00+01:00",
+        "2026-08-05T12:00:00+00:00",
+    ] {
+        let (mut store, _dir, path) = test_store();
+        store
+            .insert(&CanonicalDocument::Intent(fixture_intent()))
+            .unwrap();
+        let id = quarantined_fixture(&mut store);
+        let discovered_at = store.quarantine_record(&id).unwrap().unwrap().discovered_at;
+        let resolved_at = discovered_at + Duration::seconds(1);
+        store
+            .resolve_quarantine(
+                &id,
+                &resolution(QuarantineResolutionCode::ConfirmedInvalid, resolved_at),
+            )
+            .unwrap();
+        raw_connection(&path)
+            .execute("UPDATE canonical_records SET created_at = ?1", [tampered])
+            .unwrap();
+
+        assert_database_corruption(store.prune(resolved_at + Duration::nanoseconds(1)));
+        assert!(store.quarantine_record(&id).unwrap().is_some());
+    }
 }
 
 #[test]

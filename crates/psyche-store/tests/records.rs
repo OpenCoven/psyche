@@ -2281,6 +2281,44 @@ fn transition_append_rejects_noncanonical_stored_timestamp_without_writing() {
     assert_eq!(store.count_transitions().unwrap(), 1);
 }
 
+#[test]
+fn transition_history_rejects_nonpositive_or_nonmonotonic_sequence() {
+    for tamper in ["nonpositive", "nonmonotonic"] {
+        let (mut store, _dir, path) = test_store_with_path();
+        store
+            .append_transition(&transition(1, None, "admitted"))
+            .unwrap();
+        if tamper == "nonmonotonic" {
+            store
+                .append_transition(&transition(2, Some("admitted"), "running"))
+                .unwrap();
+        }
+        let connection = raw_connection(&path);
+        match tamper {
+            "nonpositive" => {
+                connection
+                    .execute(
+                        "UPDATE transitions SET sequence = 0 WHERE record_version = 1",
+                        [],
+                    )
+                    .unwrap();
+            }
+            "nonmonotonic" => {
+                connection
+                    .execute(
+                        "UPDATE transitions SET sequence = 3 WHERE record_version = 1",
+                        [],
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        drop(connection);
+
+        assert_database_corruption(store.transitions(&fixture_attempt_id()));
+    }
+}
+
 fn insert_intent_for_tamper() -> (
     Store,
     tempfile::TempDir,
