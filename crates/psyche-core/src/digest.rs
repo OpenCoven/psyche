@@ -4,13 +4,14 @@
 //! defining property is exercised directly in this module's tests: two JSON
 //! values that differ only in object key order canonicalize to identical
 //! bytes, and so hash identically.
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write as _;
 
 use serde::Serialize;
 use serde::ser::{
-    self, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
-    SerializeTupleStruct, SerializeTupleVariant, Serializer,
+    self, Impossible, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
+    SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -27,14 +28,13 @@ const MIN_SAFE_INTEGER_I128: i128 = -MAX_SAFE_INTEGER_I128;
 ///
 /// Two values that serialize to the same JSON data but differ in object key
 /// order produce identical bytes — canonicalisation, not merely
-/// serialization, is the point of this function. Every integer emitted by
-/// `Serialize`, including map keys, is validated before the original value is
-/// passed to the canonicalizer.
+/// serialization, is the point of this function. The original value is
+/// serialized exactly once into a validated representation, including map
+/// keys, before that representation is passed to the canonicalizer.
 pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, ContractError> {
-    value
-        .serialize(DomainValidator)
-        .map_err(validation_failed)?;
-    serde_json_canonicalizer::to_vec(value).map_err(canonicalization_failed)
+    let collected = value.serialize(ValueCollector).map_err(validation_failed)?;
+    let canonicalizer_input = collected.into_json().map_err(validation_failed)?;
+    serde_json_canonicalizer::to_vec(&canonicalizer_input).map_err(canonicalization_failed)
 }
 
 fn canonicalization_failed(_error: impl fmt::Display) -> ContractError {
@@ -109,10 +109,42 @@ impl ser::Error for ValidationError {
 }
 
 #[derive(Clone, Copy)]
-struct DomainValidator;
+struct ValueCollector;
 
-fn validate_nested<T: ?Sized + Serialize>(value: &T) -> Result<(), ValidationError> {
-    value.serialize(DomainValidator)
+enum CollectedValue {
+    Null,
+    Bool(bool),
+    Signed(i64),
+    Unsigned(u64),
+    Float(f64),
+    String(String),
+    Array(Vec<Self>),
+    Object(BTreeMap<String, Self>),
+}
+
+impl CollectedValue {
+    fn into_json(self) -> Result<Value, ValidationError> {
+        match self {
+            Self::Null => Ok(Value::Null),
+            Self::Bool(value) => Ok(Value::Bool(value)),
+            Self::Signed(value) => Ok(Value::Number(value.into())),
+            Self::Unsigned(value) => Ok(Value::Number(value.into())),
+            Self::Float(value) => serde_json::Number::from_f64(value)
+                .map(Value::Number)
+                .ok_or(ValidationError::NonInteroperableNumber),
+            Self::String(value) => Ok(Value::String(value)),
+            Self::Array(values) => values
+                .into_iter()
+                .map(Self::into_json)
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            Self::Object(values) => values
+                .into_iter()
+                .map(|(key, value)| Ok((key, value.into_json()?)))
+                .collect::<Result<serde_json::Map<_, _>, _>>()
+                .map(Value::Object),
+        }
+    }
 }
 
 fn validate_signed(value: i128) -> Result<(), ValidationError> {
@@ -135,104 +167,111 @@ fn validate_serialized_float(value: f64) -> Result<(), ValidationError> {
     validate_float(value).map_err(|_| ValidationError::NonInteroperableNumber)
 }
 
-impl Serializer for DomainValidator {
-    type Ok = ();
+impl Serializer for ValueCollector {
+    type Ok = CollectedValue;
     type Error = ValidationError;
-    type SerializeSeq = Self;
-    type SerializeTuple = Self;
-    type SerializeTupleStruct = Self;
-    type SerializeTupleVariant = Self;
-    type SerializeMap = Self;
-    type SerializeStruct = Self;
-    type SerializeStructVariant = Self;
+    type SerializeSeq = SequenceCollector;
+    type SerializeTuple = SequenceCollector;
+    type SerializeTupleStruct = SequenceCollector;
+    type SerializeTupleVariant = SequenceCollector;
+    type SerializeMap = ObjectCollector;
+    type SerializeStruct = ObjectCollector;
+    type SerializeStructVariant = ObjectCollector;
 
-    fn serialize_bool(self, _value: bool) -> Result<Self::Ok, Self::Error> {
-        Ok(())
+    fn serialize_bool(self, value: bool) -> Result<Self::Ok, Self::Error> {
+        Ok(CollectedValue::Bool(value))
     }
 
     fn serialize_i8(self, value: i8) -> Result<Self::Ok, Self::Error> {
-        validate_signed(i128::from(value))
+        collect_signed(i128::from(value))
     }
 
     fn serialize_i16(self, value: i16) -> Result<Self::Ok, Self::Error> {
-        validate_signed(i128::from(value))
+        collect_signed(i128::from(value))
     }
 
     fn serialize_i32(self, value: i32) -> Result<Self::Ok, Self::Error> {
-        validate_signed(i128::from(value))
+        collect_signed(i128::from(value))
     }
 
     fn serialize_i64(self, value: i64) -> Result<Self::Ok, Self::Error> {
-        validate_signed(i128::from(value))
+        collect_signed(i128::from(value))
     }
 
     fn serialize_i128(self, value: i128) -> Result<Self::Ok, Self::Error> {
-        validate_signed(value)
+        collect_signed(value)
     }
 
     fn serialize_u8(self, value: u8) -> Result<Self::Ok, Self::Error> {
-        validate_unsigned(u128::from(value))
+        collect_unsigned(u128::from(value))
     }
 
     fn serialize_u16(self, value: u16) -> Result<Self::Ok, Self::Error> {
-        validate_unsigned(u128::from(value))
+        collect_unsigned(u128::from(value))
     }
 
     fn serialize_u32(self, value: u32) -> Result<Self::Ok, Self::Error> {
-        validate_unsigned(u128::from(value))
+        collect_unsigned(u128::from(value))
     }
 
     fn serialize_u64(self, value: u64) -> Result<Self::Ok, Self::Error> {
-        validate_unsigned(u128::from(value))
+        collect_unsigned(u128::from(value))
     }
 
     fn serialize_u128(self, value: u128) -> Result<Self::Ok, Self::Error> {
-        validate_unsigned(value)
+        collect_unsigned(value)
     }
 
     fn serialize_f32(self, value: f32) -> Result<Self::Ok, Self::Error> {
-        validate_serialized_float(f64::from(value))
+        collect_float(f64::from(value))
     }
 
     fn serialize_f64(self, value: f64) -> Result<Self::Ok, Self::Error> {
-        validate_serialized_float(value)
+        collect_float(value)
     }
 
-    fn serialize_char(self, _value: char) -> Result<Self::Ok, Self::Error> {
-        Ok(())
+    fn serialize_char(self, value: char) -> Result<Self::Ok, Self::Error> {
+        Ok(CollectedValue::String(value.to_string()))
     }
 
-    fn serialize_str(self, _value: &str) -> Result<Self::Ok, Self::Error> {
-        Ok(())
+    fn serialize_str(self, value: &str) -> Result<Self::Ok, Self::Error> {
+        Ok(CollectedValue::String(value.to_owned()))
     }
 
-    fn serialize_bytes(self, _value: &[u8]) -> Result<Self::Ok, Self::Error> {
-        Ok(())
+    fn serialize_bytes(self, value: &[u8]) -> Result<Self::Ok, Self::Error> {
+        Ok(CollectedValue::Array(
+            value
+                .iter()
+                .copied()
+                .map(u64::from)
+                .map(CollectedValue::Unsigned)
+                .collect(),
+        ))
     }
 
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
+        Ok(CollectedValue::Null)
     }
 
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Self::Ok, Self::Error> {
-        validate_nested(value)
+        value.serialize(self)
     }
 
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
+        Ok(CollectedValue::Null)
     }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
-        Ok(())
+        Ok(CollectedValue::Null)
     }
 
     fn serialize_unit_variant(
         self,
         _name: &'static str,
         _variant_index: u32,
-        _variant: &'static str,
+        variant: &'static str,
     ) -> Result<Self::Ok, Self::Error> {
-        Ok(())
+        Ok(CollectedValue::String(variant.to_owned()))
     }
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
@@ -240,7 +279,382 @@ impl Serializer for DomainValidator {
         _name: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        validate_nested(value)
+        value.serialize(self)
+    }
+
+    fn serialize_newtype_variant<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        value: &T,
+    ) -> Result<Self::Ok, Self::Error> {
+        singleton_object(variant, value.serialize(self)?)
+    }
+
+    fn serialize_seq(self, length: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        Ok(SequenceCollector::new(length.unwrap_or(0), None))
+    }
+
+    fn serialize_tuple(self, length: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        Ok(SequenceCollector::new(length, None))
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        length: usize,
+    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+        Ok(SequenceCollector::new(length, None))
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        length: usize,
+    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+        Ok(SequenceCollector::new(length, Some(variant)))
+    }
+
+    fn serialize_map(self, _length: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        Ok(ObjectCollector::new(None))
+    }
+
+    fn serialize_struct(
+        self,
+        _name: &'static str,
+        _length: usize,
+    ) -> Result<Self::SerializeStruct, Self::Error> {
+        Ok(ObjectCollector::new(None))
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        _length: usize,
+    ) -> Result<Self::SerializeStructVariant, Self::Error> {
+        Ok(ObjectCollector::new(Some(variant)))
+    }
+
+    fn is_human_readable(&self) -> bool {
+        true
+    }
+}
+
+fn collect_signed(value: i128) -> Result<CollectedValue, ValidationError> {
+    validate_signed(value)?;
+    let value = i64::try_from(value).map_err(|_| ValidationError::NonInteroperableNumber)?;
+    Ok(CollectedValue::Signed(value))
+}
+
+fn collect_unsigned(value: u128) -> Result<CollectedValue, ValidationError> {
+    validate_unsigned(value)?;
+    let value = u64::try_from(value).map_err(|_| ValidationError::NonInteroperableNumber)?;
+    Ok(CollectedValue::Unsigned(value))
+}
+
+fn collect_float(value: f64) -> Result<CollectedValue, ValidationError> {
+    validate_serialized_float(value)?;
+    Ok(CollectedValue::Float(value))
+}
+
+fn singleton_object(key: &str, value: CollectedValue) -> Result<CollectedValue, ValidationError> {
+    Ok(CollectedValue::Object(BTreeMap::from([(
+        key.to_owned(),
+        value,
+    )])))
+}
+
+struct SequenceCollector {
+    values: Vec<CollectedValue>,
+    variant: Option<&'static str>,
+}
+
+impl SequenceCollector {
+    fn new(_length: usize, variant: Option<&'static str>) -> Self {
+        Self {
+            values: Vec::new(),
+            variant,
+        }
+    }
+
+    fn push<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), ValidationError> {
+        self.values.push(value.serialize(ValueCollector)?);
+        Ok(())
+    }
+
+    fn finish(self) -> Result<CollectedValue, ValidationError> {
+        let value = CollectedValue::Array(self.values);
+        match self.variant {
+            Some(variant) => singleton_object(variant, value),
+            None => Ok(value),
+        }
+    }
+}
+
+impl SerializeSeq for SequenceCollector {
+    type Ok = CollectedValue;
+    type Error = ValidationError;
+
+    fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        self.push(value)
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.finish()
+    }
+}
+
+impl SerializeTuple for SequenceCollector {
+    type Ok = CollectedValue;
+    type Error = ValidationError;
+
+    fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        self.push(value)
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.finish()
+    }
+}
+
+impl SerializeTupleStruct for SequenceCollector {
+    type Ok = CollectedValue;
+    type Error = ValidationError;
+
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        self.push(value)
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.finish()
+    }
+}
+
+impl SerializeTupleVariant for SequenceCollector {
+    type Ok = CollectedValue;
+    type Error = ValidationError;
+
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        self.push(value)
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.finish()
+    }
+}
+
+struct ObjectCollector {
+    values: BTreeMap<String, CollectedValue>,
+    next_key: Option<String>,
+    variant: Option<&'static str>,
+}
+
+impl ObjectCollector {
+    fn new(variant: Option<&'static str>) -> Self {
+        Self {
+            values: BTreeMap::new(),
+            next_key: None,
+            variant,
+        }
+    }
+
+    fn insert(&mut self, key: String, value: CollectedValue) -> Result<(), ValidationError> {
+        if self.values.insert(key, value).is_some() {
+            Err(ValidationError::SerializationFailed)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn finish(self) -> Result<CollectedValue, ValidationError> {
+        if self.next_key.is_some() {
+            return Err(ValidationError::SerializationFailed);
+        }
+        let value = CollectedValue::Object(self.values);
+        match self.variant {
+            Some(variant) => singleton_object(variant, value),
+            None => Ok(value),
+        }
+    }
+}
+
+impl SerializeMap for ObjectCollector {
+    type Ok = CollectedValue;
+    type Error = ValidationError;
+
+    fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), Self::Error> {
+        if self.next_key.is_some() {
+            return Err(ValidationError::SerializationFailed);
+        }
+        self.next_key = Some(key.serialize(MapKeyCollector)?);
+        Ok(())
+    }
+
+    fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        let key = self
+            .next_key
+            .take()
+            .ok_or(ValidationError::SerializationFailed)?;
+        self.insert(key, value.serialize(ValueCollector)?)
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.finish()
+    }
+}
+
+impl SerializeStruct for ObjectCollector {
+    type Ok = CollectedValue;
+    type Error = ValidationError;
+
+    fn serialize_field<T: ?Sized + Serialize>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), Self::Error> {
+        self.insert(key.to_owned(), value.serialize(ValueCollector)?)
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.finish()
+    }
+}
+
+impl SerializeStructVariant for ObjectCollector {
+    type Ok = CollectedValue;
+    type Error = ValidationError;
+
+    fn serialize_field<T: ?Sized + Serialize>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), Self::Error> {
+        self.insert(key.to_owned(), value.serialize(ValueCollector)?)
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.finish()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MapKeyCollector;
+
+impl Serializer for MapKeyCollector {
+    type Ok = String;
+    type Error = ValidationError;
+    type SerializeSeq = Impossible<String, ValidationError>;
+    type SerializeTuple = Impossible<String, ValidationError>;
+    type SerializeTupleStruct = Impossible<String, ValidationError>;
+    type SerializeTupleVariant = Impossible<String, ValidationError>;
+    type SerializeMap = Impossible<String, ValidationError>;
+    type SerializeStruct = Impossible<String, ValidationError>;
+    type SerializeStructVariant = Impossible<String, ValidationError>;
+
+    fn serialize_bool(self, value: bool) -> Result<Self::Ok, Self::Error> {
+        Ok(value.to_string())
+    }
+
+    fn serialize_i8(self, value: i8) -> Result<Self::Ok, Self::Error> {
+        collect_signed_key(i128::from(value))
+    }
+
+    fn serialize_i16(self, value: i16) -> Result<Self::Ok, Self::Error> {
+        collect_signed_key(i128::from(value))
+    }
+
+    fn serialize_i32(self, value: i32) -> Result<Self::Ok, Self::Error> {
+        collect_signed_key(i128::from(value))
+    }
+
+    fn serialize_i64(self, value: i64) -> Result<Self::Ok, Self::Error> {
+        collect_signed_key(i128::from(value))
+    }
+
+    fn serialize_i128(self, value: i128) -> Result<Self::Ok, Self::Error> {
+        collect_signed_key(value)
+    }
+
+    fn serialize_u8(self, value: u8) -> Result<Self::Ok, Self::Error> {
+        collect_unsigned_key(u128::from(value))
+    }
+
+    fn serialize_u16(self, value: u16) -> Result<Self::Ok, Self::Error> {
+        collect_unsigned_key(u128::from(value))
+    }
+
+    fn serialize_u32(self, value: u32) -> Result<Self::Ok, Self::Error> {
+        collect_unsigned_key(u128::from(value))
+    }
+
+    fn serialize_u64(self, value: u64) -> Result<Self::Ok, Self::Error> {
+        collect_unsigned_key(u128::from(value))
+    }
+
+    fn serialize_u128(self, value: u128) -> Result<Self::Ok, Self::Error> {
+        collect_unsigned_key(value)
+    }
+
+    fn serialize_f32(self, value: f32) -> Result<Self::Ok, Self::Error> {
+        validate_serialized_float(f64::from(value))?;
+        serde_json_canonicalizer::to_string(&value)
+            .map_err(|_| ValidationError::SerializationFailed)
+    }
+
+    fn serialize_f64(self, value: f64) -> Result<Self::Ok, Self::Error> {
+        validate_serialized_float(value)?;
+        serde_json_canonicalizer::to_string(&value)
+            .map_err(|_| ValidationError::SerializationFailed)
+    }
+
+    fn serialize_char(self, value: char) -> Result<Self::Ok, Self::Error> {
+        Ok(value.to_string())
+    }
+
+    fn serialize_str(self, value: &str) -> Result<Self::Ok, Self::Error> {
+        Ok(value.to_owned())
+    }
+
+    fn serialize_bytes(self, _value: &[u8]) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Self::Ok, Self::Error> {
+        value.serialize(self)
+    }
+
+    fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
+        Err(ValidationError::SerializationFailed)
+    }
+
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+    ) -> Result<Self::Ok, Self::Error> {
+        Ok(variant.to_owned())
+    }
+
+    fn serialize_newtype_struct<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        value: &T,
+    ) -> Result<Self::Ok, Self::Error> {
+        value.serialize(self)
     }
 
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
@@ -248,17 +662,17 @@ impl Serializer for DomainValidator {
         _name: &'static str,
         _variant_index: u32,
         _variant: &'static str,
-        value: &T,
+        _value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        validate_nested(value)
+        Err(ValidationError::SerializationFailed)
     }
 
     fn serialize_seq(self, _length: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        Ok(self)
+        Err(ValidationError::SerializationFailed)
     }
 
     fn serialize_tuple(self, _length: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        Ok(self)
+        Err(ValidationError::SerializationFailed)
     }
 
     fn serialize_tuple_struct(
@@ -266,7 +680,7 @@ impl Serializer for DomainValidator {
         _name: &'static str,
         _length: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        Ok(self)
+        Err(ValidationError::SerializationFailed)
     }
 
     fn serialize_tuple_variant(
@@ -276,11 +690,11 @@ impl Serializer for DomainValidator {
         _variant: &'static str,
         _length: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        Ok(self)
+        Err(ValidationError::SerializationFailed)
     }
 
     fn serialize_map(self, _length: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        Ok(self)
+        Err(ValidationError::SerializationFailed)
     }
 
     fn serialize_struct(
@@ -288,7 +702,7 @@ impl Serializer for DomainValidator {
         _name: &'static str,
         _length: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        Ok(self)
+        Err(ValidationError::SerializationFailed)
     }
 
     fn serialize_struct_variant(
@@ -298,7 +712,7 @@ impl Serializer for DomainValidator {
         _variant: &'static str,
         _length: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        Ok(self)
+        Err(ValidationError::SerializationFailed)
     }
 
     fn is_human_readable(&self) -> bool {
@@ -306,107 +720,14 @@ impl Serializer for DomainValidator {
     }
 }
 
-impl SerializeSeq for DomainValidator {
-    type Ok = ();
-    type Error = ValidationError;
-
-    fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
-        validate_nested(value)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
-    }
+fn collect_signed_key(value: i128) -> Result<String, ValidationError> {
+    validate_signed(value)?;
+    Ok(value.to_string())
 }
 
-impl SerializeTuple for DomainValidator {
-    type Ok = ();
-    type Error = ValidationError;
-
-    fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
-        validate_nested(value)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
-    }
-}
-
-impl SerializeTupleStruct for DomainValidator {
-    type Ok = ();
-    type Error = ValidationError;
-
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
-        validate_nested(value)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
-    }
-}
-
-impl SerializeTupleVariant for DomainValidator {
-    type Ok = ();
-    type Error = ValidationError;
-
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
-        validate_nested(value)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
-    }
-}
-
-impl SerializeMap for DomainValidator {
-    type Ok = ();
-    type Error = ValidationError;
-
-    fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), Self::Error> {
-        validate_nested(key)
-    }
-
-    fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
-        validate_nested(value)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
-    }
-}
-
-impl SerializeStruct for DomainValidator {
-    type Ok = ();
-    type Error = ValidationError;
-
-    fn serialize_field<T: ?Sized + Serialize>(
-        &mut self,
-        _key: &'static str,
-        value: &T,
-    ) -> Result<(), Self::Error> {
-        validate_nested(value)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
-    }
-}
-
-impl SerializeStructVariant for DomainValidator {
-    type Ok = ();
-    type Error = ValidationError;
-
-    fn serialize_field<T: ?Sized + Serialize>(
-        &mut self,
-        _key: &'static str,
-        value: &T,
-    ) -> Result<(), Self::Error> {
-        validate_nested(value)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
-    }
+fn collect_unsigned_key(value: u128) -> Result<String, ValidationError> {
+    validate_unsigned(value)?;
+    Ok(value.to_string())
 }
 
 /// The [`Sha256Digest`] of `value`'s canonical JSON bytes.
@@ -637,6 +958,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canonicalization_validates_float_map_keys_before_string_conversion() {
+        struct FloatKeyMap(f64);
+
+        impl Serialize for FloatKeyMap {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                let mut map = serializer.serialize_map(Some(1))?;
+                serde::ser::SerializeMap::serialize_entry(&mut map, &self.0, "value")?;
+                serde::ser::SerializeMap::end(map)
+            }
+        }
+
+        assert_eq!(
+            canonical_bytes(&FloatKeyMap(1.5)).unwrap(),
+            br#"{"1.5":"value"}"#
+        );
+        assert_eq!(
+            canonical_bytes(&FloatKeyMap(9_007_199_254_740_992.0)),
+            Err(ContractError::NonInteroperableNumber)
+        );
+        assert_eq!(
+            canonical_bytes(&FloatKeyMap(f64::NAN)),
+            Err(ContractError::NonInteroperableNumber)
+        );
+    }
+
     /// Both 9007199254740992 and 9007199254740993 round through f64 to the same
     /// value (9007199254740992.0), so a map containing both would emit duplicate
     /// JSON keys — silently discarding one entry. The validator must reject
@@ -785,32 +1135,66 @@ mod tests {
         assert!(!display.contains("SERIALIZER_SENTINEL"));
         assert!(debug.len() < 256);
         assert!(display.len() < 256);
+    }
 
-        struct MaliciousSecondPass(std::cell::Cell<bool>);
+    #[test]
+    fn canonicalization_serializes_stateful_values_exactly_once() {
+        use std::cell::Cell;
 
-        impl Serialize for MaliciousSecondPass {
+        struct StatefulInteger {
+            invocations: Cell<u32>,
+            unsafe_first: bool,
+        }
+
+        impl Serialize for StatefulInteger {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: serde::Serializer,
             {
-                if self.0.replace(true) {
-                    Err(serde::ser::Error::custom(format!(
-                        "SECOND_PASS_SENTINEL_{}",
-                        "x".repeat(900_000)
-                    )))
-                } else {
-                    serializer.serialize_unit()
+                let invocation = self.invocations.get();
+                self.invocations.set(invocation + 1);
+                match (self.unsafe_first, invocation) {
+                    (true, 0) => serializer.serialize_u64(MAX_SAFE_INTEGER + 1),
+                    (false, 0) => serializer.serialize_u64(0),
+                    (_, 1) => serializer.serialize_u64(MAX_SAFE_INTEGER + 1),
+                    _ => serializer.serialize_u64(MAX_SAFE_INTEGER + 2),
                 }
             }
         }
 
-        let err = canonical_bytes(&MaliciousSecondPass(std::cell::Cell::new(false))).unwrap_err();
-        let debug = format!("{err:?}");
-        let display = format!("{err}");
-        assert!(!debug.contains("SECOND_PASS_SENTINEL"));
-        assert!(!display.contains("SECOND_PASS_SENTINEL"));
-        assert!(debug.len() < 256);
-        assert!(display.len() < 256);
+        let safe_first = StatefulInteger {
+            invocations: Cell::new(0),
+            unsafe_first: false,
+        };
+        assert_eq!(canonical_bytes(&safe_first).unwrap(), b"0");
+        assert_eq!(safe_first.invocations.get(), 1);
+
+        let unsafe_first = StatefulInteger {
+            invocations: Cell::new(0),
+            unsafe_first: true,
+        };
+        assert_eq!(
+            canonical_bytes(&unsafe_first),
+            Err(ContractError::NonInteroperableNumber)
+        );
+        assert_eq!(unsafe_first.invocations.get(), 1);
+    }
+
+    #[test]
+    fn canonicalization_does_not_trust_compound_length_hints() {
+        struct UntrustedLengthHint;
+
+        impl Serialize for UntrustedLengthHint {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                let sequence = serializer.serialize_seq(Some(usize::MAX))?;
+                serde::ser::SerializeSeq::end(sequence)
+            }
+        }
+
+        assert_eq!(canonical_bytes(&UntrustedLengthHint).unwrap(), b"[]");
     }
 
     #[test]
