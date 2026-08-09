@@ -435,33 +435,52 @@ const _: fn() = || {
 mod tests {
     use super::*;
 
-    fn test_config() -> Config {
-        psyche_config::load_str(
+    fn toml_path(path: &std::path::Path) -> String {
+        let Some(path) = path.to_str() else {
+            panic!("test data directory must be valid UTF-8");
+        };
+        toml::Value::String(path.to_owned()).to_string()
+    }
+
+    fn test_config() -> (Config, tempfile::TempDir) {
+        let owner = tempfile::tempdir().unwrap();
+        let data_dir = owner.path().join("data");
+        let data_dir = toml_path(&data_dir);
+        let config = psyche_config::load_str(&format!(
             r#"
 schema_version = "psyche.config.v1"
-data_dir = "/tmp/psyche-test"
+data_dir = {data_dir}
 
 [coven]
 socket = "/run/coven.sock"
 required_api_version = "coven.daemon.v1"
-"#,
-        )
-        .unwrap()
+"#
+        ))
+        .unwrap();
+        (config, owner)
+    }
+
+    #[test]
+    fn test_configs_use_distinct_data_directories() {
+        let (first, _first_owner) = test_config();
+        let (second, _second_owner) = test_config();
+
+        assert_ne!(first.data_dir, second.data_dir);
     }
 
     #[tokio::test]
     async fn starts_running() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         assert_eq!(rt.state(), LifecycleState::Running);
     }
 
     #[tokio::test]
     async fn the_configuration_is_readable_after_start() {
-        let rt = Runtime::start(test_config()).await.unwrap();
-        assert_eq!(
-            rt.config().data_dir,
-            std::path::Path::new("/tmp/psyche-test")
-        );
+        let (config, data_dir) = test_config();
+        let expected = data_dir.path().join("data");
+        let rt = Runtime::start(config).await.unwrap();
+        assert_eq!(rt.config().data_dir, expected);
     }
 
     // The wire spellings are what `psyche status --json` emits and what log
@@ -476,7 +495,8 @@ required_api_version = "coven.daemon.v1"
 
     #[tokio::test]
     async fn shutdown_drains_then_stops_in_order() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         rt.shutdown().await.unwrap();
         assert_eq!(rt.state(), LifecycleState::Stopped);
         assert_eq!(
@@ -504,7 +524,8 @@ required_api_version = "coven.daemon.v1"
     async fn a_later_shutdown_succeeds_without_redriving_the_drain() {
         use std::time::Duration;
 
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         for attempt in 0..2 {
             tokio::time::timeout(Duration::from_secs(5), rt.shutdown())
                 .await
@@ -519,7 +540,8 @@ required_api_version = "coven.daemon.v1"
     // the only place the election is visible.
     #[tokio::test]
     async fn only_the_first_caller_drives_the_drain() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         assert_eq!(rt.shutdown_inner().await.unwrap(), ShutdownRole::Driver);
         assert_eq!(rt.shutdown_inner().await.unwrap(), ShutdownRole::Observer);
     }
@@ -536,7 +558,8 @@ required_api_version = "coven.daemon.v1"
     async fn a_losing_caller_does_not_return_before_stopped_is_published() {
         use std::time::Duration;
 
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         // Enter `Draining` with no winner running, so nothing will publish
         // `Stopped` unless this test does.
         assert!(rt.transition_to(LifecycleState::Draining));
@@ -562,7 +585,8 @@ required_api_version = "coven.daemon.v1"
     // which in a daemon that is signalled repeatedly is an unbounded allocation.
     #[tokio::test]
     async fn the_transition_log_is_bounded_by_the_state_count() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         for _ in 0..1_000 {
             let _ = rt.shutdown().await;
         }
@@ -578,7 +602,8 @@ required_api_version = "coven.daemon.v1"
     // the part that is actually a guarantee.
     #[tokio::test]
     async fn a_subscriber_that_keeps_up_observes_every_state_in_order() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         let mut receiver = rt.subscribe();
 
         let mut seen = vec![*receiver.borrow_and_update()];
@@ -602,7 +627,8 @@ required_api_version = "coven.daemon.v1"
     // is what makes `await_stopped` safe for a caller that arrives late.
     #[tokio::test]
     async fn a_late_subscriber_sees_the_state_the_runtime_is_actually_in() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         rt.shutdown().await.unwrap();
         assert_eq!(*rt.subscribe().borrow(), LifecycleState::Stopped);
     }
@@ -650,7 +676,8 @@ required_api_version = "coven.daemon.v1"
         let executor = tokio::runtime::Builder::new_multi_thread().build().unwrap();
 
         for round in 0..ROUNDS {
-            let rt = Arc::new(executor.block_on(Runtime::start(test_config())).unwrap());
+            let (config, _data_dir) = test_config();
+            let rt = Arc::new(executor.block_on(Runtime::start(config)).unwrap());
             // +1 for the reader.
             let barrier = Arc::new(Barrier::new(THREADS + 1));
             let drivers = Arc::new(AtomicUsize::new(0));
@@ -744,8 +771,9 @@ required_api_version = "coven.daemon.v1"
         const CALLERS: usize = 64;
 
         let calls = Arc::new(AtomicUsize::new(0));
+        let (config, _data_dir) = test_config();
         let runtime = Arc::new(Runtime::start_with_checkpoint_backend(
-            test_config(),
+            config,
             Box::new(FailingCheckpoint {
                 calls: Arc::clone(&calls),
             }),
@@ -796,10 +824,13 @@ required_api_version = "coven.daemon.v1"
     #[tokio::test]
     async fn debug_does_not_print_an_extension_secret() {
         let secretish = "A".repeat(30);
+        let data_dir = tempfile::tempdir().unwrap();
+        let store_dir = data_dir.path().join("data");
+        let store_dir = toml_path(&store_dir);
         let raw = format!(
             r#"
 schema_version = "psyche.config.v1"
-data_dir = "/tmp/psyche-test"
+data_dir = {store_dir}
 
 [coven]
 socket = "/run/coven.sock"
@@ -840,7 +871,8 @@ looks_like_a_secret = "{secretish}"
     // A poisoned lock must not take the daemon's shutdown path down with it.
     #[tokio::test]
     async fn a_poisoned_lock_does_not_panic_the_shutdown_path() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         let lock = Arc::clone(&rt.lifecycle);
         std::thread::spawn(move || {
             let _guard = lock.lock().unwrap();
