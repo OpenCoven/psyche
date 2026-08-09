@@ -18,6 +18,7 @@ const EXECUTION_REQUEST_SCHEMA: &str = "psyche.execution_request.v1";
 const MAX_STRING_BYTES: usize = 255;
 const MAX_ARTIFACTS: usize = 1024;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const MAX_CONTENT_SIZE_BYTES: u64 = i64::MAX as u64;
 
 /// A capability that a Coven implementation may advertise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -810,7 +811,8 @@ impl ContentAddressedReference {
     /// Validates metadata only; this does not attest payload bytes.
     pub fn validate(&self) -> Result<(), PortError> {
         validate_media_type(&self.media_type)?;
-        if self.size_bytes == 0 || self.size_bytes > MAX_SAFE_INTEGER || !utc(self.expires_at) {
+        if self.size_bytes == 0 || self.size_bytes > MAX_CONTENT_SIZE_BYTES || !utc(self.expires_at)
+        {
             return Err(PortError::InvalidRequest);
         }
         Ok(())

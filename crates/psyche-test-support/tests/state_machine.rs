@@ -23,7 +23,7 @@ use psyche_store::{
 };
 use psyche_test_support::{
     CovenConformanceFixture, CovenFaultPoint, DurableDispositionKind, RedispatchEligibility,
-    scripted_fixture,
+    scripted_fixture_with_session_id,
 };
 use serde_json::{Map, json};
 use tempfile::TempDir;
@@ -1130,6 +1130,7 @@ enum RecoveryDispatchDecision {
 struct CovenRecoveryModel {
     state: RecoveryState,
     adoption_calls: u64,
+    adoption: Option<AdoptionDisposition>,
     request: Option<ReconciliationRequest>,
     disposition: Option<ReconciliationDisposition>,
 }
@@ -1139,6 +1140,7 @@ impl Default for CovenRecoveryModel {
         Self {
             state: RecoveryState::Clean,
             adoption_calls: 0,
+            adoption: None,
             request: None,
             disposition: None,
         }
@@ -1181,7 +1183,7 @@ fn mutate_reconciliation(request: &ReconciliationRequest, mutation: u8) -> Recon
 async fn compare_c_s6_model_and_fixture(
     operations: Vec<CovenRecoveryOperation>,
 ) -> Result<(), TestCaseError> {
-    let mut fixture = scripted_fixture();
+    let mut fixture = scripted_fixture_with_session_id("state-machine:opaque-session");
     let adoption = launch_adoption();
     let correlation = adoption.correlation();
     let mut model = CovenRecoveryModel::default();
@@ -1214,9 +1216,15 @@ async fn compare_c_s6_model_and_fixture(
                     .clear_fault()
                     .await
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let durable_adoption = fixture
+                    .port()
+                    .lookup(&correlation.request_id)
+                    .await
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 model = CovenRecoveryModel {
                     state: RecoveryState::Ambiguous,
                     adoption_calls: 1,
+                    adoption: Some(durable_adoption),
                     request: None,
                     disposition: None,
                 };
@@ -1413,10 +1421,28 @@ async fn compare_c_s6_model_and_fixture(
                 let DurableDispositionKind::Returned { session_id } = durable.kind else {
                     return Err(TestCaseError::fail("returned model observed a fence"));
                 };
-                prop_assert_eq!(session_id, "session-1");
+                let durable_adoption = fixture
+                    .port()
+                    .lookup(&correlation.request_id)
+                    .await
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let original_adoption = model
+                    .adoption
+                    .as_ref()
+                    .ok_or_else(|| TestCaseError::fail("returned model lost adoption baseline"))?;
+                prop_assert_eq!(&durable_adoption, original_adoption);
+                let AdoptionDisposition::Adopted {
+                    session_id: adopted_session_id,
+                } = original_adoption
+                else {
+                    return Err(TestCaseError::fail(
+                        "returned model lost the original durable adoption",
+                    ));
+                };
+                prop_assert_eq!(session_id.as_str(), adopted_session_id.as_str());
                 let resumed = fixture
                     .port()
-                    .inspect("session-1")
+                    .inspect(&session_id)
                     .await
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 prop_assert_eq!(resumed.correlation, correlation.clone());
@@ -1469,23 +1495,35 @@ struct RequestDigestModel {
 async fn compare_request_digest_model_and_fixture(
     operations: Vec<RequestDigestOperation>,
 ) -> Result<(), TestCaseError> {
-    let mut fixture = scripted_fixture();
+    let mut fixture = scripted_fixture_with_session_id("digest-model:opaque-session");
     let mut model = RequestDigestModel::default();
     for operation in operations {
         match operation {
             RequestDigestOperation::ConstructRequest { input } => {
                 fixture.reset().await;
                 model = RequestDigestModel::default();
-                if input {
-                    fixture
+                let input_session_id = if input {
+                    let disposition = fixture
                         .port()
                         .adopt(launch_adoption())
                         .await
                         .map_err(|error| TestCaseError::fail(error.to_string()))?;
                     model.adoption_calls = 1;
-                }
+                    let AdoptionDisposition::Adopted { session_id } = disposition else {
+                        return Err(TestCaseError::fail(
+                            "launch setup did not return an adopted session",
+                        ));
+                    };
+                    Some(session_id)
+                } else {
+                    None
+                };
                 let request = if input {
-                    session_input_adoption()
+                    session_input_adoption(
+                        input_session_id
+                            .as_deref()
+                            .ok_or_else(|| TestCaseError::fail("input setup lost its session"))?,
+                    )
                 } else {
                     launch_adoption()
                 };
@@ -1522,6 +1560,24 @@ async fn compare_request_digest_model_and_fixture(
                     let mutations = stale_digest_requests(request);
                     let (_, forged) = &mutations[usize::from(field) % mutations.len()];
                     let before = fixture.observations().await;
+                    let original_id = request.correlation().request_id;
+                    let original_lookup_before = fixture
+                        .port()
+                        .lookup(&original_id)
+                        .await
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                    let forged_id = forged.correlation().request_id;
+                    let forged_lookup_before = if forged_id == original_id {
+                        None
+                    } else {
+                        Some(
+                            fixture
+                                .port()
+                                .lookup(&forged_id)
+                                .await
+                                .map_err(|error| TestCaseError::fail(error.to_string()))?,
+                        )
+                    };
                     prop_assert_eq!(
                         fixture.port().adopt(forged.clone()).await,
                         Err(PortError::RequestDigestMismatch)
@@ -1529,13 +1585,14 @@ async fn compare_request_digest_model_and_fixture(
                     let after = fixture.observations().await;
                     prop_assert_eq!(after.adoption_calls, before.adoption_calls);
                     prop_assert_eq!(after.durable_reconciliation, before.durable_reconciliation);
-                    let forged_id = forged.correlation().request_id;
-                    if forged_id != request.correlation().request_id {
-                        prop_assert_ne!(
+                    prop_assert_eq!(
+                        fixture.port().lookup(&original_id).await,
+                        Ok(original_lookup_before)
+                    );
+                    if let Some(forged_lookup_before) = forged_lookup_before {
+                        prop_assert_eq!(
                             fixture.port().lookup(&forged_id).await,
-                            Ok(AdoptionDisposition::Adopted {
-                                session_id: "session-1".to_owned(),
-                            })
+                            Ok(forged_lookup_before)
                         );
                     }
                     prop_assert_eq!(
@@ -1562,9 +1619,10 @@ fn launch_adoption() -> AdoptionRequest {
     AdoptionRequest::new(input).unwrap()
 }
 
-fn session_input_adoption() -> AdoptionRequest {
+fn session_input_adoption(session_id: &str) -> AdoptionRequest {
     let mut value: serde_json::Value = serde_json::from_slice(INPUT_GOLDEN).unwrap();
     value["request_id"] = json!("req_01J00000000000000000000003");
+    value["session_id"] = json!(session_id);
     AdoptionRequest::new(serde_json::from_value(value).unwrap()).unwrap()
 }
 
@@ -1673,9 +1731,18 @@ fn stale_digest_requests(request: &AdoptionRequest) -> Vec<(&'static str, Adopti
     mutations.push(("/input", other_input));
     mutations
         .into_iter()
-        .map(|(pointer, replacement)| {
+        .map(|(pointer, mut replacement)| {
             let mut value = serde_json::to_value(request).unwrap();
-            *value.pointer_mut(pointer).unwrap() = replacement;
+            let field = value.pointer_mut(pointer).unwrap();
+            if pointer == "/input/session_id" {
+                let session_id = field.as_str().unwrap();
+                replacement = json!(if session_id == "session-changed" {
+                    "session-changed:distinct"
+                } else {
+                    "session-changed"
+                });
+            }
+            *field = replacement;
             (pointer, serde_json::from_value(value).unwrap())
         })
         .collect()

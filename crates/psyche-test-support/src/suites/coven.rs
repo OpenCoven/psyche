@@ -30,6 +30,7 @@ use crate::coven::{
 
 const CONTRACT: &str = "coven.daemon.v1";
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const MAX_CONTENT_SIZE_BYTES: u64 = i64::MAX as u64;
 const LAUNCH_GOLDEN: &[u8] =
     include_bytes!("../../../psyche-coven/tests/fixtures/execution-request-launch.json");
 const INPUT_GOLDEN: &[u8] =
@@ -105,6 +106,7 @@ struct ScriptedRuntimeState {
 struct ScriptedG2Port {
     durable: Arc<Mutex<ScriptedDurableState>>,
     runtime: Arc<Mutex<ScriptedRuntimeState>>,
+    initial_session_id: String,
 }
 
 /// Deterministic, restartable fixture used for the scripted G2 evidence rows.
@@ -115,10 +117,16 @@ pub struct ScriptedG2Fixture {
 
 /// Builds a clean scripted fixture supporting all twelve G2 cases.
 pub fn scripted_fixture() -> ScriptedG2Fixture {
+    scripted_fixture_with_session_id("session-1")
+}
+
+/// Builds a clean scripted fixture with a caller-selected opaque session ID.
+pub fn scripted_fixture_with_session_id(session_id: impl Into<String>) -> ScriptedG2Fixture {
     ScriptedG2Fixture {
         port: ScriptedG2Port {
             durable: Arc::new(Mutex::new(ScriptedDurableState::default())),
             runtime: Arc::new(Mutex::new(ScriptedRuntimeState::default())),
+            initial_session_id: session_id.into(),
         },
     }
 }
@@ -132,8 +140,16 @@ impl ScriptedG2Port {
         self.runtime.lock().map_err(|_| PortError::Unavailable)
     }
 
-    fn session_for_launch(state: &ScriptedDurableState) -> String {
-        format!("session-{}", state.sessions.len().saturating_add(1))
+    fn session_for_launch(&self, state: &ScriptedDurableState) -> String {
+        if state.sessions.is_empty() {
+            self.initial_session_id.clone()
+        } else {
+            format!(
+                "{}-{}",
+                self.initial_session_id,
+                state.sessions.len().saturating_add(1)
+            )
+        }
     }
 
     fn adoption_fault(
@@ -324,7 +340,7 @@ impl CovenPort for ScriptedG2Port {
 
         let disposition = match request.input() {
             ExecutionRequestInput::Launch { .. } => AdoptionDisposition::Adopted {
-                session_id: Self::session_for_launch(&state),
+                session_id: self.session_for_launch(&state),
             },
             ExecutionRequestInput::Input { session_id, .. } => {
                 if !state.sessions.contains_key(session_id) {
@@ -681,6 +697,7 @@ impl CovenConformanceFixture for ScriptedG2Fixture {
         self.port = ScriptedG2Port {
             durable: Arc::clone(&self.port.durable),
             runtime: Arc::new(Mutex::new(ScriptedRuntimeState::default())),
+            initial_session_id: self.port.initial_session_id.clone(),
         };
     }
 
@@ -980,7 +997,8 @@ async fn expected_unsupported(
             assert_eq!(fixture.port().result("session-1").await, Err(expected));
         }
         UnsupportedCall::Terminate => {
-            let requested = termination_requested_binding(&launch_request(), "operator_request");
+            let requested =
+                termination_requested_binding(&launch_request(), "session-1", "operator_request");
             let mut persistence = MemoryTerminationPersistence::default();
             assert!(matches!(
                 persist_then_terminate(&mut persistence, fixture.port(), requested).await,
@@ -1041,12 +1059,24 @@ fn launch_request() -> AdoptionRequest {
     }
 }
 
-fn session_input_request() -> AdoptionRequest {
+async fn adopt_session(
+    fixture: &dyn CovenConformanceFixture,
+    request: AdoptionRequest,
+    context: &str,
+) -> String {
+    match fixture.port().adopt(request).await {
+        Ok(AdoptionDisposition::Adopted { session_id }) => session_id,
+        other => panic!("{context}: {other:?}"),
+    }
+}
+
+fn session_input_request(session_id: &str) -> AdoptionRequest {
     let mut value: serde_json::Value = match serde_json::from_slice(INPUT_GOLDEN) {
         Ok(value) => value,
         Err(error) => panic!("canonical input fixture must decode: {error}"),
     };
     value["request_id"] = serde_json::json!("req_01J00000000000000000000003");
+    value["session_id"] = serde_json::json!(session_id);
     let input: ExecutionRequestInput = match serde_json::from_value(value) {
         Ok(value) => value,
         Err(error) => panic!("session input fixture must remain typed: {error}"),
@@ -1238,7 +1268,7 @@ fn stale_digest_mutations(request: &AdoptionRequest) -> Vec<(&'static str, Adopt
     mutations.push(("/input", other_input));
     mutations
         .into_iter()
-        .map(|(pointer, replacement)| {
+        .map(|(pointer, mut replacement)| {
             let mut value = match serde_json::to_value(request) {
                 Ok(value) => value,
                 Err(error) => panic!("typed adoption request must serialize: {error}"),
@@ -1246,6 +1276,12 @@ fn stale_digest_mutations(request: &AdoptionRequest) -> Vec<(&'static str, Adopt
             let Some(field) = value.pointer_mut(pointer) else {
                 panic!("static request mutation pointer must exist: {pointer}");
             };
+            if pointer == "/input/session_id" {
+                let Some(session_id) = field.as_str() else {
+                    panic!("session input mutation requires a string session id");
+                };
+                replacement = serde_json::json!(distinct_session_id(session_id, "session-changed"));
+            }
             *field = replacement;
             let forged = match serde_json::from_value(value) {
                 Ok(value) => value,
@@ -1342,7 +1378,11 @@ impl MemoryTerminationPersistence {
     }
 }
 
-fn termination_requested_binding(adoption: &AdoptionRequest, reason: &str) -> ExecutionBinding {
+fn termination_requested_binding(
+    adoption: &AdoptionRequest,
+    session_id: &str,
+    reason: &str,
+) -> ExecutionBinding {
     let correlation = adoption.correlation();
     ExecutionBinding {
         schema_version: schema("psyche.execution_binding.v1"),
@@ -1357,7 +1397,7 @@ fn termination_requested_binding(adoption: &AdoptionRequest, reason: &str) -> Ex
         request_created_at: correlation.created_at,
         request_valid_until: correlation.valid_until,
         coven_contract_version: CONTRACT.to_owned(),
-        coven_session_id: Some("session-1".to_owned()),
+        coven_session_id: Some(session_id.to_owned()),
         adoption_state: AdoptionState::Adopted,
         event_cursor: Some("cursor:0".to_owned()),
         cancellation_state: CancellationState::TerminationRequested,
@@ -1394,6 +1434,53 @@ fn digest_for_sequence(sequence: u64) -> Sha256Digest {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let index = usize::try_from(sequence % 16).unwrap_or(0);
     digest_of(char::from(HEX[index]))
+}
+
+fn assert_cursor_page_progress(cursor: &EventCursor, page: &EventPage, terminal_high_water: u64) {
+    assert!(
+        cursor.after_sequence <= terminal_high_water
+            && page.next_cursor.after_sequence <= terminal_high_water,
+        "cursor advanced beyond terminal high-water mark"
+    );
+    assert!(
+        cursor.after_sequence == terminal_high_water
+            || page.next_cursor.after_sequence > cursor.after_sequence,
+        "cursor page did not advance before terminal high-water mark"
+    );
+}
+
+fn distinct_session_id(session_id: &str, candidate: &str) -> String {
+    if session_id == candidate {
+        format!("{candidate}:distinct")
+    } else {
+        candidate.to_owned()
+    }
+}
+
+fn assert_returned_session_matches_adoption(
+    returned_session_id: &str,
+    disposition: &AdoptionDisposition,
+) {
+    match disposition {
+        AdoptionDisposition::Adopted { session_id } => assert_eq!(
+            returned_session_id, session_id,
+            "returned reconciliation session does not match durable adoption"
+        ),
+        AdoptionDisposition::ProvenNotAdopted | AdoptionDisposition::Unknown => {
+            panic!("original adoption is not durably adopted")
+        }
+    }
+}
+
+async fn lookup_durable_adoption(
+    fixture: &mut dyn CovenConformanceFixture,
+    correlation: &ExecutionCorrelation,
+) -> AdoptionDisposition {
+    fixture
+        .port()
+        .lookup(&correlation.request_id)
+        .await
+        .unwrap_or_else(|error| panic!("durable adoption lookup must succeed: {error}"))
 }
 
 fn schema(value: &str) -> SchemaVersion {
@@ -1497,26 +1584,27 @@ pub async fn assert_c_s2_session_lifecycle(
     fixture.reset().await;
     let launch = launch_request();
     let launch_correlation = launch.correlation();
+    let session_id = adopt_session(fixture, launch.clone(), "session launch must be adopted").await;
     let adopted = AdoptionDisposition::Adopted {
-        session_id: "session-1".to_owned(),
+        session_id: session_id.clone(),
     };
     assert_eq!(
-        fixture.port().adopt(launch.clone()).await,
-        Ok(adopted.clone())
-    );
-    assert_eq!(
-        fixture.port().adopt(session_input_request()).await,
+        fixture
+            .port()
+            .adopt(session_input_request(&session_id))
+            .await,
         Ok(adopted)
     );
     let snapshot = fixture
         .port()
-        .inspect("session-1")
+        .inspect(&session_id)
         .await
         .unwrap_or_else(|error| panic!("adopted session must be observable: {error}"));
-    assert_eq!(snapshot.session_id, "session-1");
+    assert_eq!(snapshot.session_id, session_id);
     assert_eq!(snapshot.correlation, launch_correlation);
 
-    let requested = termination_requested_binding(&launch, "operator_request");
+    let requested =
+        termination_requested_binding(&launch, &snapshot.session_id, "operator_request");
     let mut persistence = MemoryTerminationPersistence::default();
     let disposition = persist_then_terminate(&mut persistence, fixture.port(), requested.clone())
         .await
@@ -1527,7 +1615,7 @@ pub async fn assert_c_s2_session_lifecycle(
     ));
     let closed = fixture
         .port()
-        .inspect("session-1")
+        .inspect(&snapshot.session_id)
         .await
         .unwrap_or_else(|error| panic!("closed session must remain observable: {error}"));
     assert_eq!(
@@ -1556,11 +1644,14 @@ pub async fn assert_c_s2_session_lifecycle(
 
     fixture.reset().await;
     assert_eq!(
-        fixture.port().adopt(session_input_request()).await,
+        fixture
+            .port()
+            .adopt(session_input_request(&snapshot.session_id))
+            .await,
         Err(PortError::NotFound)
     );
     assert_eq!(
-        fixture.port().inspect("session-1").await,
+        fixture.port().inspect(&snapshot.session_id).await,
         Err(PortError::NotFound)
     );
     let mut persistence = MemoryTerminationPersistence::default();
@@ -1568,7 +1659,7 @@ pub async fn assert_c_s2_session_lifecycle(
         persist_then_terminate(
             &mut persistence,
             fixture.port(),
-            termination_requested_binding(&launch, "operator_request"),
+            termination_requested_binding(&launch, &snapshot.session_id, "operator_request"),
         )
         .await,
         Err(TerminationDispatchError::Port(PortError::NotFound))
@@ -1592,17 +1683,14 @@ pub async fn assert_c_s3_snapshot_attempt_binding(
     fixture.reset().await;
     let adoption = launch_request();
     let correlation = adoption.correlation();
-    assert!(matches!(
-        fixture.port().adopt(adoption).await,
-        Ok(AdoptionDisposition::Adopted { .. })
-    ));
+    let session_id = adopt_session(fixture, adoption, "snapshot setup must adopt").await;
     let snapshot = fixture
         .port()
-        .inspect("session-1")
+        .inspect(&session_id)
         .await
         .unwrap_or_else(|error| panic!("snapshot must round-trip: {error}"));
     assert_eq!(snapshot.correlation, correlation);
-    assert_eq!(snapshot.session_id, "session-1");
+    assert_eq!(snapshot.session_id, session_id);
     let valid_reconciliation = ReconciliationRequest {
         correlation: correlation.clone(),
         ambiguity_digest: digest_of('d'),
@@ -1616,6 +1704,13 @@ pub async fn assert_c_s3_snapshot_attempt_binding(
     valid_disposition
         .validate_for(&valid_reconciliation)
         .unwrap_or_else(|error| panic!("valid snapshot correlation must echo exactly: {error}"));
+    assert_eq!(
+        lookup_durable_adoption(fixture, &correlation).await,
+        AdoptionDisposition::Adopted {
+            session_id: session_id.clone(),
+        },
+        "reconciliation must not alter the original adoption"
+    );
 
     let changed_correlations = changed_correlations(&correlation);
     let changed_count = u64::try_from(changed_correlations.len())
@@ -1668,23 +1763,55 @@ pub async fn assert_c_s4_stable_adoption(
     assert_eq!(fixture.observations().await.adoption_calls, 1);
     fixture.restart().await;
     require_clear_fault(fixture).await;
-    let disposition = AdoptionDisposition::Adopted {
-        session_id: "session-1".to_owned(),
+    let disposition = fixture
+        .port()
+        .adopt(request.clone())
+        .await
+        .unwrap_or_else(|error| panic!("durable adoption must replay: {error}"));
+    let AdoptionDisposition::Adopted { session_id } = &disposition else {
+        panic!("durable adoption replay must remain adopted");
     };
+    assert_eq!(fixture.observations().await.adoption_calls, 0);
     assert_eq!(
         fixture.port().adopt(request.clone()).await,
         Ok(disposition.clone())
     );
     assert_eq!(fixture.observations().await.adoption_calls, 0);
-    assert_eq!(fixture.port().adopt(request.clone()).await, Ok(disposition));
-    assert_eq!(fixture.observations().await.adoption_calls, 0);
 
-    for typed in [request, session_input_request()] {
+    let input = session_input_request(session_id);
+    let input_disposition = fixture
+        .port()
+        .adopt(input.clone())
+        .await
+        .unwrap_or_else(|error| panic!("valid session input must adopt: {error}"));
+    for (typed, expected_disposition) in [(request, disposition), (input, input_disposition)] {
+        let request_id = typed.correlation().request_id;
+        let durable_before = fixture
+            .port()
+            .lookup(&request_id)
+            .await
+            .unwrap_or_else(|error| panic!("durable adoption snapshot must succeed: {error}"));
+        assert_eq!(durable_before, expected_disposition);
         for (field, forged) in stale_digest_mutations(&typed) {
             let before = fixture.observations().await;
             assert_eq!(
                 fixture.port().adopt(forged).await,
                 Err(PortError::RequestDigestMismatch),
+                "{field}"
+            );
+            assert_eq!(fixture.observations().await, before, "{field}");
+            assert_eq!(
+                fixture
+                    .port()
+                    .lookup(&request_id)
+                    .await
+                    .unwrap_or_else(|error| panic!("durable adoption lookup failed: {error}")),
+                durable_before,
+                "{field}"
+            );
+            assert_eq!(
+                fixture.port().adopt(typed.clone()).await,
+                Ok(expected_disposition.clone()),
                 "{field}"
             );
             assert_eq!(fixture.observations().await, before, "{field}");
@@ -1710,13 +1837,10 @@ pub async fn assert_c_s5_non_adoption_proof(
     }
     fixture.reset().await;
     let launch = launch_request();
+    let session_id = adopt_session(fixture, launch.clone(), "lookup setup must adopt").await;
     let adopted = AdoptionDisposition::Adopted {
-        session_id: "session-1".to_owned(),
+        session_id: session_id.clone(),
     };
-    assert_eq!(
-        fixture.port().adopt(launch.clone()).await,
-        Ok(adopted.clone())
-    );
     assert_eq!(
         fixture
             .port()
@@ -1751,9 +1875,7 @@ pub async fn assert_c_s5_non_adoption_proof(
     );
     assert_eq!(redispatch_decision(&unknown), RedispatchDecision::Blocked);
     assert_eq!(
-        redispatch_decision(&AdoptionDisposition::Adopted {
-            session_id: "session-1".to_owned(),
-        }),
+        redispatch_decision(&AdoptionDisposition::Adopted { session_id }),
         RedispatchDecision::Blocked
     );
     ConformanceOutcome::Verified
@@ -1790,6 +1912,7 @@ pub async fn assert_c_s6_ambiguity_fence(
     ] {
         fixture.reset().await;
         let correlation = mark_ambiguous(fixture).await;
+        let original_adoption = lookup_durable_adoption(fixture, &correlation).await;
         let request = reconciliation_request(correlation, false);
         require_fault(fixture, point).await;
         let expected_error = if point == CovenFaultPoint::ReconcileStall {
@@ -1816,51 +1939,72 @@ pub async fn assert_c_s6_ambiguity_fence(
         assert!(blocked.durable_reconciliation.is_none());
         let recovered = fixture
             .port()
-            .reconcile(request)
+            .reconcile(request.clone())
             .await
             .unwrap_or_else(|error| panic!("cleared reconciliation must recover: {error}"));
-        assert!(matches!(
-            recovered,
-            ReconciliationDisposition::Returned { .. }
-        ));
+        let ReconciliationDisposition::Returned { session_id, .. } = &recovered else {
+            panic!("cleared reconciliation must return the original session");
+        };
+        assert_returned_session_matches_adoption(session_id, &original_adoption);
+        assert_eq!(
+            lookup_durable_adoption(fixture, &request.correlation).await,
+            original_adoption,
+            "recovered reconciliation must not alter the original adoption"
+        );
         let recovered_observations = fixture.observations().await;
         assert_eq!(recovered_observations.adoption_calls, 0);
         assert_eq!(recovered_observations.reconciliation_calls, 1);
     }
 
-    fixture.reset().await;
-    let correlation = mark_ambiguous(fixture).await;
-    let request = reconciliation_request(correlation, true);
-    require_fault(fixture, CovenFaultPoint::ReconcileAfterDisposition).await;
-    assert_eq!(
-        fixture.port().reconcile(request.clone()).await,
-        Err(PortError::Unavailable)
-    );
-    let committed = fixture.observations().await;
-    assert_eq!(committed.adoption_calls, 1);
-    assert_eq!(committed.reconciliation_calls, 1);
-    let committed_observation = committed
-        .durable_reconciliation
-        .clone()
-        .unwrap_or_else(|| panic!("after-disposition fault must retain durable fence"));
-    assert!(matches!(
-        committed_observation.kind,
-        DurableDispositionKind::Fenced { .. }
-    ));
-    fixture.restart().await;
-    require_clear_fault(fixture).await;
-    let replay = fixture
-        .port()
-        .reconcile(request)
-        .await
-        .unwrap_or_else(|error| panic!("durable fence must replay after restart: {error}"));
-    assert_eq!(
-        disposition_observation(&replay),
-        Some(committed_observation)
-    );
-    let replayed = fixture.observations().await;
-    assert_eq!(replayed.adoption_calls, 0);
-    assert_eq!(replayed.reconciliation_calls, 1);
+    for fenced in [false, true] {
+        fixture.reset().await;
+        let correlation = mark_ambiguous(fixture).await;
+        let original_adoption = lookup_durable_adoption(fixture, &correlation).await;
+        let request = reconciliation_request(correlation, fenced);
+        require_fault(fixture, CovenFaultPoint::ReconcileAfterDisposition).await;
+        assert_eq!(
+            fixture.port().reconcile(request.clone()).await,
+            Err(PortError::Unavailable)
+        );
+        let committed = fixture.observations().await;
+        assert_eq!(committed.adoption_calls, 1);
+        assert_eq!(committed.reconciliation_calls, 1);
+        let committed_observation = committed
+            .durable_reconciliation
+            .clone()
+            .unwrap_or_else(|| panic!("after-disposition fault must retain a terminal outcome"));
+        assert_eq!(
+            matches!(
+                committed_observation.kind,
+                DurableDispositionKind::Fenced { .. }
+            ),
+            fenced
+        );
+        fixture.restart().await;
+        require_clear_fault(fixture).await;
+        let replay = fixture
+            .port()
+            .reconcile(request.clone())
+            .await
+            .unwrap_or_else(|error| {
+                panic!("durable terminal outcome must replay after restart: {error}")
+            });
+        assert_eq!(
+            disposition_observation(&replay),
+            Some(committed_observation)
+        );
+        if let ReconciliationDisposition::Returned { session_id, .. } = &replay {
+            assert_returned_session_matches_adoption(session_id, &original_adoption);
+        }
+        assert_eq!(
+            lookup_durable_adoption(fixture, &request.correlation).await,
+            original_adoption,
+            "replayed reconciliation must not alter the original adoption"
+        );
+        let replayed = fixture.observations().await;
+        assert_eq!(replayed.adoption_calls, 0);
+        assert_eq!(replayed.reconciliation_calls, 1);
+    }
     ConformanceOutcome::Verified
 }
 
@@ -1903,6 +2047,7 @@ fn reconciliation_request(
 async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixture, fenced: bool) {
     fixture.reset().await;
     let correlation = mark_ambiguous(fixture).await;
+    let original_adoption = lookup_durable_adoption(fixture, &correlation).await;
     let request = reconciliation_request(correlation.clone(), fenced);
     let disposition = fixture
         .port()
@@ -1921,11 +2066,12 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
             recorded_at,
         } => {
             assert!(!fenced);
-            assert_eq!(session_id, "session-1");
+            assert!(!session_id.is_empty());
             assert_eq!(echoed, &correlation);
             assert_eq!(ambiguity_digest, &request.ambiguity_digest);
             assert!(!disposition_id.is_empty());
             assert!(*recorded_at >= correlation.created_at);
+            assert_returned_session_matches_adoption(session_id, &original_adoption);
             let resumed = fixture
                 .port()
                 .inspect(session_id)
@@ -1965,6 +2111,11 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
             panic!("terminal script must not return unresolved")
         }
     }
+    assert_eq!(
+        lookup_durable_adoption(fixture, &correlation).await,
+        original_adoption,
+        "terminal reconciliation must not alter the original adoption"
+    );
 
     let first_observation = fixture
         .observations()
@@ -1976,6 +2127,10 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
         Some(first_observation.clone())
     );
     let adoption_calls_before_eligibility = fixture.observations().await.adoption_calls;
+    assert_eq!(
+        adoption_calls_before_eligibility, 1,
+        "reconciliation must not dispatch a second adoption"
+    );
     let eligibility = fixture
         .redispatch_eligibility(&correlation)
         .await
@@ -2054,12 +2209,14 @@ pub async fn assert_c_s7_ordered_cursor(
         return outcome;
     }
     fixture.reset().await;
-    assert!(matches!(
-        fixture.port().adopt(launch_request()).await,
-        Ok(AdoptionDisposition::Adopted { .. })
-    ));
+    let session_id = adopt_session(
+        fixture,
+        launch_request(),
+        "cursor setup must adopt a session",
+    )
+    .await;
     let initial = EventCursor {
-        session_id: "session-1".to_owned(),
+        session_id: session_id.clone(),
         after_sequence: 0,
     };
     require_fault(fixture, CovenFaultPoint::CursorBeforePage).await;
@@ -2074,6 +2231,10 @@ pub async fn assert_c_s7_ordered_cursor(
         .events(initial.clone())
         .await
         .unwrap_or_else(|error| panic!("cursor must recover before-page fault: {error}"));
+    first
+        .validate_for(&initial)
+        .unwrap_or_else(|error| panic!("first cursor page must validate: {error}"));
+    assert_cursor_page_progress(&initial, &first, RAW_LEDGER_STATES.len() as u64);
     assert_eq!(
         first
             .events
@@ -2092,7 +2253,9 @@ pub async fn assert_c_s7_ordered_cursor(
             .events(cursor.clone())
             .await
             .unwrap_or_else(|error| panic!("ordered cursor page must succeed: {error}"));
-        assert_eq!(page.next_cursor.session_id, cursor.session_id);
+        page.validate_for(&cursor)
+            .unwrap_or_else(|error| panic!("ordered cursor page must validate: {error}"));
+        assert_cursor_page_progress(&cursor, &page, RAW_LEDGER_STATES.len() as u64);
         all.extend(page.events);
         cursor = page.next_cursor;
     }
@@ -2119,17 +2282,28 @@ pub async fn assert_c_s7_ordered_cursor(
         fixture
             .port()
             .events(EventCursor {
-                session_id: "session-1".to_owned(),
-                after_sequence: 1,
+                session_id: session_id.clone(),
+                after_sequence: RAW_LEDGER_STATES.len() as u64 + 1,
             })
             .await,
-        Err(PortError::IntentConflict)
+        Err(PortError::InvalidRequest)
     );
     assert_eq!(
         fixture
             .port()
             .events(EventCursor {
-                session_id: "foreign-session".to_owned(),
+                session_id: session_id.clone(),
+                after_sequence: 1,
+            })
+            .await,
+        Err(PortError::IntentConflict)
+    );
+    let foreign_session_id = distinct_session_id(&session_id, "foreign-session");
+    assert_eq!(
+        fixture
+            .port()
+            .events(EventCursor {
+                session_id: foreign_session_id,
                 after_sequence: 0,
             })
             .await,
@@ -2137,10 +2311,15 @@ pub async fn assert_c_s7_ordered_cursor(
     );
 
     fixture.reset().await;
-    assert!(fixture.port().adopt(launch_request()).await.is_ok());
+    let reset_session_id =
+        adopt_session(fixture, launch_request(), "cursor fault setup must adopt").await;
+    let reset_initial = EventCursor {
+        session_id: reset_session_id,
+        after_sequence: 0,
+    };
     require_fault(fixture, CovenFaultPoint::CursorAfterPage).await;
     assert_eq!(
-        fixture.port().events(initial.clone()).await,
+        fixture.port().events(reset_initial.clone()).await,
         Err(PortError::Unavailable)
     );
     fixture.restart().await;
@@ -2148,7 +2327,7 @@ pub async fn assert_c_s7_ordered_cursor(
     assert_eq!(
         fixture
             .port()
-            .events(initial)
+            .events(reset_initial)
             .await
             .unwrap_or_else(|error| panic!("committed page must replay: {error}"))
             .next_cursor
@@ -2173,17 +2352,22 @@ pub async fn assert_c_s8_terminal_authority(
     }
     fixture.reset().await;
     let launch = launch_request();
-    assert!(fixture.port().adopt(launch.clone()).await.is_ok());
+    let session_id = adopt_session(
+        fixture,
+        launch.clone(),
+        "terminal setup must adopt a session",
+    )
+    .await;
     let snapshot = fixture
         .port()
-        .inspect("session-1")
+        .inspect(&session_id)
         .await
         .unwrap_or_else(|error| panic!("raw session status must be readable: {error}"));
     assert_eq!(snapshot.terminal_state.as_deref(), Some("created"));
     let raw_page = fixture
         .port()
         .events(EventCursor {
-            session_id: "session-1".to_owned(),
+            session_id: session_id.clone(),
             after_sequence: 0,
         })
         .await
@@ -2198,7 +2382,7 @@ pub async fn assert_c_s8_terminal_authority(
         assert_ne!(raw, Some("authoritatively_terminated"));
     }
 
-    let requested = termination_requested_binding(&launch, "operator_request");
+    let requested = termination_requested_binding(&launch, &session_id, "operator_request");
     let mut unproven = requested.clone();
     unproven.cancellation_state = CancellationState::AcknowledgedTerminated;
     unproven.terminal_state = Some("process_exited".to_owned());
@@ -2215,7 +2399,7 @@ pub async fn assert_c_s8_terminal_authority(
     fixture.restart().await;
     let still_raw = fixture
         .port()
-        .inspect("session-1")
+        .inspect(&session_id)
         .await
         .unwrap_or_else(|error| {
             panic!("unpersisted terminal must remain observable only as raw: {error}")
@@ -2240,7 +2424,7 @@ pub async fn assert_c_s8_terminal_authority(
     assert_eq!(
         fixture
             .port()
-            .inspect("session-1")
+            .inspect(&session_id)
             .await
             .unwrap_or_else(|error| panic!("durable terminal must survive restart: {error}"))
             .terminal_state
@@ -2265,14 +2449,19 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
     }
     fixture.reset().await;
     let launch = launch_request();
-    assert!(fixture.port().adopt(launch.clone()).await.is_ok());
+    let session_id = adopt_session(
+        fixture,
+        launch.clone(),
+        "cancellation setup must adopt a session",
+    )
+    .await;
 
     let mut snapshot_states = Vec::new();
     for _ in 0..RAW_LEDGER_STATES.len() {
         snapshot_states.push(
             fixture
                 .port()
-                .inspect("session-1")
+                .inspect(&session_id)
                 .await
                 .unwrap_or_else(|error| panic!("raw snapshot must be readable: {error}"))
                 .terminal_state
@@ -2284,7 +2473,7 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
     assert_eq!(
         fixture
             .port()
-            .inspect("session-1")
+            .inspect(&session_id)
             .await
             .unwrap_or_else(|error| panic!("restart snapshot must be readable: {error}"))
             .terminal_state
@@ -2302,27 +2491,25 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
 
     let mut event_states = Vec::new();
     let mut cursor = EventCursor {
-        session_id: "session-1".to_owned(),
+        session_id: session_id.clone(),
         after_sequence: 0,
     };
-    loop {
+    while cursor.after_sequence < RAW_LEDGER_STATES.len() as u64 {
         let page = fixture
             .port()
-            .events(cursor)
+            .events(cursor.clone())
             .await
             .unwrap_or_else(|error| panic!("raw event table must be readable: {error}"));
+        assert_cursor_page_progress(&cursor, &page, RAW_LEDGER_STATES.len() as u64);
         event_states.extend(page.events.into_iter().map(|event| {
             event
                 .terminal_state
                 .unwrap_or_else(|| panic!("scripted raw event must name its state"))
         }));
         cursor = page.next_cursor;
-        if cursor.after_sequence == RAW_LEDGER_STATES.len() as u64 {
-            break;
-        }
     }
     assert_eq!(event_states, snapshot_states);
-    let requested = termination_requested_binding(&launch, "operator_request");
+    let requested = termination_requested_binding(&launch, &session_id, "operator_request");
     for state in &snapshot_states {
         let mut raw_only = requested.clone();
         raw_only.cancellation_state = CancellationState::AcknowledgedTerminated;
@@ -2331,8 +2518,10 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
     }
 
     fixture.reset().await;
-    assert!(fixture.port().adopt(launch.clone()).await.is_ok());
-    let unresolved_requested = termination_requested_binding(&launch, "force_unresolved");
+    let unresolved_session_id =
+        adopt_session(fixture, launch.clone(), "unresolved setup must adopt").await;
+    let unresolved_requested =
+        termination_requested_binding(&launch, &unresolved_session_id, "force_unresolved");
     require_fault(fixture, CovenFaultPoint::CancellationBeforeAcknowledgement).await;
     let mut unresolved_persistence = MemoryTerminationPersistence::default();
     assert!(matches!(
@@ -2379,8 +2568,10 @@ pub async fn assert_c_s9_cancellation_acknowledgement(
     );
 
     fixture.reset().await;
-    assert!(fixture.port().adopt(launch.clone()).await.is_ok());
-    let acknowledged_requested = termination_requested_binding(&launch, "operator_request");
+    let acknowledged_session_id =
+        adopt_session(fixture, launch.clone(), "acknowledgement setup must adopt").await;
+    let acknowledged_requested =
+        termination_requested_binding(&launch, &acknowledged_session_id, "operator_request");
     require_fault(fixture, CovenFaultPoint::CancellationAfterAcknowledgement).await;
     let mut acknowledged_persistence = MemoryTerminationPersistence::default();
     assert!(matches!(
@@ -2465,7 +2656,7 @@ fn assert_invalid_acknowledgements(
     changed.termination_request_id = request_id(8);
     mutations.push(("termination_request_id", changed));
     let mut changed = valid.clone();
-    changed.session_id = "session-other".to_owned();
+    changed.session_id = distinct_session_id(&valid.session_id, "session-other");
     mutations.push(("session_id", changed));
     let mut changed = valid.clone();
     changed.execution_request_id = request_id(8);
@@ -2511,23 +2702,31 @@ pub async fn assert_c_s10_result_artifact_binding(
     fixture.reset().await;
     let launch = launch_request();
     let launch_correlation = launch.correlation();
-    assert!(fixture.port().adopt(launch).await.is_ok());
-    let expected: ResultBundle = match serde_json::from_slice(RESULT_GOLDEN) {
+    let session_id = adopt_session(fixture, launch, "result setup must adopt a session").await;
+    let golden: ResultBundle = match serde_json::from_slice(RESULT_GOLDEN) {
         Ok(bundle) => bundle,
         Err(error) => panic!("strict result fixture must decode: {error}"),
     };
-    expected
+    golden
         .validate()
         .unwrap_or_else(|error| panic!("strict result fixture must validate: {error}"));
-    assert_eq!(expected.correlation, launch_correlation);
+    assert_eq!(golden.correlation, launch_correlation);
     assert_eq!(
-        canonical_bytes(&expected)
+        canonical_bytes(&golden)
             .unwrap_or_else(|error| panic!("result fixture must canonicalize: {error}")),
         RESULT_GOLDEN
     );
+    let mut expected = golden;
+    expected.session_id = session_id.clone();
+    for artifact in &mut expected.artifacts {
+        artifact.session_id = session_id.clone();
+    }
+    expected
+        .validate()
+        .unwrap_or_else(|error| panic!("result fixture must accept the opaque session: {error}"));
     let actual = fixture
         .port()
-        .result("session-1")
+        .result(&session_id)
         .await
         .unwrap_or_else(|error| panic!("complete result must be returned: {error}"));
     assert_eq!(actual, expected);
@@ -2544,11 +2743,12 @@ pub async fn assert_c_s10_result_artifact_binding(
         assert_complete_result_rejected(&artifact_changed, &expected, &format!("artifact_{field}"));
     }
 
+    let wrong_session_id = distinct_session_id(&session_id, "session-other");
     let mut wrong_session = expected.clone();
-    wrong_session.session_id = "session-other".to_owned();
+    wrong_session.session_id = wrong_session_id.clone();
     assert_complete_result_rejected(&wrong_session, &expected, "session_id");
     let mut wrong_artifact_session = expected.clone();
-    wrong_artifact_session.artifacts[0].session_id = "session-other".to_owned();
+    wrong_artifact_session.artifacts[0].session_id = wrong_session_id;
     assert_complete_result_rejected(&wrong_artifact_session, &expected, "artifact_session_id");
 
     for (field, mutate) in [
@@ -2573,13 +2773,13 @@ pub async fn assert_c_s10_result_artifact_binding(
     zero_result.result.size_bytes = 0;
     assert!(zero_result.validate().is_err());
     let mut oversized_result = expected.clone();
-    oversized_result.result.size_bytes = MAX_SAFE_INTEGER + 1;
+    oversized_result.result.size_bytes = MAX_CONTENT_SIZE_BYTES + 1;
     assert!(oversized_result.validate().is_err());
     let mut safe_result = expected.clone();
-    safe_result.result.size_bytes = MAX_SAFE_INTEGER;
+    safe_result.result.size_bytes = MAX_CONTENT_SIZE_BYTES;
     safe_result
         .validate()
-        .unwrap_or_else(|error| panic!("JSON safe-integer boundary must validate: {error}"));
+        .unwrap_or_else(|error| panic!("maximum content size must validate: {error}"));
     let mut malformed_result = expected.clone();
     malformed_result.result.media_type = "Application/JSON".to_owned();
     assert!(malformed_result.validate().is_err());
@@ -2592,13 +2792,13 @@ pub async fn assert_c_s10_result_artifact_binding(
     zero_artifact.artifacts[0].content.size_bytes = 0;
     assert!(zero_artifact.validate().is_err());
     let mut oversized_artifact = expected.clone();
-    oversized_artifact.artifacts[0].content.size_bytes = MAX_SAFE_INTEGER + 1;
+    oversized_artifact.artifacts[0].content.size_bytes = MAX_CONTENT_SIZE_BYTES + 1;
     assert!(oversized_artifact.validate().is_err());
     let mut safe_artifact = expected.clone();
-    safe_artifact.artifacts[0].content.size_bytes = MAX_SAFE_INTEGER;
+    safe_artifact.artifacts[0].content.size_bytes = MAX_CONTENT_SIZE_BYTES;
     safe_artifact
         .validate()
-        .unwrap_or_else(|error| panic!("artifact safe-integer boundary must validate: {error}"));
+        .unwrap_or_else(|error| panic!("maximum artifact size must validate: {error}"));
     let mut malformed_artifact = expected.clone();
     malformed_artifact.artifacts[0].content.media_type = "text/plain; charset=utf-8".to_owned();
     assert!(malformed_artifact.validate().is_err());
@@ -2622,7 +2822,7 @@ pub async fn assert_c_s10_result_artifact_binding(
     assert_eq!(
         fixture
             .port()
-            .result("session-1")
+            .result(&session_id)
             .await
             .unwrap_or_else(|error| panic!("complete result must replay: {error}")),
         expected
@@ -2787,10 +2987,13 @@ async fn assert_restart_resets_runtime(fixture: &mut dyn CovenConformanceFixture
         .adopt(request)
         .await
         .unwrap_or_else(|error| panic!("restart setup must adopt: {error}"));
+    let AdoptionDisposition::Adopted { session_id } = &adopted else {
+        panic!("restart setup must return an adopted session");
+    };
     assert_eq!(
         fixture
             .port()
-            .inspect("session-1")
+            .inspect(session_id)
             .await
             .unwrap_or_else(|error| panic!("restart setup must inspect: {error}"))
             .terminal_state
@@ -2805,13 +3008,13 @@ async fn assert_restart_resets_runtime(fixture: &mut dyn CovenConformanceFixture
     );
     assert_eq!(
         fixture.port().lookup(&request_id).await,
-        Ok(adopted),
+        Ok(adopted.clone()),
         "durable adoption must survive while the selected fault is cleared"
     );
     assert_eq!(
         fixture
             .port()
-            .inspect("session-1")
+            .inspect(session_id)
             .await
             .unwrap_or_else(|error| panic!("durable session must survive restart: {error}"))
             .terminal_state
@@ -2830,11 +3033,17 @@ async fn assert_adoption_fault_recovery(
         point,
         CovenFaultPoint::InputBeforeCommit | CovenFaultPoint::InputAfterCommit
     );
-    if input_fault {
-        assert!(fixture.port().adopt(launch_request()).await.is_ok());
-    }
+    let session_id = if input_fault {
+        Some(adopt_session(fixture, launch_request(), "input fault setup must adopt").await)
+    } else {
+        None
+    };
     let request = if input_fault {
-        session_input_request()
+        session_input_request(
+            session_id
+                .as_deref()
+                .unwrap_or_else(|| panic!("input fault requires an adopted session")),
+        )
     } else {
         launch_request()
     };
@@ -2917,9 +3126,10 @@ async fn assert_cursor_fault_recovery(
     point: CovenFaultPoint,
 ) {
     fixture.reset().await;
-    assert!(fixture.port().adopt(launch_request()).await.is_ok());
-    let cursor = EventCursor {
-        session_id: "session-1".to_owned(),
+    let session_id =
+        adopt_session(fixture, launch_request(), "cursor fault setup must adopt").await;
+    let mut cursor = EventCursor {
+        session_id: session_id.clone(),
         after_sequence: 0,
     };
     require_fault(fixture, point).await;
@@ -2930,7 +3140,7 @@ async fn assert_cursor_fault_recovery(
     fixture.restart().await;
     require_clear_fault(fixture).await;
     let regression = EventCursor {
-        session_id: "session-1".to_owned(),
+        session_id,
         after_sequence: 1,
     };
     if point == CovenFaultPoint::CursorAfterPage {
@@ -2953,7 +3163,13 @@ async fn assert_cursor_fault_recovery(
             vec![2, 3, 4]
         );
         fixture.reset().await;
-        assert!(fixture.port().adopt(launch_request()).await.is_ok());
+        let reset_session_id = adopt_session(
+            fixture,
+            launch_request(),
+            "cursor recovery setup must adopt",
+        )
+        .await;
+        cursor.session_id = reset_session_id;
     }
     let recovered = fixture
         .port()
@@ -2977,8 +3193,13 @@ async fn assert_termination_fault_recovery(
 ) {
     fixture.reset().await;
     let launch = launch_request();
-    assert!(fixture.port().adopt(launch.clone()).await.is_ok());
-    let requested = termination_requested_binding(&launch, "operator_request");
+    let session_id = adopt_session(
+        fixture,
+        launch.clone(),
+        "termination fault setup must adopt",
+    )
+    .await;
+    let requested = termination_requested_binding(&launch, &session_id, "operator_request");
     let mut persistence = MemoryTerminationPersistence::default();
     require_fault(fixture, point).await;
     assert!(matches!(
@@ -3021,29 +3242,30 @@ async fn assert_result_fault_recovery(
     point: CovenFaultPoint,
 ) {
     fixture.reset().await;
-    assert!(fixture.port().adopt(launch_request()).await.is_ok());
+    let session_id =
+        adopt_session(fixture, launch_request(), "result fault setup must adopt").await;
     require_fault(fixture, point).await;
     assert_eq!(
-        fixture.port().result("session-1").await,
+        fixture.port().result(&session_id).await,
         Err(PortError::Unavailable)
     );
     fixture.restart().await;
     require_fault(fixture, CovenFaultPoint::ResultBeforePersistence).await;
     let recovered = if point == CovenFaultPoint::ResultBeforePersistence {
         assert_eq!(
-            fixture.port().result("session-1").await,
+            fixture.port().result(&session_id).await,
             Err(PortError::Unavailable)
         );
         require_clear_fault(fixture).await;
         fixture
             .port()
-            .result("session-1")
+            .result(&session_id)
             .await
             .unwrap_or_else(|error| panic!("{point:?} result must recover: {error}"))
     } else {
         let bundle = fixture
             .port()
-            .result("session-1")
+            .result(&session_id)
             .await
             .unwrap_or_else(|error| panic!("artifact fault lost primary result: {error}"));
         require_clear_fault(fixture).await;
@@ -3053,7 +3275,7 @@ async fn assert_result_fault_recovery(
     assert_eq!(
         fixture
             .port()
-            .result("session-1")
+            .result(&session_id)
             .await
             .unwrap_or_else(|error| panic!("{point:?} result must replay: {error}")),
         recovered
@@ -3066,6 +3288,7 @@ async fn assert_reconciliation_fault_recovery(
 ) {
     fixture.reset().await;
     let correlation = mark_ambiguous(fixture).await;
+    let original_adoption = lookup_durable_adoption(fixture, &correlation).await;
     let request = reconciliation_request(correlation, true);
     require_fault(fixture, point).await;
     let expected = if point == CovenFaultPoint::ReconcileStall {
@@ -3100,7 +3323,7 @@ async fn assert_reconciliation_fault_recovery(
     assert_eq!(
         fixture
             .port()
-            .reconcile(request)
+            .reconcile(request.clone())
             .await
             .unwrap_or_else(|error| panic!("{point:?} reconciliation must replay: {error}")),
         recovered
@@ -3108,6 +3331,11 @@ async fn assert_reconciliation_fault_recovery(
     assert_eq!(
         fixture.observations().await.durable_reconciliation,
         Some(durable)
+    );
+    assert_eq!(
+        lookup_durable_adoption(fixture, &request.correlation).await,
+        original_adoption,
+        "fault recovery must not alter the original adoption"
     );
     assert_eq!(fixture.observations().await.adoption_calls, 0);
 }
@@ -3144,7 +3372,7 @@ pub async fn assert_c_s12_structured_denial(
 
     let launch = launch_request();
     let correlation = launch.correlation();
-    assert!(fixture.port().adopt(launch).await.is_ok());
+    let session_id = adopt_session(fixture, launch, "structured denial setup must adopt").await;
     let mut changed = correlation.clone();
     changed.project_id = "project:sha256:other".to_owned();
     assert_eq!(
@@ -3166,11 +3394,12 @@ pub async fn assert_c_s12_structured_denial(
             .is_none()
     );
 
+    let foreign_session_id = distinct_session_id(&session_id, "foreign-session");
     assert_eq!(
         fixture
             .port()
             .events(EventCursor {
-                session_id: "foreign-session".to_owned(),
+                session_id: foreign_session_id,
                 after_sequence: 0,
             })
             .await,
@@ -3180,7 +3409,7 @@ pub async fn assert_c_s12_structured_denial(
         fixture
             .port()
             .events(EventCursor {
-                session_id: "session-1".to_owned(),
+                session_id: session_id.clone(),
                 after_sequence: MAX_SAFE_INTEGER + 1,
             })
             .await,
@@ -3189,7 +3418,10 @@ pub async fn assert_c_s12_structured_denial(
 
     fixture.reset().await;
     assert_eq!(
-        fixture.port().adopt(session_input_request()).await,
+        fixture
+            .port()
+            .adopt(session_input_request(&session_id))
+            .await,
         Err(PortError::NotFound)
     );
     assert_eq!(
@@ -3208,7 +3440,7 @@ pub async fn assert_c_s12_structured_denial(
     zero.size_bytes = 0;
     assert_eq!(zero.validate(), Err(PortError::InvalidRequest));
     let mut oversized = base.clone();
-    oversized.size_bytes = MAX_SAFE_INTEGER + 1;
+    oversized.size_bytes = MAX_CONTENT_SIZE_BYTES + 1;
     assert_eq!(oversized.validate(), Err(PortError::InvalidRequest));
     let mut malformed = base;
     malformed.media_type = "free form error".to_owned();
@@ -3227,4 +3459,50 @@ pub async fn assert_c_s12_structured_denial(
         assert!(!format!("{error:?}").contains("free form error"));
     }
     ConformanceOutcome::Verified
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "cursor page did not advance before terminal high-water mark")]
+    fn cursor_page_must_advance_before_terminal_high_water() {
+        let cursor = EventCursor {
+            session_id: "opaque-session".to_owned(),
+            after_sequence: 3,
+        };
+        let page = EventPage {
+            events: Vec::new(),
+            next_cursor: cursor.clone(),
+        };
+
+        assert_cursor_page_progress(&cursor, &page, 7);
+    }
+
+    #[test]
+    #[should_panic(expected = "cursor advanced beyond terminal high-water mark")]
+    fn cursor_page_must_reject_terminal_high_water_overshoot() {
+        let cursor = EventCursor {
+            session_id: "opaque-session".to_owned(),
+            after_sequence: 8,
+        };
+        let page = EventPage {
+            events: Vec::new(),
+            next_cursor: cursor.clone(),
+        };
+
+        assert_cursor_page_progress(&cursor, &page, 7);
+    }
+
+    #[test]
+    #[should_panic(expected = "returned reconciliation session does not match durable adoption")]
+    fn returned_reconciliation_must_name_original_session() {
+        assert_returned_session_matches_adoption(
+            "returned-session",
+            &AdoptionDisposition::Adopted {
+                session_id: "original-session".to_owned(),
+            },
+        );
+    }
 }

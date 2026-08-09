@@ -19,7 +19,7 @@ pub use suites::{
     assert_c_s8_terminal_authority, assert_c_s9_cancellation_acknowledgement,
     assert_c_s10_result_artifact_binding, assert_c_s11_restart_persistence,
     assert_c_s12_structured_denial, assert_surface_unknown_delivery, scripted_fixture,
-    scripted_surface, unsupported_fixture,
+    scripted_fixture_with_session_id, scripted_surface, unsupported_fixture,
 };
 pub use surface::{
     FakeSurface, FakeSurfaceBuilder, SurfaceFakeBuildError, SurfaceFakeCall, SurfaceScriptReturn,

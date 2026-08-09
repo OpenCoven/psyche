@@ -7,7 +7,7 @@ use psyche_test_support::suites::{
     assert_c_s8_terminal_authority, assert_c_s9_cancellation_acknowledgement,
     assert_c_s10_result_artifact_binding, assert_c_s11_restart_persistence,
     assert_c_s12_structured_denial, assert_surface_unknown_delivery, scripted_fixture,
-    scripted_surface, unsupported_fixture,
+    scripted_fixture_with_session_id, scripted_surface, unsupported_fixture,
 };
 
 #[tokio::test]
@@ -109,6 +109,70 @@ async fn c_s12_structured_denial() {
 #[tokio::test]
 async fn surface_unknown_delivery() {
     assert_surface_unknown_delivery(&scripted_surface()).await;
+}
+
+#[tokio::test]
+async fn reusable_conformance_accepts_opaque_session_ids() {
+    const OPAQUE_SESSION_ID: &str = "coven-session:opaque-7f4d2a";
+
+    assert_eq!(
+        assert_c_s2_session_lifecycle(&mut scripted_fixture_with_session_id(OPAQUE_SESSION_ID))
+            .await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s3_snapshot_attempt_binding(&mut scripted_fixture_with_session_id(
+            OPAQUE_SESSION_ID,
+        ))
+        .await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s4_stable_adoption(&mut scripted_fixture_with_session_id(OPAQUE_SESSION_ID)).await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s5_non_adoption_proof(&mut scripted_fixture_with_session_id(OPAQUE_SESSION_ID))
+            .await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s6_ambiguity_fence(&mut scripted_fixture_with_session_id(OPAQUE_SESSION_ID)).await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s7_ordered_cursor(&mut scripted_fixture_with_session_id(OPAQUE_SESSION_ID)).await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s8_terminal_authority(&mut scripted_fixture_with_session_id(OPAQUE_SESSION_ID))
+            .await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s9_cancellation_acknowledgement(&mut scripted_fixture_with_session_id(
+            OPAQUE_SESSION_ID,
+        ))
+        .await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s10_result_artifact_binding(&mut scripted_fixture_with_session_id(
+            OPAQUE_SESSION_ID,
+        ))
+        .await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s11_restart_persistence(&mut scripted_fixture_with_session_id(OPAQUE_SESSION_ID))
+            .await,
+        ConformanceOutcome::Verified
+    );
+    assert_eq!(
+        assert_c_s12_structured_denial(&mut scripted_fixture_with_session_id(OPAQUE_SESSION_ID))
+            .await,
+        ConformanceOutcome::Verified
+    );
 }
 
 #[tokio::test]
