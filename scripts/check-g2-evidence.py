@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -790,15 +791,85 @@ def verify_coven_blob(root: pathlib.Path, url: str, expected_digest: str) -> Non
         fail(f"Coven content SHA-256 disagrees with evidence: {path}")
 
 
-def verify_passed(root: pathlib.Path, markdown: str, source_rows: list[list[str]]) -> None:
-    tested = field(markdown, "Tested source commit")
-    run_url = field(markdown, "CI attestation")
+def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
     subprocess.run(["git", "merge-base", "--is-ancestor", tested, "HEAD"], cwd=root, check=True)
     changed = subprocess.run(
         ["git", "diff", "--name-only", f"{tested}..HEAD"], cwd=root, text=True, capture_output=True, check=True
     ).stdout.splitlines()
     if changed != ["docs/G2-EVIDENCE.md"]:
         fail(f"passed source-to-HEAD diff is not evidence-only: {changed}")
+
+
+def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        fail("GitHub Actions event payload path is absent")
+    try:
+        event = json.loads(pathlib.Path(event_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"GitHub Actions event payload is invalid: {error}")
+    if not isinstance(event, dict):
+        fail("GitHub Actions event payload is not an object")
+
+    repository = event.get("repository")
+    pull_request = event.get("pull_request")
+    head = pull_request.get("head") if isinstance(pull_request, dict) else None
+    head_repository = head.get("repo") if isinstance(head, dict) else None
+    pr_head = head.get("sha") if isinstance(head, dict) else None
+    if (
+        not isinstance(repository, dict)
+        or repository.get("full_name") != "OpenCoven/psyche"
+        or not isinstance(head_repository, dict)
+        or head_repository.get("full_name") != "OpenCoven/psyche"
+    ):
+        fail("GitHub Actions pull-request repository provenance is invalid")
+    if not isinstance(pr_head, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head):
+        fail("GitHub Actions pull-request head provenance is invalid")
+
+    compare = run_json(
+        ["gh", "api", f"repos/OpenCoven/psyche/compare/{tested}...{pr_head}"],
+        root,
+    )
+    if not isinstance(compare, dict):
+        fail("GitHub compare response is invalid")
+    base = compare.get("base_commit")
+    merge_base = compare.get("merge_base_commit")
+    commits = compare.get("commits")
+    if not isinstance(base, dict) or base.get("sha") != tested:
+        fail("GitHub compare response does not match the tested source")
+    if (
+        not isinstance(commits, list)
+        or not commits
+        or not isinstance(commits[-1], dict)
+        or commits[-1].get("sha") != pr_head
+    ):
+        fail("GitHub compare response does not end at the pull-request terminal commit")
+    if compare.get("ahead_by") != len(commits) or compare.get("total_commits") != len(commits):
+        fail("GitHub compare response commit counts are inconsistent")
+    if (
+        compare.get("status") != "ahead"
+        or not isinstance(merge_base, dict)
+        or merge_base.get("sha") != tested
+    ):
+        fail("tested source is not the pull-request head's merge-base ancestor")
+    files = compare.get("files")
+    if (
+        not isinstance(files, list)
+        or len(files) != 1
+        or not isinstance(files[0], dict)
+        or files[0].get("filename") != "docs/G2-EVIDENCE.md"
+        or files[0].get("status") != "modified"
+    ):
+        fail(f"passed source-to-pull-request diff is not one modified evidence file: {files}")
+
+
+def verify_passed(root: pathlib.Path, markdown: str, source_rows: list[list[str]]) -> None:
+    tested = field(markdown, "Tested source commit")
+    run_url = field(markdown, "CI attestation")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        verify_actions_source_relationship(root, tested)
+    else:
+        verify_local_source_relationship(root, tested)
     match = re.fullmatch(r"https://github\.com/(OpenCoven)/(psyche)/actions/runs/([0-9]+)", run_url)
     if not match:
         fail("CI attestation URL is malformed")
