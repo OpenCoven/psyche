@@ -6,7 +6,10 @@ use psyche_runtime::{LifecycleState, Runtime, RuntimeError};
 use psyche_store::{CURRENT_DATABASE_VERSION, Store, StoreError};
 
 fn test_config(data_dir: &std::path::Path) -> Config {
-    let data_dir = serde_json::to_string(&data_dir.to_string_lossy()).unwrap();
+    let Some(data_dir) = data_dir.to_str() else {
+        panic!("test data directory must be valid UTF-8");
+    };
+    let data_dir = toml::Value::String(data_dir.to_owned()).to_string();
     psyche_config::load_str(&format!(
         r#"
 schema_version = "psyche.config.v1"
@@ -27,6 +30,28 @@ fn test_config_preserves_a_windows_style_data_directory() {
     let config = test_config(data_dir);
 
     assert_eq!(config.data_dir, data_dir);
+}
+
+#[test]
+fn test_config_preserves_a_del_containing_utf8_data_directory() {
+    let data_dir = std::path::Path::new("/tmp/psyche-\u{007f}-store");
+
+    let config = test_config(data_dir);
+
+    assert_eq!(config.data_dir, data_dir);
+}
+
+#[cfg(unix)]
+#[test]
+#[should_panic(expected = "test data directory must be valid UTF-8")]
+fn test_config_explicitly_rejects_a_non_utf8_data_directory() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let data_dir = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![
+        b'/', b't', b'm', b'p', b'/', 0xff,
+    ]));
+
+    let _ = test_config(&data_dir);
 }
 
 #[tokio::test]
