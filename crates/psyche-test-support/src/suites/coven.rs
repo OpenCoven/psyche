@@ -1793,6 +1793,12 @@ pub async fn assert_c_s4_stable_adoption(
             .unwrap_or_else(|error| panic!("durable adoption snapshot must succeed: {error}"));
         assert_eq!(durable_before, expected_disposition);
         for (field, forged) in stale_digest_mutations(&typed) {
+            let forged_request_id = forged.correlation().request_id;
+            let forged_durable_before = fixture
+                .port()
+                .lookup(&forged_request_id)
+                .await
+                .unwrap_or_else(|error| panic!("forged adoption snapshot failed: {error}"));
             let before = fixture.observations().await;
             assert_eq!(
                 fixture.port().adopt(forged).await,
@@ -1807,6 +1813,15 @@ pub async fn assert_c_s4_stable_adoption(
                     .await
                     .unwrap_or_else(|error| panic!("durable adoption lookup failed: {error}")),
                 durable_before,
+                "{field}"
+            );
+            assert_eq!(
+                fixture
+                    .port()
+                    .lookup(&forged_request_id)
+                    .await
+                    .unwrap_or_else(|error| panic!("forged adoption lookup failed: {error}")),
+                forged_durable_before,
                 "{field}"
             );
             assert_eq!(
@@ -1937,6 +1952,18 @@ pub async fn assert_c_s6_ambiguity_fence(
         assert_eq!(blocked.adoption_calls, 0);
         assert_eq!(blocked.reconciliation_calls, 0);
         assert!(blocked.durable_reconciliation.is_none());
+        assert_eq!(
+            fixture
+                .redispatch_eligibility(&request.correlation)
+                .await
+                .unwrap_or_else(|error| panic!("ambiguous eligibility lookup failed: {error}")),
+            RedispatchEligibility::Blocked
+        );
+        assert_eq!(
+            fixture.observations().await.adoption_calls,
+            blocked.adoption_calls,
+            "ambiguous eligibility observation must not dispatch"
+        );
         let recovered = fixture
             .port()
             .reconcile(request.clone())
@@ -2324,16 +2351,16 @@ pub async fn assert_c_s7_ordered_cursor(
     );
     fixture.restart().await;
     require_clear_fault(fixture).await;
-    assert_eq!(
-        fixture
-            .port()
-            .events(reset_initial)
-            .await
-            .unwrap_or_else(|error| panic!("committed page must replay: {error}"))
-            .next_cursor
-            .after_sequence,
-        3
-    );
+    let replayed = fixture
+        .port()
+        .events(reset_initial.clone())
+        .await
+        .unwrap_or_else(|error| panic!("committed page must replay: {error}"));
+    replayed
+        .validate_for(&reset_initial)
+        .unwrap_or_else(|error| panic!("replayed cursor page must validate: {error}"));
+    assert_cursor_page_progress(&reset_initial, &replayed, RAW_LEDGER_STATES.len() as u64);
+    assert_eq!(replayed.next_cursor.after_sequence, 3);
     ConformanceOutcome::Verified
 }
 
@@ -3151,9 +3178,13 @@ async fn assert_cursor_fault_recovery(
     } else {
         let probe = fixture
             .port()
-            .events(regression)
+            .events(regression.clone())
             .await
             .unwrap_or_else(|error| panic!("before-page fault persisted a cursor: {error}"));
+        probe
+            .validate_for(&regression)
+            .unwrap_or_else(|error| panic!("before-page recovery probe must validate: {error}"));
+        assert_cursor_page_progress(&regression, &probe, RAW_LEDGER_STATES.len() as u64);
         assert_eq!(
             probe
                 .events
@@ -3176,15 +3207,21 @@ async fn assert_cursor_fault_recovery(
         .events(cursor.clone())
         .await
         .unwrap_or_else(|error| panic!("{point:?} cursor must recover: {error}"));
+    recovered
+        .validate_for(&cursor)
+        .unwrap_or_else(|error| panic!("{point:?} recovered cursor page must validate: {error}"));
+    assert_cursor_page_progress(&cursor, &recovered, RAW_LEDGER_STATES.len() as u64);
     fixture.restart().await;
-    assert_eq!(
-        fixture
-            .port()
-            .events(cursor)
-            .await
-            .unwrap_or_else(|error| panic!("{point:?} cursor must replay: {error}")),
-        recovered
-    );
+    let replayed = fixture
+        .port()
+        .events(cursor.clone())
+        .await
+        .unwrap_or_else(|error| panic!("{point:?} cursor must replay: {error}"));
+    replayed
+        .validate_for(&cursor)
+        .unwrap_or_else(|error| panic!("{point:?} replayed cursor page must validate: {error}"));
+    assert_cursor_page_progress(&cursor, &replayed, RAW_LEDGER_STATES.len() as u64);
+    assert_eq!(replayed, recovered);
 }
 
 async fn assert_termination_fault_recovery(
