@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import unittest
@@ -66,9 +67,38 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         with self.assertRaises(self.checker.EvidenceError):
             self.checker.validate_ci_structure(workflow)
 
-    def passed_evidence(self) -> str:
+    def candidate_evidence(self, evidence=None) -> str:
+        candidate = evidence if evidence is not None else self.evidence
+        fields = {
+            "Status": "candidate",
+            "Tested source commit": "not recorded before remote review",
+            "CI attestation": "not recorded before remote review",
+            "Coven plan source commit": "not recorded before plan approval",
+            "Coven plan URL": "not recorded before plan approval",
+            "Coven plan SHA-256": "not recorded before plan approval",
+        }
+        for label, value in fields.items():
+            candidate, count = re.subn(
+                rf"^\*\*{re.escape(label)}:\*\* .*$",
+                f"**{label}:** {value}",
+                candidate,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            if count != 1:
+                raise AssertionError(f"evidence must contain exactly one {label} field")
+        return re.sub(
+            r" \| passed \| https://github\.com/OpenCoven/psyche/actions/runs/[0-9]+ \|$",
+            " | not run remotely | none |",
+            candidate,
+            flags=re.MULTILINE,
+        )
+
+    def passed_evidence(self, evidence=None) -> str:
         run_url = "https://github.com/OpenCoven/psyche/actions/runs/123456"
-        passed = self.evidence.replace("**Status:** candidate", "**Status:** passed")
+        passed = self.candidate_evidence(evidence).replace(
+            "**Status:** candidate", "**Status:** passed"
+        )
         passed = passed.replace(
             "**Tested source commit:** not recorded before remote review",
             "**Tested source commit:** 0123456789abcdef0123456789abcdef01234567",
@@ -94,7 +124,21 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         return passed.replace("not run remotely | none", f"passed | {run_url}")
 
     def test_valid_exact_manifest_and_candidate_evidence(self) -> None:
-        self.assert_valid()
+        self.assert_valid(evidence=self.candidate_evidence())
+
+    def test_passed_evidence_is_idempotent_valid_and_still_mutation_sensitive(self) -> None:
+        passed = self.passed_evidence()
+        rebuilt = self.passed_evidence(passed)
+
+        self.assertEqual(rebuilt, passed)
+        self.assert_valid(evidence=rebuilt)
+        self.assert_rejected(
+            evidence=rebuilt.replace(
+                "passed | https://github.com/OpenCoven/psyche/actions/runs/123456",
+                "ExpectedUnsupported | https://github.com/OpenCoven/psyche/actions/runs/123456",
+                1,
+            )
+        )
 
     def test_delivery_v1_documentation_rejects_field_order_mutation(self) -> None:
         path = "docs/SCHEMAS.md"
