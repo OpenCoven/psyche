@@ -1,0 +1,16 @@
+{
+  "schema_version": "psyche.surface_effect.v1",
+  "surface_effect_id": "sfx_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "intent_id": "int_01BX5ZZKBKACTAV9WEVGEMMVRZ",
+  "graph_id": "grf_01C3F7YQ4R2M8N6P5K1J9H0GTS",
+  "node_id": "nod_01D4G8ZR5S3N9P7Q6M2K0J1HTV",
+  "attempt_id": "att_01E5H90S6T4P0Q8R7N3M1K2JVW",
+  "familiar_snapshot_id": "ids_01F6JA1T7V5Q1R9S8P4N2M3KWX",
+  "project_id": "project:sha256:0123456789abcdef",
+  "action_class": "telegram.reply.send",
+  "account_id": "main",
+  "locator": {"chat_id": "-100123", "message_id": "42"},
+  "effect": {"type": "message", "text": "Review complete."},
+  "effect_digest": "sha256:c16ac6fce1ddecbddc6bf0b51544975741901289ec2248ddeffe6951fc8be995",
+  "created_at": "2026-08-01T00:01:00Z"
+}

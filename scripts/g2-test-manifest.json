@@ -1,0 +1,136 @@
+{
+  "targets": {
+    "psyche-core/contracts": {
+      "list_command": "cargo test -p psyche-core --test contracts -- --list --format terse",
+      "tests": [
+        "delivery_keeps_the_canonical_del_prefix",
+        "delegation_uses_the_distinct_dlg_prefix",
+        "execution_binding_uses_attempt_as_its_only_record_kind",
+        "all_canonical_error_codes_decode",
+        "delivery_v1_fixture_round_trips_canonically",
+        "surface_event_and_effect_fixtures_round_trip",
+        "cancellation_state_vocabulary_requires_matching_o5_evidence",
+        "graph_and_node_accept_only_the_two_frozen_nullable_bindings"
+      ]
+    },
+    "psyche-core/decode": {
+      "list_command": "cargo test -p psyche-core --test decode -- --list --format terse",
+      "tests": [
+        "recognized_error_envelope_decodes_exhaustively",
+        "unknown_typed_enum_is_a_quarantinable_decode_failure"
+      ]
+    },
+    "psyche-coven/request_digest": {
+      "list_command": "cargo test -p psyche-coven --test request_digest -- --list --format terse",
+      "tests": [
+        "execution_request_launch_matches_golden_bytes_and_digest",
+        "execution_request_input_matches_golden_bytes_and_digest"
+      ]
+    },
+    "psyche-coven/bindings": {
+      "list_command": "cargo test -p psyche-coven --test bindings -- --list --format terse",
+      "tests": [
+        "result_bundle_fixture_round_trips_complete_content_references",
+        "result_bundle_fixture_uses_launch_request_correlation",
+        "content_reference_rejects_digest_size_media_type_and_lifetime_mismatch",
+        "termination_dispatch_rejects_invalid_request_before_persistence"
+      ]
+    },
+    "psyche-store/records": {
+      "list_command": "cargo test -p psyche-store --test records -- --list --format terse",
+      "tests": [
+        "delivery_direct_insert_round_trips_canonically",
+        "direct_insert_rejects_wrong_field_id_kind_without_writing",
+        "direct_insert_rejects_acknowledged_cancellation_without_evidence",
+        "direct_insert_rejects_acknowledged_state_without_termination_correlation",
+        "direct_insert_rejects_mismatched_cancellation_evidence",
+        "direct_insert_rejects_wrong_termination_request_id",
+        "direct_insert_rejects_termination_before_execution_request",
+        "direct_insert_rejects_acknowledgement_outside_termination_window",
+        "direct_insert_rejects_acknowledgement_before_termination_window",
+        "direct_insert_rejects_unresolved_outside_termination_window",
+        "direct_insert_rejects_unresolved_before_termination_window",
+        "direct_insert_accepts_acknowledgement_at_termination_window_boundaries",
+        "direct_insert_accepts_unresolved_at_termination_window_boundaries",
+        "direct_insert_accepts_termination_window_after_execution_deadline",
+        "direct_insert_accepts_termination_at_execution_creation_boundary",
+        "execution_binding_revision_appends_termination_outcomes_without_record_conflict",
+        "execution_binding_revision_rejects_forks_gaps_and_changed_correlation",
+        "execution_binding_revision_replay_is_idempotent",
+        "execution_binding_revision_rejects_same_revision_changed_bytes",
+        "execution_binding_revision_rejects_changed_reason_replay",
+        "execution_binding_revision_rejects_every_frozen_execution_field_change",
+        "execution_binding_revision_rejects_session_and_termination_rebinding",
+        "execution_binding_revision_rejects_termination_correlation_removal",
+        "execution_binding_revision_rejects_timestamp_regression",
+        "transition_versions_are_monotonic_and_append_only"
+      ]
+    },
+    "psyche-store/retention": {
+      "list_command": "cargo test -p psyche-store --test retention -- --list --format terse",
+      "tests": [
+        "quarantine_id_constructor_parser_and_serde_round_trip",
+        "unknown_enum_is_quarantined_without_dispatchable_record",
+        "quarantine_resolution_is_durable_and_idempotent",
+        "concurrent_quarantine_resolution_has_one_durable_winner",
+        "pruning_preserves_unresolved_quarantine_binding_revisions_and_transitions"
+      ]
+    },
+    "psyche-store/migrations": {
+      "list_command": "cargo test -p psyche-store --test migrations -- --list --format terse",
+      "tests": ["fresh_store_applies_v1_once_and_reopens"]
+    },
+    "psyche-store/crash": {
+      "list_command": "cargo test -p psyche-store --features test-fault-injection --test crash -- --list --format terse",
+      "tests": ["killed_writer_exposes_only_committed_state_after_reopen"]
+    },
+    "psyche-runtime/lib": {
+      "list_command": "cargo test -p psyche-runtime --lib -- --list --format terse",
+      "tests": ["tests::checkpoint_failure_stops_and_releases_every_shutdown_waiter"]
+    },
+    "psyche-test-support/fakes": {
+      "list_command": "cargo test -p psyche-test-support --test fakes -- --list --format terse",
+      "tests": [
+        "advertised_adoption_requires_a_scripted_adoption_step",
+        "termination_dispatch_requires_durable_session_bound_revision",
+        "termination_dispatch_persists_acknowledged_outcome_before_success",
+        "termination_dispatch_persists_unresolved_outcome_before_success",
+        "termination_dispatch_exact_replay_is_idempotent",
+        "termination_dispatch_crash_after_response_leaves_recoverable_request",
+        "termination_dispatch_restart_recovers_missing_outcome",
+        "termination_dispatch_rejects_conflicting_replay_response",
+        "termination_dispatch_rejects_invalid_outcome_evidence",
+        "termination_dispatch_rejects_unresolved_outside_termination_window",
+        "termination_dispatch_reports_indeterminate_outcome_persistence",
+        "termination_dispatch_accepts_concurrent_exact_outcome_replay",
+        "termination_dispatch_rejects_concurrent_divergent_outcome",
+        "termination_dispatch_rejects_outcome_byte_attestation_mismatch"
+      ]
+    },
+    "psyche-test-support/state_machine": {
+      "list_command": "cargo test -p psyche-test-support --test state_machine -- --list --format terse",
+      "tests": [
+        "model_and_store_agree_after_any_foundation_operation_sequence",
+        "c_s6_model_never_redispatches_without_fence",
+        "request_digest_binds_every_typed_field"
+      ]
+    },
+    "psyche-test-support/conformance": {
+      "list_command": "cargo test -p psyche-test-support --test conformance -- --list --format terse",
+      "tests": [
+        "c_s1_contract_negotiation",
+        "c_s2_session_lifecycle",
+        "c_s3_snapshot_attempt_binding",
+        "c_s4_stable_adoption",
+        "c_s5_non_adoption_proof",
+        "c_s6_ambiguity_fence",
+        "c_s7_ordered_cursor",
+        "c_s8_terminal_authority",
+        "c_s9_cancellation_acknowledgement",
+        "c_s10_result_artifact_binding",
+        "c_s11_restart_persistence",
+        "c_s12_structured_denial"
+      ]
+    }
+  }
+}

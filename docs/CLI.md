@@ -160,12 +160,16 @@ validates anything, so neither can fail.
 - **`config`** — whether the configuration loaded, and which schema it declares.
   On failure the detail names the path and the reason. `fail` here means the
   command exits 3.
-- **`data_dir`** — creates the directory if absent, then writes and removes a
-  probe file inside it. `ok` means it existed and a write succeeded; `warn` means
-  this run created it, which usually means the path is not the one you meant;
-  `fail` means the write failed, and the command exits 5. The word "writable" is
-  earned by an actual write — checking only that the directory exists reports a
-  mode-500 directory as writable.
+- **`data_dir`** — prepares the directory with the same safety contract used by
+  runtime startup, then writes and removes a probe file inside it. A missing
+  directory is created owner-only on Unix and reported as `warn`; an existing
+  Unix directory must have exactly mode `0700`, with no special permission
+  bits. An insecure existing directory (including a writable mode-`0755`
+  directory or mode `01700`) is left unchanged: `doctor`
+  exits 5 and runtime startup also fails closed rather than auto-`chmod`ing
+  operator data. `ok` means the directory already existed, passed those safety
+  checks, and the probe write succeeded. On Windows, the platform's ACL and
+  directory semantics apply; no Unix mode assertion is made.
 - **`coven_socket_path`** — reports the configured path. Nothing is contacted at
   this gate.
 - **`extensions`** — reports how many extension tables are present. Values are

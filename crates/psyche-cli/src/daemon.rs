@@ -127,10 +127,9 @@ pub async fn run(config: Config, shutdown_after_start: bool) -> ExitCode {
 
     let runtime = match Runtime::start(config).await {
         Ok(runtime) => runtime,
-        // Unreachable, and permanently so: `RuntimeError` has no variants, so
-        // this arm cannot be constructed and cannot be covered by a test. It is
-        // written out anyway because the signature is what absorbs the first
-        // real startup failure — see the type's docs in psyche-runtime.
+        // Store open and migration failures happen before `Running` is
+        // published. Render the stable runtime error without exposing SQLite
+        // internals or configuration contents.
         Err(e) => {
             // Display, not `{:?}` — see the note on `psyche`'s `main`.
             eprintln!("{e}");
@@ -153,7 +152,8 @@ pub async fn run(config: Config, shutdown_after_start: bool) -> ExitCode {
 
     match runtime.shutdown().await {
         Ok(()) => ExitCode::SUCCESS,
-        // Unreachable for the same reason as the arm above.
+        // A checkpoint failure is terminal: the runtime still publishes
+        // `Stopped`, and every shutdown caller receives the same failure.
         Err(e) => {
             eprintln!("{e}");
             ExitCode::FAILURE

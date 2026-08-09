@@ -11,11 +11,10 @@ publish.workspace = true
 
 [dependencies]
 psyche-config = { workspace = true }
+psyche-store = { workspace = true }
 thiserror = { workspace = true }
-# Declared even though this slice awaits nothing: `start` and `shutdown` are
-# `async fn` because the drain seam they bracket becomes a real await in the
-# follow-on G2 plan, and widening a sync signature to async later is a breaking
-# change for psyche-cli. The dependency is what makes that signature honest.
+# `shutdown` observers wait asynchronously for the elected synchronous driver
+# to publish its terminal outcome.
 tokio = { workspace = true }
 tracing = { workspace = true }
 
@@ -23,6 +22,9 @@ tracing = { workspace = true }
 # `#[tokio::test]` needs the `macros` and `rt` features; the workspace entry
 # carries both.
 tokio = { workspace = true }
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
+toml = { workspace = true }
 
 [lints]
 workspace = true

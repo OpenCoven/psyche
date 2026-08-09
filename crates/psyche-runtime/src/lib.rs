@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use psyche_config::Config;
+use psyche_store::{Store, StoreError};
 use tokio::sync::watch;
 
 /// Graceful shutdown stops intake, then drains, then exits. `Draining` is
@@ -59,20 +60,64 @@ impl fmt::Display for LifecycleState {
 
 /// Failures from driving the runtime lifecycle.
 ///
-/// Deliberately empty. Nothing in this slice can fail: [`Runtime::start`] does
-/// no I/O yet, and a losing [`Runtime::shutdown`] caller waits for the winner
-/// and returns `Ok` rather than erroring. The type and the `Result` signatures
-/// exist so that the first real failure — opening `data_dir`, binding the Coven
-/// socket, acquiring a lease — is an added variant rather than a breaking
-/// signature change.
-///
-/// Do not add a variant speculatively. Add it with the code that returns it. An
-/// earlier draft carried a `ShutdownInProgress` variant that nothing
-/// constructed; it implied to every reader that `shutdown` refuses a second
-/// caller, which is the behaviour the waiting loser deliberately replaced.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum RuntimeError {}
+pub enum RuntimeError {
+    /// Opening or migrating the durable store failed before startup completed.
+    #[error("runtime store startup failed")]
+    Store(#[source] StoreError),
+    /// The elected shutdown driver could not checkpoint the durable store.
+    #[error("runtime store checkpoint failed")]
+    Checkpoint(#[source] Arc<StoreError>),
+}
+
+#[derive(Debug, Clone)]
+enum ShutdownOutcome {
+    Clean,
+    CheckpointFailed(Arc<StoreError>),
+}
+
+impl ShutdownOutcome {
+    fn result(&self, role: ShutdownRole) -> Result<ShutdownRole, RuntimeError> {
+        match self {
+            Self::Clean => Ok(role),
+            Self::CheckpointFailed(error) => Err(RuntimeError::Checkpoint(Arc::clone(error))),
+        }
+    }
+}
+
+trait CheckpointBackend: fmt::Debug + Send {
+    fn checkpoint(&mut self) -> Result<(), StoreError>;
+}
+
+impl CheckpointBackend for Store {
+    fn checkpoint(&mut self) -> Result<(), StoreError> {
+        Store::checkpoint(self)
+    }
+}
+
+#[derive(Debug)]
+enum RuntimeStore {
+    Durable(Mutex<Store>),
+    #[cfg(test)]
+    Test(Mutex<Box<dyn CheckpointBackend>>),
+}
+
+impl RuntimeStore {
+    fn checkpoint(&self) -> Result<(), StoreError> {
+        match self {
+            Self::Durable(store) => {
+                let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
+                CheckpointBackend::checkpoint(&mut *store)
+            }
+            #[cfg(test)]
+            Self::Test(backend) => backend
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .checkpoint(),
+        }
+    }
+}
 
 /// Which side of the shutdown election a caller ended up on.
 ///
@@ -104,6 +149,7 @@ struct Lifecycle {
     /// holds at most three entries for the life of the process. An unguarded
     /// `push` would be a slow leak in a daemon that runs for months.
     history: Vec<LifecycleState>,
+    terminal_outcome: Option<ShutdownOutcome>,
 }
 
 impl Lifecycle {
@@ -141,25 +187,25 @@ pub struct Runtime {
     /// here instead would lose the single-acquisition property that the
     /// 24,000-attempt concurrency test exists to protect.
     state_tx: watch::Sender<LifecycleState>,
+    store: RuntimeStore,
     config: Config,
 }
 
 impl Runtime {
     /// Builds the composition root and brings it to [`LifecycleState::Running`].
     ///
-    /// `async` although nothing is awaited yet, and fallible although nothing
-    /// fails yet, for the same reason: the store and lease wiring in the
-    /// follow-on G2 plan starts here, and that work — opening `data_dir`,
-    /// binding the Coven socket, acquiring a lease — is exactly what fails.
-    /// Widening either signature later would break every caller, which is the
-    /// break these two decisions exist to avoid.
+    /// Opening and migrating SQLite is intentionally synchronous in this
+    /// bounded G2 seam. The later W3-W9 store actor should own general blocking
+    /// SQLite work; widening this elected shutdown path with `spawn_blocking`
+    /// first would introduce a cancellation point that could strand `Draining`.
     ///
     /// # Errors
     ///
-    /// None are possible in this build — [`RuntimeError`] has no variants, so
-    /// this always returns `Ok`. The signature is the point: the first thing
-    /// startup acquires becomes a variant, not a breaking change.
+    /// Returns [`RuntimeError::Store`] if the configured durable store cannot be
+    /// opened or migrated. The runtime is not published as `Running` first.
     pub async fn start(config: Config) -> Result<Self, RuntimeError> {
+        let database = config.data_dir.join("psyche.sqlite3");
+        let store = Store::open(&database).map_err(RuntimeError::Store)?;
         // `Sender::new`, not `watch::channel(..)`: `channel` also hands back a
         // `Receiver` that this type has no use for, and dropping it would leave
         // a sender with no receivers. See `transition_to` for why that matters.
@@ -169,10 +215,27 @@ impl Runtime {
             lifecycle: Arc::new(Mutex::new(Lifecycle {
                 current: LifecycleState::Running,
                 history: vec![LifecycleState::Running],
+                terminal_outcome: None,
             })),
             state_tx,
+            store: RuntimeStore::Durable(Mutex::new(store)),
             config,
         })
+    }
+
+    #[cfg(test)]
+    fn start_with_checkpoint_backend(config: Config, backend: Box<dyn CheckpointBackend>) -> Self {
+        let state_tx = watch::Sender::new(LifecycleState::Running);
+        Self {
+            lifecycle: Arc::new(Mutex::new(Lifecycle {
+                current: LifecycleState::Running,
+                history: vec![LifecycleState::Running],
+                terminal_outcome: None,
+            })),
+            state_tx,
+            store: RuntimeStore::Test(Mutex::new(backend)),
+            config,
+        }
     }
 
     /// Takes the lifecycle lock, recovering from poisoning instead of panicking.
@@ -241,6 +304,9 @@ impl Runtime {
         if !lifecycle.advance(next) {
             return false;
         }
+        if next == LifecycleState::Stopped && lifecycle.terminal_outcome.is_none() {
+            lifecycle.terminal_outcome = Some(ShutdownOutcome::Clean);
+        }
         // Published while the guard is still held, so a subscriber can never
         // observe a state the machine has not entered, and two transitions
         // cannot be published in the opposite order to the one they were made.
@@ -264,20 +330,36 @@ impl Runtime {
     ///
     /// Returns immediately if it already has, which is the common case for a
     /// caller arriving after the runtime has fully stopped.
-    async fn await_stopped(&self) {
+    async fn await_stopped(&self) -> ShutdownOutcome {
         let mut receiver = self.subscribe();
         // `borrow_and_update` before `changed`, in that order and in a loop:
         // `subscribe` marks the current value as seen, so awaiting `changed`
         // first would miss a `Stopped` that was published before this caller
         // subscribed, and wait for a transition that can never come.
-        while *receiver.borrow_and_update() != LifecycleState::Stopped {
+        loop {
+            if *receiver.borrow_and_update() == LifecycleState::Stopped {
+                if let Some(outcome) = self.lifecycle().terminal_outcome.clone() {
+                    return outcome;
+                }
+            }
             if receiver.changed().await.is_err() {
                 // Unreachable: the sender lives in `self`, which this call
                 // borrows. Breaking rather than panicking anyway — this is the
                 // shutdown path.
-                break;
+                continue;
             }
         }
+    }
+
+    fn publish_stopped(&self, outcome: ShutdownOutcome) -> ShutdownOutcome {
+        let mut lifecycle = self.lifecycle();
+        let stored_outcome = lifecycle.terminal_outcome.insert(outcome).clone();
+        if lifecycle.advance(LifecycleState::Stopped) {
+            self.state_tx.send_replace(LifecycleState::Stopped);
+        }
+        drop(lifecycle);
+        tracing::info!(state = %LifecycleState::Stopped, "psyche lifecycle transition");
+        stored_outcome
     }
 
     /// Stops intake, drains in-flight work, then exits. There is no forced
@@ -291,16 +373,10 @@ impl Runtime {
     /// out of `main` and exit the process mid-drain — graceful shutdown
     /// defeated by ordinary operator behaviour.
     ///
-    /// Returns `Ok(())` for both roles. A caller that merely waited still has
-    /// the answer it asked for — the runtime is stopped, and it stopped
-    /// gracefully. An error would be false by the time it was returned, and
-    /// every caller would have to translate it back into success.
-    ///
     /// # Errors
     ///
-    /// None are possible in this build — [`RuntimeError`] has no variants, so
-    /// this always returns `Ok`. Losing the election is explicitly *not* an
-    /// error; that is what the paragraph above is about.
+    /// Returns the elected driver's checkpoint failure to every concurrent and
+    /// later caller. Losing the election is not itself an error.
     pub async fn shutdown(&self) -> Result<(), RuntimeError> {
         match self.shutdown_inner().await? {
             // Both roles, one answer — see the note above.
@@ -316,18 +392,17 @@ impl Runtime {
         // and both drive the machine, which once there is real drain work means
         // running it twice.
         if !self.transition_to(LifecycleState::Draining) {
-            self.await_stopped().await;
-            return Ok(ShutdownRole::Observer);
+            return self.await_stopped().await.result(ShutdownRole::Observer);
         }
 
-        // The drain seam. Nothing durable is in flight in this slice; the store
-        // and lease work in the follow-on G2 plan awaits here. No lifecycle
-        // guard is live across it — `transition_to` takes and drops its own —
-        // which is what keeps this future `Send`; the assertion below fails to
-        // compile if that stops being true.
-
-        self.transition_to(LifecycleState::Stopped);
-        Ok(ShutdownRole::Driver)
+        // From election through terminal publication this path contains no
+        // await. The store guard is released before the lifecycle guard is
+        // acquired, so lock order cannot overlap or invert.
+        let outcome = match self.store.checkpoint() {
+            Ok(()) => ShutdownOutcome::Clean,
+            Err(error) => ShutdownOutcome::CheckpointFailed(Arc::new(error)),
+        };
+        self.publish_stopped(outcome).result(ShutdownRole::Driver)
     }
 }
 
@@ -360,33 +435,52 @@ const _: fn() = || {
 mod tests {
     use super::*;
 
-    fn test_config() -> Config {
-        psyche_config::load_str(
+    fn toml_path(path: &std::path::Path) -> String {
+        let Some(path) = path.to_str() else {
+            panic!("test data directory must be valid UTF-8");
+        };
+        toml::Value::String(path.to_owned()).to_string()
+    }
+
+    fn test_config() -> (Config, tempfile::TempDir) {
+        let owner = tempfile::tempdir().unwrap();
+        let data_dir = owner.path().join("data");
+        let data_dir = toml_path(&data_dir);
+        let config = psyche_config::load_str(&format!(
             r#"
 schema_version = "psyche.config.v1"
-data_dir = "/tmp/psyche-test"
+data_dir = {data_dir}
 
 [coven]
 socket = "/run/coven.sock"
 required_api_version = "coven.daemon.v1"
-"#,
-        )
-        .unwrap()
+"#
+        ))
+        .unwrap();
+        (config, owner)
+    }
+
+    #[test]
+    fn test_configs_use_distinct_data_directories() {
+        let (first, _first_owner) = test_config();
+        let (second, _second_owner) = test_config();
+
+        assert_ne!(first.data_dir, second.data_dir);
     }
 
     #[tokio::test]
     async fn starts_running() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         assert_eq!(rt.state(), LifecycleState::Running);
     }
 
     #[tokio::test]
     async fn the_configuration_is_readable_after_start() {
-        let rt = Runtime::start(test_config()).await.unwrap();
-        assert_eq!(
-            rt.config().data_dir,
-            std::path::Path::new("/tmp/psyche-test")
-        );
+        let (config, data_dir) = test_config();
+        let expected = data_dir.path().join("data");
+        let rt = Runtime::start(config).await.unwrap();
+        assert_eq!(rt.config().data_dir, expected);
     }
 
     // The wire spellings are what `psyche status --json` emits and what log
@@ -401,7 +495,8 @@ required_api_version = "coven.daemon.v1"
 
     #[tokio::test]
     async fn shutdown_drains_then_stops_in_order() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         rt.shutdown().await.unwrap();
         assert_eq!(rt.state(), LifecycleState::Stopped);
         assert_eq!(
@@ -429,7 +524,8 @@ required_api_version = "coven.daemon.v1"
     async fn a_later_shutdown_succeeds_without_redriving_the_drain() {
         use std::time::Duration;
 
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         for attempt in 0..2 {
             tokio::time::timeout(Duration::from_secs(5), rt.shutdown())
                 .await
@@ -444,7 +540,8 @@ required_api_version = "coven.daemon.v1"
     // the only place the election is visible.
     #[tokio::test]
     async fn only_the_first_caller_drives_the_drain() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         assert_eq!(rt.shutdown_inner().await.unwrap(), ShutdownRole::Driver);
         assert_eq!(rt.shutdown_inner().await.unwrap(), ShutdownRole::Observer);
     }
@@ -461,7 +558,8 @@ required_api_version = "coven.daemon.v1"
     async fn a_losing_caller_does_not_return_before_stopped_is_published() {
         use std::time::Duration;
 
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         // Enter `Draining` with no winner running, so nothing will publish
         // `Stopped` unless this test does.
         assert!(rt.transition_to(LifecycleState::Draining));
@@ -487,7 +585,8 @@ required_api_version = "coven.daemon.v1"
     // which in a daemon that is signalled repeatedly is an unbounded allocation.
     #[tokio::test]
     async fn the_transition_log_is_bounded_by_the_state_count() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         for _ in 0..1_000 {
             let _ = rt.shutdown().await;
         }
@@ -503,7 +602,8 @@ required_api_version = "coven.daemon.v1"
     // the part that is actually a guarantee.
     #[tokio::test]
     async fn a_subscriber_that_keeps_up_observes_every_state_in_order() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         let mut receiver = rt.subscribe();
 
         let mut seen = vec![*receiver.borrow_and_update()];
@@ -527,7 +627,8 @@ required_api_version = "coven.daemon.v1"
     // is what makes `await_stopped` safe for a caller that arrives late.
     #[tokio::test]
     async fn a_late_subscriber_sees_the_state_the_runtime_is_actually_in() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         rt.shutdown().await.unwrap();
         assert_eq!(*rt.subscribe().borrow(), LifecycleState::Stopped);
     }
@@ -575,7 +676,8 @@ required_api_version = "coven.daemon.v1"
         let executor = tokio::runtime::Builder::new_multi_thread().build().unwrap();
 
         for round in 0..ROUNDS {
-            let rt = Arc::new(executor.block_on(Runtime::start(test_config())).unwrap());
+            let (config, _data_dir) = test_config();
+            let rt = Arc::new(executor.block_on(Runtime::start(config)).unwrap());
             // +1 for the reader.
             let barrier = Arc::new(Barrier::new(THREADS + 1));
             let drivers = Arc::new(AtomicUsize::new(0));
@@ -649,6 +751,72 @@ required_api_version = "coven.daemon.v1"
         }
     }
 
+    #[derive(Debug)]
+    struct FailingCheckpoint {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CheckpointBackend for FailingCheckpoint {
+        fn checkpoint(&mut self) -> Result<(), StoreError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(StoreError::UnsupportedDatabaseVersion { found: 99 })
+        }
+    }
+
+    #[test]
+    fn checkpoint_failure_stops_and_releases_every_shutdown_waiter() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const CALLERS: usize = 64;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (config, _data_dir) = test_config();
+        let runtime = Arc::new(Runtime::start_with_checkpoint_backend(
+            config,
+            Box::new(FailingCheckpoint {
+                calls: Arc::clone(&calls),
+            }),
+        ));
+        let barrier = Arc::new(Barrier::new(CALLERS));
+        let executor = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+
+        let errors = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..CALLERS)
+                .map(|_| {
+                    let runtime = Arc::clone(&runtime);
+                    let barrier = Arc::clone(&barrier);
+                    let handle = executor.handle().clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        match handle.block_on(runtime.shutdown()) {
+                            Err(RuntimeError::Checkpoint(error)) => error,
+                            other => panic!("expected checkpoint failure, got {other:?}"),
+                        }
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.state(), LifecycleState::Stopped);
+        for error in &errors[1..] {
+            assert!(Arc::ptr_eq(&errors[0], error));
+        }
+
+        let later = match executor.block_on(runtime.shutdown()) {
+            Err(RuntimeError::Checkpoint(error)) => error,
+            other => panic!("expected checkpoint failure, got {other:?}"),
+        };
+        assert!(Arc::ptr_eq(&errors[0], &later));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
     // `Runtime` derives `Debug` purely on the strength of `Config` redacting its
     // untyped extensions table. Asserting it here means replacing the field with
     // something that renders differently fails a test rather than quietly
@@ -656,10 +824,13 @@ required_api_version = "coven.daemon.v1"
     #[tokio::test]
     async fn debug_does_not_print_an_extension_secret() {
         let secretish = "A".repeat(30);
+        let data_dir = tempfile::tempdir().unwrap();
+        let store_dir = data_dir.path().join("data");
+        let store_dir = toml_path(&store_dir);
         let raw = format!(
             r#"
 schema_version = "psyche.config.v1"
-data_dir = "/tmp/psyche-test"
+data_dir = {store_dir}
 
 [coven]
 socket = "/run/coven.sock"
@@ -683,6 +854,7 @@ looks_like_a_secret = "{secretish}"
         let mut lifecycle = Lifecycle {
             current: LifecycleState::Running,
             history: vec![LifecycleState::Running],
+            terminal_outcome: None,
         };
         assert!(!lifecycle.advance(LifecycleState::Running));
         assert!(lifecycle.advance(LifecycleState::Stopped));
@@ -699,7 +871,8 @@ looks_like_a_secret = "{secretish}"
     // A poisoned lock must not take the daemon's shutdown path down with it.
     #[tokio::test]
     async fn a_poisoned_lock_does_not_panic_the_shutdown_path() {
-        let rt = Runtime::start(test_config()).await.unwrap();
+        let (config, _data_dir) = test_config();
+        let rt = Runtime::start(config).await.unwrap();
         let lock = Arc::clone(&rt.lifecycle);
         std::thread::spawn(move || {
             let _guard = lock.lock().unwrap();

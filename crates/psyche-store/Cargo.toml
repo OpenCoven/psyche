@@ -1,0 +1,46 @@
+[package]
+name = "psyche-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+psyche-core = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+ulid = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "dragonfly"))'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+winsafe = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+test-fault-injection = []
+
+[[bin]]
+name = "crash_writer"
+path = "src/bin/crash_writer.rs"
+required-features = ["test-fault-injection"]
+
+[[test]]
+name = "crash"
+path = "tests/crash.rs"
+required-features = ["test-fault-injection"]
+
+[lints]
+workspace = true

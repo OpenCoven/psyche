@@ -66,7 +66,8 @@ fn write_config(dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
 
 fn write_config_with(dir: &std::path::Path, extra: &str) -> std::io::Result<std::path::PathBuf> {
     let data_dir = dir.join("data");
-    std::fs::create_dir_all(&data_dir)?;
+    psyche_store::prepare_data_dir(&data_dir)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     let path = dir.join("psyche.toml");
     std::fs::write(&path, format!("{}{extra}", config_body(&data_dir)))?;
     Ok(path)
@@ -98,6 +99,62 @@ fn doctor_succeeds_without_any_telegram_credentials() {
         .assert()
         .success()
         .stdout(contains("config: ok").and(contains("data_dir: ok")));
+}
+
+#[test]
+fn doctor_created_data_dir_can_immediately_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("fresh-data");
+    let config = tmp.path().join("psyche.toml");
+    std::fs::write(&config, config_body(&data_dir)).unwrap();
+
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .args(["doctor", "--config", config.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("data_dir: warn").and(contains("created")));
+
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .args([
+            "start",
+            "--config",
+            config.to_str().unwrap(),
+            "--shutdown-after-start",
+        ])
+        .assert()
+        .success();
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_rejects_an_existing_insecure_nonempty_data_dir_without_changing_it() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("shared-data");
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::write(data_dir.join("operator-data"), b"preserve").unwrap();
+    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = tmp.path().join("psyche.toml");
+    std::fs::write(&config, config_body(&data_dir)).unwrap();
+
+    Command::cargo_bin("psyche")
+        .unwrap()
+        .args(["doctor", "--config", config.to_str().unwrap()])
+        .assert()
+        .code(i32::from(EXIT_CHECK_FAILED))
+        .stdout(contains("data_dir: fail"));
+
+    assert_eq!(
+        std::fs::metadata(&data_dir).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(
+        std::fs::read(data_dir.join("operator-data")).unwrap(),
+        b"preserve"
+    );
 }
 
 /// `status` emits no `state` at all, because it observed none.
@@ -477,8 +534,6 @@ fn psyche_start_and_psyched_accept_the_same_flags() {
         let mut found = std::collections::BTreeSet::new();
         for token in help.split_whitespace() {
             let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
-            // Nested rather than a `let` chain: those stabilised after this
-            // workspace's 1.85 MSRV.
             if let Some(name) = token.strip_prefix("--") {
                 let plausible = !name.is_empty()
                     && name

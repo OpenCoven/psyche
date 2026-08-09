@@ -88,7 +88,8 @@ pub struct Check {
 /// freeze it.
 pub const DOCTOR_SCHEMA: &str = "psyche.doctor.v1";
 
-/// Writes and removes a file inside `dir`, creating `dir` if it is absent.
+/// Exclusively creates and removes a temporary file inside `dir`, creating
+/// `dir` if it is absent.
 ///
 /// Returns whether `dir` already existed. `create_dir_all` alone proves nothing:
 /// it returns `Ok(())` for a directory that exists at any mode, so a mode-500
@@ -98,14 +99,16 @@ pub const DOCTOR_SCHEMA: &str = "psyche.doctor.v1";
 /// The distinction between created and pre-existing matters just as much: on a
 /// typo'd path the old code silently *created* the directory and blessed it,
 /// hiding the exact misconfiguration `doctor` exists to surface.
-fn probe(dir: &Path) -> std::io::Result<bool> {
-    let existed = dir.try_exists()?;
-    std::fs::create_dir_all(dir)?;
-    // A fixed name, not a random one: a probe file left behind by a killed
-    // `doctor` should be overwritten by the next run rather than accumulating.
-    let probe = dir.join(".psyche-doctor-probe");
-    std::fs::write(&probe, b"")?;
-    std::fs::remove_file(probe)?;
+fn probe(dir: &Path) -> Result<bool, String> {
+    let existed = psyche_store::prepare_data_dir(dir).map_err(|error| error.to_string())?;
+    // `tempfile` uses exclusive creation with randomized names and bounded
+    // collision retries, so this never opens or truncates a pre-existing
+    // entry. Closing removes that randomized path, and reports cleanup failure.
+    let probe = tempfile::Builder::new()
+        .prefix(".psyche-doctor-probe-")
+        .tempfile_in(dir)
+        .map_err(|error| error.to_string())?;
+    probe.close().map_err(|error| error.to_string())?;
     Ok(existed)
 }
 
@@ -312,6 +315,12 @@ required_api_version = "coven.daemon.v1"
         ))
     }
 
+    fn prepared_data_dir(root: &Path) -> Result<std::path::PathBuf, psyche_store::StoreError> {
+        let data_dir = root.join("data");
+        psyche_store::prepare_data_dir(&data_dir)?;
+        Ok(data_dir)
+    }
+
     fn check<'a>(checks: &'a [Check], name: &str) -> Option<&'a Check> {
         checks.iter().find(|c| c.name == name)
     }
@@ -353,7 +362,8 @@ required_api_version = "coven.daemon.v1"
     #[test]
     fn every_check_is_named_and_explained() {
         let tmp = tempfile::tempdir().unwrap();
-        let config = config_for(tmp.path()).unwrap();
+        let data_dir = prepared_data_dir(tmp.path()).unwrap();
+        let config = config_for(&data_dir).unwrap();
         let checks = run(Path::new("psyche.toml"), Ok(&config));
 
         let names: Vec<&str> = checks.iter().map(|c| c.name).collect();
@@ -373,7 +383,8 @@ required_api_version = "coven.daemon.v1"
     #[test]
     fn an_existing_writable_data_dir_passes() {
         let tmp = tempfile::tempdir().unwrap();
-        let config = config_for(tmp.path()).unwrap();
+        let prepared = prepared_data_dir(tmp.path()).unwrap();
+        let config = config_for(&prepared).unwrap();
         let checks = run(Path::new("psyche.toml"), Ok(&config));
         let data_dir = check(&checks, "data_dir").unwrap();
 
@@ -386,7 +397,7 @@ required_api_version = "coven.daemon.v1"
         // The probe cleans up after itself; a leftover file in an operator's
         // data directory is litter, and one that persisted would also make the
         // "did not exist" branch below unreachable on a second run.
-        assert!(!tmp.path().join(".psyche-doctor-probe").exists());
+        assert!(std::fs::read_dir(prepared).unwrap().next().is_none());
     }
 
     /// A typo'd path used to be silently created and blessed with a green line.
@@ -409,6 +420,47 @@ required_api_version = "coven.daemon.v1"
         // A warning is not a failure: a first run on a clean host must not exit
         // non-zero for a directory it successfully prepared.
         assert_eq!(failures(&checks), 0);
+    }
+
+    #[test]
+    fn probe_does_not_touch_a_preexisting_regular_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = prepared_data_dir(tmp.path()).unwrap();
+        let existing_probe = data_dir.join(".psyche-doctor-probe");
+        std::fs::write(&existing_probe, b"operator-owned").unwrap();
+        let config = config_for(&data_dir).unwrap();
+
+        let checks = run(Path::new("psyche.toml"), Ok(&config));
+
+        assert_eq!(check(&checks, "data_dir").unwrap().status, Status::Ok);
+        assert_eq!(std::fs::read(existing_probe).unwrap(), b"operator-owned");
+        assert_eq!(std::fs::read_dir(data_dir).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_does_not_follow_or_remove_a_preexisting_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = prepared_data_dir(tmp.path()).unwrap();
+        let target = tmp.path().join("operator-owned");
+        std::fs::write(&target, b"preserve").unwrap();
+        let existing_probe = data_dir.join(".psyche-doctor-probe");
+        symlink(&target, &existing_probe).unwrap();
+        let config = config_for(&data_dir).unwrap();
+
+        let checks = run(Path::new("psyche.toml"), Ok(&config));
+
+        assert_eq!(check(&checks, "data_dir").unwrap().status, Status::Ok);
+        assert!(
+            std::fs::symlink_metadata(&existing_probe)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(target).unwrap(), b"preserve");
+        assert_eq!(std::fs::read_dir(data_dir).unwrap().count(), 1);
     }
 
     /// Mode 500: readable and traversable, not writable. `create_dir_all`
@@ -485,7 +537,8 @@ required_api_version = "coven.daemon.v1"
     #[test]
     fn checks_that_verify_nothing_are_marked_info() {
         let tmp = tempfile::tempdir().unwrap();
-        let config = config_for(tmp.path()).unwrap();
+        let data_dir = prepared_data_dir(tmp.path()).unwrap();
+        let config = config_for(&data_dir).unwrap();
         let checks = run(Path::new("psyche.toml"), Ok(&config));
 
         for name in ["coven_socket_path", "extensions"] {
@@ -526,7 +579,8 @@ required_api_version = "coven.daemon.v1"
     #[test]
     fn the_text_rendering_names_every_check_and_its_status() {
         let tmp = tempfile::tempdir().unwrap();
-        let config = config_for(tmp.path()).unwrap();
+        let data_dir = prepared_data_dir(tmp.path()).unwrap();
+        let config = config_for(&data_dir).unwrap();
         let rendered = render_text(&run(Path::new("psyche.toml"), Ok(&config)));
 
         assert!(rendered.contains("config: ok ("), "{rendered}");

@@ -14,12 +14,22 @@ publish.workspace = true
 # is what forces every deserialised reference through the validating
 # `TryFrom<String>` impl rather than straight into the newtype.
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true }
+# `digest::canonical_bytes` delegates to this for RFC 8785 canonical JSON —
+# the single authority for "ignores key order" rather than a hand-rolled
+# re-serialization that could drift from the spec.
+serde_json_canonicalizer = { workspace = true }
+# `digest::digest` hashes the canonical bytes; this crate is the workspace's
+# one SHA-256 implementation so every consumer hashes the same way.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # Exercises the `#[serde(try_from = "String")]` path — the way a reference
 # actually enters the type in production — rather than only `TryFrom` directly.
-serde_json = { workspace = true }
+# Property test backing "any value change changes the digest" in digest.rs.
+proptest = { workspace = true }
 
 [lints]
 workspace = true

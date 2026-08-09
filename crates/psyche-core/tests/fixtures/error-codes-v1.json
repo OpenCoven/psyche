@@ -1,0 +1,434 @@
+[
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "config_invalid",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-1",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "secret_unavailable",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-2",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "telegram_unauthorized",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-3",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "telegram_bot_identity_mismatch",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-4",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "telegram_conflict",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-5",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "telegram_rate_limited",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-6",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "telegram_unavailable",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-7",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "webhook_auth_failed",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-8",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "storage_unavailable",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-9",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "event_schema_unsupported",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-10",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "principal_mapping_invalid",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-11",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "graph_invalid",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-12",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "delegation_widened",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-13",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "budget_unenforceable",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-14",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "evidence_incomplete",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-15",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "verdict_invalid",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-16",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "route_not_found",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-17",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "route_ambiguous",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-18",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "sender_unauthorized",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-19",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "identity_invalid",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-20",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "identity_changed",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-21",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_unavailable",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-22",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_version_unsupported",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-23",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_capability_missing",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-24",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_policy_denied",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-25",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_execution_binding_invalid",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-26",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_binding_mismatch",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-27",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_artifact_rejected",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-28",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_intent_conflict",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-29",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_adoption_unknown",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-30",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_cancellation_unknown",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-31",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "coven_session_failed",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-32",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "delivery_unknown",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-33",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "preview_finalize_blocked",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-34",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "media_rejected",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-35",
+      "details": {
+        "scope": "public"
+      }
+    }
+  },
+  {
+    "schema_version": "psyche.error.v1",
+    "error": {
+      "code": "callback_invalid",
+      "message": "redacted public message",
+      "retryable": false,
+      "correlation_id": "fixture-36",
+      "details": {
+        "scope": "public"
+      }
+    }
+  }
+]

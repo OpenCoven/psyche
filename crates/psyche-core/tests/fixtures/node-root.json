@@ -1,0 +1,12 @@
+{
+  "schema_version": "psyche.graph_node.v1",
+  "node_id": "nod_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "graph_id": "grf_01BX5ZZKBKACTAV9WEVGEMMVRZ",
+  "familiar_snapshot_id": "ids_01C3F7YQ4R2M8N6P5K1J9H0GTS",
+  "dependencies": [],
+  "delegation_id": null,
+  "budget_id": "bud_01D4G8ZR5S3N9P7Q6M2K0J1HTV",
+  "required_evidence": ["tests", "diff_review"],
+  "state": "ready",
+  "version": 1
+}
