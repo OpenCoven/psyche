@@ -137,10 +137,10 @@ fn content_reference_rejects_digest_size_media_type_and_lifetime_mismatch() {
     zero.size_bytes = 0;
     assert!(zero.validate().is_err());
     let mut oversized = reference.clone();
-    oversized.size_bytes = 9_007_199_254_740_992;
+    oversized.size_bytes = (i64::MAX as u64) + 1;
     assert!(oversized.validate().is_err());
     let mut maximum = reference.clone();
-    maximum.size_bytes = 9_007_199_254_740_991;
+    maximum.size_bytes = i64::MAX as u64;
     maximum.validate().unwrap();
     let maximum: ContentAddressedReference =
         serde_json::from_value(serde_json::to_value(maximum).unwrap()).unwrap();
