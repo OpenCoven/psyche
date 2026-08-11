@@ -78,6 +78,10 @@ impl From<FakeOperation> for FakeCall {
 /// Adapter-neutral fault points used by Coven conformance fixtures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CovenFaultPoint {
+    /// Deny an otherwise-valid adoption under authority policy.
+    AdoptionPolicyDenied,
+    /// Lose authority during session inspection after the durable read.
+    InspectAuthorityLost,
     /// Lose a launch adoption request before its durable write.
     AdoptionBeforeCommit,
     /// Lose a launch adoption response after its durable write.

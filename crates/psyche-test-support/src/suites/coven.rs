@@ -318,6 +318,9 @@ impl CovenPort for ScriptedG2Port {
             runtime.adoption_calls = runtime.adoption_calls.saturating_add(1);
             runtime.selected_fault
         };
+        if selected_fault == Some(CovenFaultPoint::AdoptionPolicyDenied) {
+            return Err(PortError::PolicyDenied);
+        }
         let mut state = self.durable()?;
         // Recheck after acquiring the runtime observation in case another caller committed first.
         if let Some(stored) = state.adoptions.get(&key) {
@@ -492,6 +495,9 @@ impl CovenPort for ScriptedG2Port {
                 session.authoritative_terminal,
             )
         };
+        if self.runtime()?.selected_fault == Some(CovenFaultPoint::InspectAuthorityLost) {
+            return Err(PortError::Unavailable);
+        }
         let terminal_state = if authoritative_terminal {
             Some("authoritatively_terminated".to_owned())
         } else {
@@ -1056,6 +1062,38 @@ fn launch_request() -> AdoptionRequest {
     match AdoptionRequest::new(launch_input()) {
         Ok(request) => request,
         Err(error) => panic!("canonical launch fixture must validate: {error}"),
+    }
+}
+
+fn request_with_id(request: &AdoptionRequest, request_id: &str) -> AdoptionRequest {
+    let mut input = match serde_json::to_value(request.input()) {
+        Ok(input) => input,
+        Err(error) => panic!("canonical adoption input must encode: {error}"),
+    };
+    input["request_id"] = serde_json::json!(request_id);
+    let input = match serde_json::from_value(input) {
+        Ok(input) => input,
+        Err(error) => panic!("changed request identity must remain typed: {error}"),
+    };
+    match AdoptionRequest::new(input) {
+        Ok(request) => request,
+        Err(error) => panic!("changed request identity must remain valid: {error}"),
+    }
+}
+
+fn same_id_conflicting_request(request: &AdoptionRequest) -> AdoptionRequest {
+    let mut input = match serde_json::to_value(request.input()) {
+        Ok(input) => input,
+        Err(error) => panic!("canonical adoption input must encode: {error}"),
+    };
+    input["principal_id"] = serde_json::json!("principal:conflicting-intent");
+    let input = match serde_json::from_value(input) {
+        Ok(input) => input,
+        Err(error) => panic!("conflicting adoption input must remain typed: {error}"),
+    };
+    match AdoptionRequest::new(input) {
+        Ok(request) => request,
+        Err(error) => panic!("conflicting adoption input must remain valid: {error}"),
     }
 }
 
@@ -1792,6 +1830,28 @@ pub async fn assert_c_s4_stable_adoption(
             .await
             .unwrap_or_else(|error| panic!("durable adoption snapshot must succeed: {error}"));
         assert_eq!(durable_before, expected_disposition);
+        let conflicting = same_id_conflicting_request(&typed);
+        assert_eq!(conflicting.correlation().request_id, request_id);
+        assert_ne!(conflicting.request_digest(), typed.request_digest());
+        let before = fixture.observations().await;
+        assert_eq!(
+            fixture.port().adopt(conflicting).await,
+            Err(PortError::IntentConflict)
+        );
+        assert_eq!(fixture.observations().await, before);
+        assert_eq!(
+            fixture
+                .port()
+                .lookup(&request_id)
+                .await
+                .unwrap_or_else(|error| panic!("conflict lookup must remain durable: {error}")),
+            durable_before
+        );
+        assert_eq!(
+            fixture.port().adopt(typed.clone()).await,
+            Ok(expected_disposition.clone())
+        );
+        assert_eq!(fixture.observations().await, before);
         for (field, forged) in stale_digest_mutations(&typed) {
             let forged_request_id = forged.correlation().request_id;
             let forged_durable_before = fixture
@@ -3377,7 +3437,7 @@ async fn assert_reconciliation_fault_recovery(
     assert_eq!(fixture.observations().await.adoption_calls, 0);
 }
 
-/// Verifies stable typed denials for every public invalid-input class.
+/// Verifies stable typed denials for invalid input, policy, and authority loss.
 pub async fn assert_c_s12_structured_denial(
     fixture: &mut dyn CovenConformanceFixture,
 ) -> ConformanceOutcome {
@@ -3453,6 +3513,71 @@ pub async fn assert_c_s12_structured_denial(
         Err(PortError::InvalidRequest)
     );
 
+    let launch_request_id = correlation.request_id.clone();
+    let launch_adoption = fixture
+        .port()
+        .lookup(&launch_request_id)
+        .await
+        .unwrap_or_else(|error| panic!("structured denial adoption lookup failed: {error}"));
+    let policy_request = request_with_id(&launch_request(), "req_01J00000000000000000000013");
+    let policy_request_id = policy_request.correlation().request_id;
+    let policy_before = fixture
+        .port()
+        .lookup(&policy_request_id)
+        .await
+        .unwrap_or_else(|error| panic!("policy-denial lookup snapshot failed: {error}"));
+    let before = fixture.observations().await;
+    require_fault(fixture, CovenFaultPoint::AdoptionPolicyDenied).await;
+    assert_eq!(
+        fixture.port().adopt(policy_request).await,
+        Err(PortError::PolicyDenied)
+    );
+    require_clear_fault(fixture).await;
+    let after = fixture.observations().await;
+    assert_eq!(after.adoption_calls, before.adoption_calls + 1);
+    assert_eq!(after.reconciliation_calls, before.reconciliation_calls);
+    assert_eq!(after.durable_reconciliation, before.durable_reconciliation);
+    assert_eq!(
+        fixture
+            .port()
+            .lookup(&policy_request_id)
+            .await
+            .unwrap_or_else(|error| panic!("policy-denial lookup failed: {error}")),
+        policy_before
+    );
+    assert_eq!(
+        fixture
+            .port()
+            .lookup(&launch_request_id)
+            .await
+            .unwrap_or_else(|error| panic!("adoption lookup after policy denial failed: {error}")),
+        launch_adoption
+    );
+
+    let before = fixture.observations().await;
+    require_fault(fixture, CovenFaultPoint::InspectAuthorityLost).await;
+    assert_eq!(
+        fixture.port().inspect(&session_id).await,
+        Err(PortError::Unavailable)
+    );
+    require_clear_fault(fixture).await;
+    assert_eq!(fixture.observations().await, before);
+    let recovered = fixture
+        .port()
+        .inspect(&session_id)
+        .await
+        .unwrap_or_else(|error| panic!("inspection must recover after authority loss: {error}"));
+    assert_eq!(recovered.session_id, session_id);
+    assert_eq!(recovered.correlation, correlation);
+    assert_eq!(
+        fixture
+            .port()
+            .lookup(&launch_request_id)
+            .await
+            .unwrap_or_else(|error| panic!("adoption lookup after authority loss failed: {error}")),
+        launch_adoption
+    );
+
     fixture.reset().await;
     assert_eq!(
         fixture
@@ -3490,6 +3615,8 @@ pub async fn assert_c_s12_structured_denial(
         PortError::CorrelationMismatch,
         PortError::InvalidRequest,
         PortError::NotFound,
+        PortError::PolicyDenied,
+        PortError::Unavailable,
     ];
     for error in structured {
         assert!(!error.to_string().is_empty());
