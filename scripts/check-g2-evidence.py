@@ -800,36 +800,7 @@ def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
         fail(f"passed source-to-HEAD diff is not evidence-only: {changed}")
 
 
-def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
-    event_path = os.environ.get("GITHUB_EVENT_PATH")
-    if not event_path:
-        fail("GitHub Actions event payload path is absent")
-    try:
-        event = json.loads(pathlib.Path(event_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        fail(f"GitHub Actions event payload is invalid: {error}")
-    if not isinstance(event, dict):
-        fail("GitHub Actions event payload is not an object")
-
-    repository = event.get("repository")
-    pull_request = event.get("pull_request")
-    head = pull_request.get("head") if isinstance(pull_request, dict) else None
-    head_repository = head.get("repo") if isinstance(head, dict) else None
-    pr_head = head.get("sha") if isinstance(head, dict) else None
-    if (
-        not isinstance(repository, dict)
-        or repository.get("full_name") != "OpenCoven/psyche"
-        or not isinstance(head_repository, dict)
-        or head_repository.get("full_name") != "OpenCoven/psyche"
-    ):
-        fail("GitHub Actions pull-request repository provenance is invalid")
-    if not isinstance(pr_head, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head):
-        fail("GitHub Actions pull-request head provenance is invalid")
-
-    compare = run_json(
-        ["gh", "api", f"repos/OpenCoven/psyche/compare/{tested}...{pr_head}"],
-        root,
-    )
+def validate_evidence_only_compare(compare: object, tested: str, terminal: str) -> None:
     if not isinstance(compare, dict):
         fail("GitHub compare response is invalid")
     base = compare.get("base_commit")
@@ -841,7 +812,7 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
         not isinstance(commits, list)
         or not commits
         or not isinstance(commits[-1], dict)
-        or commits[-1].get("sha") != pr_head
+        or commits[-1].get("sha") != terminal
     ):
         fail("GitHub compare response does not end at the pull-request terminal commit")
     if compare.get("ahead_by") != len(commits) or compare.get("total_commits") != len(commits):
@@ -861,6 +832,126 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
         or files[0].get("status") != "modified"
     ):
         fail(f"passed source-to-pull-request diff is not one modified evidence file: {files}")
+
+
+def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
+    before = event.get("before")
+    after = event.get("after")
+    commits = event.get("commits")
+    head_commit = event.get("head_commit")
+    if (
+        event.get("ref") != "refs/heads/main"
+        or event.get("created") is not False
+        or event.get("deleted") is not False
+        or event.get("forced") is not False
+        or event.get("size") != 1
+        or event.get("distinct_size") != 1
+        or not isinstance(before, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", before)
+        or not isinstance(after, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", after)
+        or not isinstance(commits, list)
+        or len(commits) != 1
+        or not isinstance(commits[0], dict)
+        or commits[0].get("id") != after
+        or not isinstance(head_commit, dict)
+        or head_commit.get("id") != after
+    ):
+        fail("GitHub Actions main push provenance is invalid")
+
+    pulls = run_json(
+        [
+            "gh", "api", "-H", "Accept: application/vnd.github+json",
+            f"repos/OpenCoven/psyche/commits/{after}/pulls",
+        ],
+        root,
+    )
+    if not isinstance(pulls, list) or len(pulls) != 1 or not isinstance(pulls[0], dict):
+        fail("GitHub squash commit must belong to exactly one pull request")
+    pull = pulls[0]
+    base = pull.get("base")
+    head = pull.get("head")
+    base_repository = base.get("repo") if isinstance(base, dict) else None
+    head_repository = head.get("repo") if isinstance(head, dict) else None
+    terminal = head.get("sha") if isinstance(head, dict) else None
+    if (
+        pull.get("state") != "closed"
+        or not isinstance(pull.get("merged_at"), str)
+        or not pull["merged_at"]
+        or pull.get("merge_commit_sha") != after
+        or not isinstance(base, dict)
+        or base.get("ref") != "main"
+        or not isinstance(base_repository, dict)
+        or base_repository.get("full_name") != "OpenCoven/psyche"
+        or not isinstance(head_repository, dict)
+        or head_repository.get("full_name") != "OpenCoven/psyche"
+        or not isinstance(terminal, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", terminal)
+    ):
+        fail("GitHub squash pull-request provenance is invalid")
+
+    merge_commit = run_json(["gh", "api", f"repos/OpenCoven/psyche/git/commits/{after}"], root)
+    terminal_commit = run_json(
+        ["gh", "api", f"repos/OpenCoven/psyche/git/commits/{terminal}"],
+        root,
+    )
+    merge_tree = merge_commit.get("tree") if isinstance(merge_commit, dict) else None
+    terminal_tree = terminal_commit.get("tree") if isinstance(terminal_commit, dict) else None
+    parents = merge_commit.get("parents") if isinstance(merge_commit, dict) else None
+    if (
+        not isinstance(merge_commit, dict)
+        or merge_commit.get("sha") != after
+        or not isinstance(parents, list)
+        or len(parents) != 1
+        or not isinstance(parents[0], dict)
+        or parents[0].get("sha") != before
+        or not isinstance(merge_tree, dict)
+        or not isinstance(terminal_commit, dict)
+        or terminal_commit.get("sha") != terminal
+        or not isinstance(terminal_tree, dict)
+        or not isinstance(merge_tree.get("sha"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", merge_tree["sha"])
+        or merge_tree.get("sha") != terminal_tree.get("sha")
+    ):
+        fail("GitHub squash commit tree does not match the reviewed pull-request tree")
+    return terminal
+
+
+def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        fail("GitHub Actions event payload path is absent")
+    try:
+        event = json.loads(pathlib.Path(event_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"GitHub Actions event payload is invalid: {error}")
+    if not isinstance(event, dict):
+        fail("GitHub Actions event payload is not an object")
+
+    repository = event.get("repository")
+    if not isinstance(repository, dict) or repository.get("full_name") != "OpenCoven/psyche":
+        fail("GitHub Actions repository provenance is invalid")
+
+    pull_request = event.get("pull_request")
+    if isinstance(pull_request, dict):
+        head = pull_request.get("head")
+        head_repository = head.get("repo") if isinstance(head, dict) else None
+        terminal = head.get("sha") if isinstance(head, dict) else None
+        if (
+            not isinstance(head_repository, dict)
+            or head_repository.get("full_name") != "OpenCoven/psyche"
+        ):
+            fail("GitHub Actions pull-request repository provenance is invalid")
+        if not isinstance(terminal, str) or not re.fullmatch(r"[0-9a-f]{40}", terminal):
+            fail("GitHub Actions pull-request head provenance is invalid")
+    else:
+        terminal = squash_merge_terminal(root, event)
+
+    compare = run_json(
+        ["gh", "api", f"repos/OpenCoven/psyche/compare/{tested}...{terminal}"],
+        root,
+    )
+    validate_evidence_only_compare(compare, tested, terminal)
 
 
 def verify_passed(root: pathlib.Path, markdown: str, source_rows: list[list[str]]) -> None:
