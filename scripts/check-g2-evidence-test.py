@@ -141,15 +141,8 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         return {
             "after": after,
             "before": before,
-            "created": False,
-            "deleted": False,
-            "distinct_size": 1,
-            "forced": False,
-            "head_commit": {"id": after},
             "ref": "refs/heads/main",
             "repository": {"full_name": "OpenCoven/psyche"},
-            "size": 1,
-            "commits": [{"id": after, "message": "squash merge"}],
         }
 
     def merged_pull_request(self):

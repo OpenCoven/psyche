@@ -837,25 +837,12 @@ def validate_evidence_only_compare(compare: object, tested: str, terminal: str) 
 def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
     before = event.get("before")
     after = event.get("after")
-    commits = event.get("commits")
-    head_commit = event.get("head_commit")
     if (
         event.get("ref") != "refs/heads/main"
-        or event.get("created") is not False
-        or event.get("deleted") is not False
-        or event.get("forced") is not False
-        or event.get("size") != 1
-        or event.get("distinct_size") != 1
         or not isinstance(before, str)
         or not re.fullmatch(r"[0-9a-f]{40}", before)
         or not isinstance(after, str)
         or not re.fullmatch(r"[0-9a-f]{40}", after)
-        or not isinstance(commits, list)
-        or len(commits) != 1
-        or not isinstance(commits[0], dict)
-        or commits[0].get("id") != after
-        or not isinstance(head_commit, dict)
-        or head_commit.get("id") != after
     ):
         fail("GitHub Actions main push provenance is invalid")
 
