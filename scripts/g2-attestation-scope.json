@@ -1,0 +1,97 @@
+{
+  "default": "protected",
+  "schema_version": "psyche.g2-attestation-scope/v1",
+  "scope_evidence_path": "docs/G2-SCOPE-EVIDENCE.md",
+  "unattested_paths": {
+    "AGENTS.md": {
+      "modes": [
+        "100644"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    },
+    "CONTRIBUTING.md": {
+      "modes": [
+        "100644"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    },
+    "LICENSE": {
+      "modes": [
+        "100644"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    },
+    "README.md": {
+      "modes": [
+        "100644"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    },
+    "SECURITY.md": {
+      "modes": [
+        "100644"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    },
+    "agent/manifest.yaml": {
+      "modes": [
+        "100644"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    },
+    "docs/PROTOCOL-OWNERSHIP.md": {
+      "modes": [
+        "100644"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    },
+    "docs/ROADMAP.md": {
+      "modes": [
+        "100644"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    },
+    "scripts/agent-bootstrap": {
+      "modes": [
+        "100755"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    },
+    "scripts/agent-check": {
+      "modes": [
+        "100755"
+      ],
+      "operations": [
+        "added",
+        "modified"
+      ]
+    }
+  }
+}

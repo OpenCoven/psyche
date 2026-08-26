@@ -57,6 +57,8 @@ jobs:
         run: cargo clippy -p psyche-store --all-targets --features test-fault-injection -- -D warnings
       - name: G2 evidence checker unit tests
         run: python3 scripts/check-g2-evidence-test.py
+      - name: G2 attestation scope tests
+        run: python3 scripts/check-g2-attestation-scope-test.py
       - name: G2 evidence relationships
         env:
           GH_TOKEN: ${{ github.token }}
