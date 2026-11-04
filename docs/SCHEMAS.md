@@ -69,3 +69,54 @@ surface-specific presentation, artifact blob transport, and automated
 quarantine adjudication to their later named authority owners. The schemas
 freeze interoperability; they do not silently assign those decisions to a
 boundary adapter.
+
+## Process-attempt fencing consumer profile (`coven-agents`)
+
+This profile qualifies the existing `ReconciliationDisposition::Fenced`
+contract for a consumer reconciling an abandoned process-bound invocation
+attempt (consumer: OpenCoven/coven#804). It adds no token shape, retry
+authority, or graph ownership.
+
+**Issuer and enforcer.** Only the Psyche host that owns the execution graph
+issues a `Fenced` disposition, through `CovenPort` reconciliation. It issues
+one only after it has itself fenced every resource capable of acting for the
+old attempt: the process, delegated descendants, and already dispatched tools.
+A consumer, adapter, or process-local registry is never an issuer. The fence
+token is opaque; a consumer must not mint, parse, or infer one.
+
+**Correlation binding.** The Psyche host supplies the immutable
+`ExecutionCorrelation` (request/digest, familiar snapshot, project, graph,
+node, attempt, validity). The consumer stores the host-supplied correlation
+next to its local invocation and process-attempt identifiers and compares it
+exactly. It must not create graph, node, attempt, or familiar identities. An
+invocation with no host-supplied correlation cannot be reconciled and stays
+non-dispatchable.
+
+**Evidence.** `validate_for` proves only bounds, exact correlation, exact
+ambiguity digest, and a recording time not earlier than correlation creation.
+It does not prove containment. Authority comes from the issuing host's durable
+disposition record. The consumer persists the validated disposition (id, token,
+correlation, digest, recorded time) before acting, and on restart re-requests
+replay of the same request and re-validates it. If the host cannot replay it,
+the state is `Unresolved`.
+
+**Permitted transition.** A validated, durably recorded `Fenced` disposition
+permits exactly one transition: the abandoned attempt moves from unresolved to
+reconciled-fenced. It does not permit a new attempt. A new attempt requires a
+separate retry/recovery decision from the Psyche authority that owns the
+graph (recovery policy remains deferred above). Duplicate exact dispositions
+are idempotent. A different disposition for the same request is an
+`IntentConflict`. A disposition whose correlation, digest, or issuer differs,
+or that predates the correlation, is rejected and the state is unchanged.
+
+**Stays blocked.** `Unresolved`, a lost disposition write, a surviving
+child or tool, process death, a dropped future, an empty live-attempt
+registry, and string validation alone never authorize recovery.
+
+**Fixtures.** `crates/psyche-coven/tests/fencing_profile.rs` covers exact,
+wrong-correlation, wrong-digest, stale, malformed-token, and unresolved cases.
+`psyche-test-support`'s Coven conformance suite covers lost disposition write,
+duplicate reconciliation, and replay after reopen against the fake port.
+Surviving child/tool and issuer identity are host-side obligations that the
+consumer cannot verify from the value alone; they remain unresolved until a
+host publishes enforcement evidence.
