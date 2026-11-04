@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+required_commands=(cargo rustc git python3 node npm)
+missing=()
+for command_name in "${required_commands[@]}"; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    missing+=("$command_name")
+  fi
+done
+
+if ((${#missing[@]} > 0)); then
+  printf 'Missing required commands: %s\n' "${missing[*]}" >&2
+  exit 1
+fi
+
+rust_version="$(rustc --version | awk '{print $2}')"
+if [[ "$rust_version" != "1.88.0" ]]; then
+  printf 'Psyche requires rustc 1.88.0; found %s. Install/use the pinned rust-toolchain.toml toolchain.\n' "$rust_version" >&2
+  exit 1
+fi
+
+node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
+if [[ ! "$node_major" =~ ^[0-9]+$ ]] || ((node_major < 20)); then
+  printf 'Psyche requires Node.js 20 or newer; found %s.\n' "$(node --version)" >&2
+  exit 1
+fi
+
+if [[ "${PSYCHE_BOOTSTRAP_OFFLINE:-0}" == "1" ]]; then
+  cargo fetch --locked --offline
+else
+  cargo fetch --locked
+fi
+
+cargo metadata --locked --no-deps --format-version 1 >/dev/null
+npm --prefix packages/psyche-npm test >/dev/null
+
+printf 'Psyche bootstrap complete.\n'
+printf '  rustc: %s\n' "$(rustc --version)"
+printf '  cargo: %s\n' "$(cargo --version)"
+printf '  node:  %s\n' "$(node --version)"
+printf '  npm:   %s\n' "$(npm --version)"
+printf 'Run ./scripts/agent-check fast before editing.\n'

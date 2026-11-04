@@ -68,6 +68,15 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         with self.assertRaises(self.checker.EvidenceError):
             self.checker.validate_ci_structure(workflow)
 
+    def test_run_json_uses_utf8_for_cli_output(self) -> None:
+        command = ["gh", "api", "repos/OpenCoven/psyche/compare"]
+        completed = subprocess.CompletedProcess(command, 0, '{"message":"—"}', "")
+        with mock.patch.object(self.checker.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(self.checker.run_json(command, ROOT), {"message": "—"})
+        run.assert_called_once_with(
+            command, cwd=ROOT, text=True, capture_output=True, check=False, encoding="utf-8"
+        )
+
     def candidate_evidence(self, evidence=None) -> str:
         candidate = evidence if evidence is not None else self.evidence
         fields = {

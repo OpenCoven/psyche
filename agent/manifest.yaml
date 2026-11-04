@@ -1,0 +1,100 @@
+schema_version: opencoven.agent-repo/v1
+
+repository:
+  name: OpenCoven/psyche
+  role: canonical-orchestration-protocol
+  lifecycle: active
+  roadmap: docs/ROADMAP.md
+  canonical_for:
+    - orchestration.identity
+    - orchestration.task-graph
+    - orchestration.lanes-attempts-delegation-delivery
+    - orchestration.leases-approvals-receipts
+    - orchestration.cancellation-recovery-terminal-state
+    - orchestration.canonicalization-and-conformance
+  explicitly_not_canonical_for:
+    - familiar.person-binding
+    - threads.authorization-policy
+    - coven.daemon-session-persistence
+    - product.ui
+    - product.tmux-worktree-provider-state
+    - tracker.github-beads-state
+
+risk:
+  class: R4
+  network_policy: bootstrap-and-explicit-adapters-only
+  secrets_policy: forbidden-in-repository-fixtures-logs-and-evidence
+  protected_paths:
+    - crates/psyche-core/**
+    - crates/psyche-store/**
+    - crates/psyche-coven/**
+    - crates/psyche-test-support/**
+    - scripts/g2-test-manifest.json
+    - scripts/check-g2-evidence.py
+    - docs/G2-EVIDENCE.md
+    - .github/workflows/**
+    - Cargo.lock
+    - deny.toml
+  generated_paths: []
+  external_side_effects:
+    - package-publication
+    - release-publication
+    - downstream-contract-migration
+
+agent:
+  entrypoint: AGENTS.md
+  bootstrap: ./scripts/agent-bootstrap
+  verify:
+    fast: ./scripts/agent-check fast
+    full: ./scripts/agent-check full
+  required_completion_evidence:
+    - owning-issue
+    - exact-head-sha
+    - exact-commands-and-results
+    - risk-and-protected-paths
+    - compatibility-and-consumer-impact
+    - migration-and-rollback
+    - generated-artifact-provenance
+    - remaining-proof-gaps
+
+contracts:
+  produces:
+    - id: psyche.contract-foundation.g2
+      status: implemented-and-attested
+      evidence: docs/G2-EVIDENCE.md
+    - id: psyche.protocol.v1
+      status: planned
+      owner: https://github.com/OpenCoven/psyche/issues/11
+  consumes:
+    - id: coven.typed-adapter-boundary
+      status: implemented
+      path: crates/psyche-coven
+    - id: familiar.person-binding
+      status: ownership-decision-pending
+      owner: https://github.com/OpenCoven/psyche/issues/12
+    - id: threads.authorization-decision
+      status: ownership-decision-pending
+      owner: https://github.com/OpenCoven/psyche/issues/12
+  reference_consumers:
+    - id: psyche-build
+      status: planned
+      owner: https://github.com/OpenCoven/psyche/issues/13
+
+toolchains:
+  rust: 1.88.0
+  node_minimum: "20"
+  python_minimum: "3"
+  lockfiles:
+    - Cargo.lock
+
+ci:
+  source_of_truth: .github/workflows/ci.yml
+  claimed_platforms:
+    - linux
+    - macos
+    - windows
+  additional_gates:
+    - dependency-audit
+    - full-history-secret-scan
+    - npm-node-20-and-22
+    - g2-evidence-relationships

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+mode="${1:-fast}"
+
+run_common() {
+  cargo fmt --all -- --check
+  git diff --check
+}
+
+run_fast() {
+  run_common
+  cargo check --workspace --locked
+  cargo test -p psyche-core --locked
+  cargo test -p psyche-store --test migrations --locked
+}
+
+run_full() {
+  run_common
+  cargo clippy --workspace --all-targets -- -D warnings
+  cargo test --workspace --locked
+
+  PROPTEST_CASES=2048 \
+  PROPTEST_RNG_SEED=00000000000000000000000000000000 \
+    cargo test -p psyche-test-support --test state_machine
+
+  cargo test -p psyche-test-support --test conformance
+  cargo test -p psyche-store --test migrations
+  cargo test -p psyche-store --features test-fault-injection --test crash
+  cargo clippy -p psyche-store --all-targets --features test-fault-injection -- -D warnings
+
+  python3 scripts/check-g2-evidence-test.py
+  npm --prefix packages/psyche-npm test
+  npm pack ./packages/psyche-npm --dry-run >/dev/null
+
+  git diff --check
+  git diff --exit-code
+}
+
+case "$mode" in
+  fast)
+    run_fast
+    ;;
+  full)
+    run_full
+    ;;
+  *)
+    printf 'Usage: %s [fast|full]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+printf 'Psyche agent check (%s) passed.\n' "$mode"
+printf 'GitHub CI remains authoritative for the cross-platform, dependency-audit, secret, and evidence-relationship matrix.\n'
