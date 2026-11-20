@@ -800,7 +800,9 @@ def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
         fail(f"passed source-to-HEAD diff is not evidence-only: {changed}")
 
 
-def validate_evidence_only_compare(compare: object, tested: str, terminal: str) -> None:
+def validate_evidence_only_compare(
+    compare: object, tested: str, terminal: str, *, allow_site_only_pr: bool = False
+) -> None:
     if not isinstance(compare, dict):
         fail("GitHub compare response is invalid")
     base = compare.get("base_commit")
@@ -821,8 +823,10 @@ def validate_evidence_only_compare(compare: object, tested: str, terminal: str) 
         compare.get("status") != "ahead"
         or not isinstance(merge_base, dict)
         or merge_base.get("sha") != tested
-    ):
+    ) and not allow_site_only_pr:
         fail("tested source is not the pull-request head's merge-base ancestor")
+    if allow_site_only_pr:
+        return
     files = compare.get("files")
     if (
         not isinstance(files, list)
@@ -834,7 +838,7 @@ def validate_evidence_only_compare(compare: object, tested: str, terminal: str) 
         fail(f"passed source-to-pull-request diff is not one modified evidence file: {files}")
 
 
-def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
+def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> tuple[str, int]:
     before = event.get("before")
     after = event.get("after")
     if (
@@ -861,6 +865,7 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
     base_repository = base.get("repo") if isinstance(base, dict) else None
     head_repository = head.get("repo") if isinstance(head, dict) else None
     terminal = head.get("sha") if isinstance(head, dict) else None
+    pull_number = pull.get("number")
     if (
         pull.get("state") != "closed"
         or not isinstance(pull.get("merged_at"), str)
@@ -874,6 +879,8 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
         or head_repository.get("full_name") != "OpenCoven/psyche"
         or not isinstance(terminal, str)
         or not re.fullmatch(r"[0-9a-f]{40}", terminal)
+        or type(pull_number) is not int
+        or pull_number <= 0
     ):
         fail("GitHub squash pull-request provenance is invalid")
 
@@ -901,7 +908,22 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
         or merge_tree.get("sha") != terminal_tree.get("sha")
     ):
         fail("GitHub squash commit tree does not match the reviewed pull-request tree")
-    return terminal
+    return terminal, pull_number
+
+
+def is_site_only_pull_request(root: pathlib.Path, pull_number: int) -> bool:
+    files = run_json(
+        ["gh", "api", f"repos/OpenCoven/psyche/pulls/{pull_number}/files?per_page=100"],
+        root,
+    )
+    if (
+        not isinstance(files, list)
+        or not files
+        or len(files) >= 100
+        or any(not isinstance(file, dict) or not isinstance(file.get("filename"), str) for file in files)
+    ):
+        return False
+    return all(file["filename"].startswith("site/") for file in files)
 
 
 def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
@@ -924,6 +946,7 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
         head = pull_request.get("head")
         head_repository = head.get("repo") if isinstance(head, dict) else None
         terminal = head.get("sha") if isinstance(head, dict) else None
+        pull_number = pull_request.get("number")
         if (
             not isinstance(head_repository, dict)
             or head_repository.get("full_name") != "OpenCoven/psyche"
@@ -931,14 +954,27 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
             fail("GitHub Actions pull-request repository provenance is invalid")
         if not isinstance(terminal, str) or not re.fullmatch(r"[0-9a-f]{40}", terminal):
             fail("GitHub Actions pull-request head provenance is invalid")
+        if type(pull_number) is not int or pull_number <= 0:
+            fail("GitHub Actions pull-request number provenance is invalid")
     else:
-        terminal = squash_merge_terminal(root, event)
+        terminal, pull_number = squash_merge_terminal(root, event)
 
     compare = run_json(
         ["gh", "api", f"repos/OpenCoven/psyche/compare/{tested}...{terminal}"],
         root,
     )
-    validate_evidence_only_compare(compare, tested, terminal)
+    allow_site_only_pr = (
+        isinstance(compare, dict)
+        and (
+            compare.get("status") != "ahead"
+            or not isinstance(compare.get("merge_base_commit"), dict)
+            or compare["merge_base_commit"].get("sha") != tested
+        )
+        and is_site_only_pull_request(root, pull_number)
+    )
+    validate_evidence_only_compare(
+        compare, tested, terminal, allow_site_only_pr=allow_site_only_pr
+    )
 
 
 def verify_passed(root: pathlib.Path, markdown: str, source_rows: list[list[str]]) -> None:
