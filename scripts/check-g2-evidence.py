@@ -32,13 +32,14 @@ SCOPE_SCHEMA = "psyche.g2-attestation-scope/v1"
 SCOPE_MANIFEST_PATH = "scripts/g2-attestation-scope.json"
 SCOPE_EVIDENCE_PATH = "docs/G2-SCOPE-EVIDENCE.md"
 HISTORIC_EVIDENCE_PATH = "docs/G2-EVIDENCE.md"
+HISTORIC_EVIDENCE_SHA256 = "5005824cbd1935b802158696be6264021202c4420a9b0796772a4756d23d91e1"
 SCOPE_MANIFEST_SHA256 = "4e535973d4ab49de80e78cd35177bde658d5c31f6d0fd3a5d91edb579a118fa4"
 _SCOPE_TEST_COMMAND = "python3 scripts/check-g2-attestation-scope-test.py"
 
 if CI_COMMANDS[-1] != "python3 scripts/check-g2-evidence.py" or _SCOPE_TEST_COMMAND in CI_COMMANDS:
     fail("immutable G2 checker core has an unexpected CI command boundary")
 CI_COMMANDS = CI_COMMANDS[:-1] + (_SCOPE_TEST_COMMAND, CI_COMMANDS[-1])
-REVIEWED_WORKFLOW_SHA256 = "3c777aaef3e7da294819ea146d7ecd1941aa015c61df29b65d164cdcd6b7f612"
+REVIEWED_WORKFLOW_SHA256 = "e121c6cb5a9bed8ed5b2a67aae1f0fe69a6eaff5db541f2b6f25473d660f81a5"
 
 EXPECTED_UNATTESTED_PATHS = {
     "AGENTS.md": {"operations": ("added", "modified"), "modes": ("100644",)},
@@ -312,6 +313,7 @@ def _validate_attested_changes(
             or new is None
             or new[1] != "blob"
             or new[0] not in rule["modes"]
+            or (old is not None and old[:2] != new[:2])
         ):
             rejected.append((path, status))
     if rejected:
@@ -567,11 +569,16 @@ def validate_repository(
     source_overrides: Mapping[str, str] | None = None,
     verify_remote: bool = True,
 ) -> None:
-    _load_scope_state(root.resolve(), source_overrides or {})
+    root = root.resolve()
+    overrides = source_overrides or {}
+    _load_scope_state(root, overrides)
+    historic = read_text(root, HISTORIC_EVIDENCE_PATH, overrides) if evidence is None else evidence
+    if hashlib.sha256(historic.encode("utf-8")).hexdigest() != HISTORIC_EVIDENCE_SHA256:
+        fail("historic G2 evidence must match the immutable passed attestation")
     _LEGACY_VALIDATE_REPOSITORY(
         root,
         manifest=manifest,
-        evidence=evidence,
+        evidence=historic,
         listed_tests=listed_tests,
         source_overrides=source_overrides,
         verify_remote=verify_remote,

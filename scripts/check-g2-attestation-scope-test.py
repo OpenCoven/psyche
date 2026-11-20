@@ -83,7 +83,7 @@ class G2AttestationScopeTests(unittest.TestCase):
         status, tested, run_url = self.checker._validate_scope_evidence(markdown)
         self.assertEqual((status, tested, run_url), ("candidate", None, None))
 
-    def test_passed_scope_evidence_requires_immutable_source_and_run(self):
+    def passed_evidence(self):
         markdown = self.candidate_evidence()
         passed = markdown.replace("**Status:** candidate", "**Status:** passed")
         passed = passed.replace(
@@ -94,10 +94,44 @@ class G2AttestationScopeTests(unittest.TestCase):
             "**CI attestation:** not recorded before remote review",
             "**CI attestation:** https://github.com/OpenCoven/psyche/actions/runs/123456",
         )
-        status, tested, run_url = self.checker._validate_scope_evidence(passed)
+        return passed
+
+    def test_passed_scope_evidence_requires_immutable_source_and_run(self):
+        status, tested, run_url = self.checker._validate_scope_evidence(self.passed_evidence())
         self.assertEqual(status, "passed")
         self.assertEqual(tested, "1" * 40)
         self.assertEqual(run_url, "https://github.com/OpenCoven/psyche/actions/runs/123456")
+
+    def test_repository_requires_immutable_passed_historic_evidence_in_both_scope_states(self):
+        historic_path = self.checker.HISTORIC_EVIDENCE_PATH
+        historic = (ROOT / historic_path).read_text(encoding="utf-8")
+        for scope in (self.candidate_evidence(), self.passed_evidence()):
+            for changed in (historic.replace("**Status:** passed", "**Status:** candidate"), historic + "\n"):
+                with self.subTest(scope=self.checker.field(scope, "Status")), self.assertRaisesRegex(
+                    self.checker.EvidenceError, "immutable passed attestation"
+                ):
+                    self.checker.validate_repository(
+                        ROOT,
+                        source_overrides={historic_path: changed, self.checker.SCOPE_EVIDENCE_PATH: scope},
+                    )
+
+    def test_attesting_jobs_check_out_the_source_revision(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        jobs = re.split(r"^  [\w-]+:\s*$", workflow.split("\njobs:\n", 1)[1], flags=re.MULTILINE)[1:]
+        self.assertEqual(len(jobs), 4)
+        for job in jobs:
+            self.assertIn(
+                "      - uses: actions/checkout@v4\n"
+                "        with:\n"
+                "          ref: ${{ github.event.pull_request.head.sha || github.sha }}\n",
+                job,
+            )
+
+    def test_allowed_modifications_preserve_mode_and_object_type(self):
+        for old in (self.exec_a, ("120000", "blob", "a" * 40), ("160000", "commit", "a" * 40)):
+            with self.subTest(old=old):
+                self.assert_rejected({"README.md": old}, {"README.md": self.blob_b})
+        self.assert_rejected({"scripts/agent-check": self.blob_a}, {"scripts/agent-check": self.exec_b})
 
     def test_scope_evidence_only_change_is_allowed(self):
         path = self.checker.SCOPE_EVIDENCE_PATH
