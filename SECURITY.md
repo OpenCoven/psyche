@@ -10,9 +10,9 @@ Supported versions and future maintenance windows will be listed here when the f
 
 ## Reporting a vulnerability
 
-Check the repository Security page for GitHub’s **Report a vulnerability** button. Private vulnerability reporting was disabled at the November 2026 readiness check. The maintainer tracks activation and verification in issue #25. [Repository Security](https://github.com/OpenCoven/psyche/security) · [Reporting route verification](https://github.com/OpenCoven/psyche/issues/25)
+Use **Report a vulnerability** on Psyche’s Security page when available. If the button is missing, submit a private advisory to OpenCoven/coven and name OpenCoven/psyche as the affected repository. List each affected repository for cross-project reports. [Psyche Security](https://github.com/OpenCoven/psyche/security) · [OpenCoven private advisory intake](https://github.com/OpenCoven/coven/security/advisories/new) · [Organization reporting policy](https://github.com/OpenCoven/.github/blob/main/SECURITY.md)
 
-If the button is unavailable, open an ordinary issue titled “Private security contact requested” and tag @BunsDev. Use that issue only to request a channel. Wait for a maintainer-confirmed private route before sharing any affected surface, reproduction, environment, credentials, contact details or other report contents.
+Use public issues only for ordinary support. Keep security reports inside the private advisory. Use synthetic examples and omit real credentials, prompts, user data and private repository paths.
 
 ## Include privately
 
