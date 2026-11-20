@@ -551,7 +551,7 @@ fn dedupe_rejects_corrupt_lookup_keys_before_inserting() {
         assert_eq!(
             raw_connection(&path)
                 .query_row("SELECT COUNT(*) FROM quarantine_records", [], |row| row
-                    .get::<_, u64>(0))
+                    .get::<_, i64>(0))
                 .unwrap(),
             1
         );

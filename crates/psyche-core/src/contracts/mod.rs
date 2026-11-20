@@ -1325,10 +1325,10 @@ fn inspect_enum(
         };
         current = next;
     }
-    if let Some(spelling) = current.as_str() {
-        if !accepted.contains(&spelling) {
-            return Err(ContractError::UnknownEnumValue { schema, field });
-        }
+    if let Some(spelling) = current.as_str()
+        && !accepted.contains(&spelling)
+    {
+        return Err(ContractError::UnknownEnumValue { schema, field });
     }
     Ok(())
 }
