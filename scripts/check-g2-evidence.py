@@ -334,6 +334,8 @@ def _compare_common(compare: object, tested: str, terminal: str) -> tuple[str, l
         or not re.fullmatch(r"[0-9a-f]{40}", merge_base["sha"])
     ):
         fail("GitHub compare response has no valid merge base")
+    if (status == "ahead") != (merge_base["sha"] == tested):
+        fail("GitHub compare status disagrees with its merge base")
     files = compare.get("files")
     if not isinstance(files, list) or not files or len(files) >= 300:
         fail("GitHub compare file list is absent or potentially truncated")
@@ -353,38 +355,29 @@ def _compare_common(compare: object, tested: str, terminal: str) -> tuple[str, l
     return str(status), normalized
 
 
-def _compare_requires_tree_scope(
+def _validate_scope_relationship(
     compare: object,
     tested: str,
     terminal: str,
     scope: Mapping[str, Mapping[str, tuple[str, ...]]],
-) -> bool:
+    before: Mapping[str, tuple[str, str, str]],
+    after: Mapping[str, tuple[str, str, str]],
+) -> None:
     status, files = _compare_common(compare, tested, terminal)
-    exact_legacy_evidence = (
-        len(files) == 1
-        and files[0].get("filename") == HISTORIC_EVIDENCE_PATH
-        and files[0].get("status") == "modified"
-    )
-    merge_base = compare["merge_base_commit"]
-    is_ancestor = status == "ahead" and isinstance(merge_base, dict) and merge_base.get("sha") == tested
-    if exact_legacy_evidence:
-        if is_ancestor:
-            return False
-        fail("tested source is not the pull-request head's merge-base ancestor")
     for raw in files:
         path = str(raw["filename"])
+        # GitHub lists files relative to the merge base. After a squash, that
+        # list includes the original candidate changes even on a docs-only PR.
+        # Discount an inherited entry only with exact mode, type and blob proof.
+        if status == "diverged" and path in before and before[path] == after.get(path):
+            continue
         file_status = str(raw["status"])
-        if path == SCOPE_EVIDENCE_PATH:
-            if file_status != "modified":
-                fail(f"passed source-to-pull-request diff has an invalid scope evidence change: {raw}")
+        if path == SCOPE_EVIDENCE_PATH and file_status == "modified":
             continue
         rule = scope.get(path)
-        translated = "deleted" if file_status == "removed" else file_status
-        if rule is None or translated not in rule["operations"]:
-            if is_ancestor:
-                fail(f"passed source-to-pull-request diff is not one modified evidence file: {files}")
+        if rule is None or file_status not in rule["operations"]:
             fail(f"retained G2 attestation does not cover compare path: {path} ({file_status})")
-    return True
+    _validate_attested_changes(before, after, scope)
 
 
 def validate_evidence_only_compare(compare: object, tested: str, terminal: str) -> None:
@@ -464,12 +457,9 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
         ["gh", "api", f"repos/OpenCoven/psyche/compare/{scope_tested}...{terminal}"],
         root,
     )
-    needs_trees = _compare_requires_tree_scope(compare, scope_tested, terminal, scope)
-    if not needs_trees:
-        return
     before = _remote_tree_entries(root, scope_tested)
     after = _remote_tree_entries(root, terminal)
-    _validate_attested_changes(before, after, scope)
+    _validate_scope_relationship(compare, scope_tested, terminal, scope, before, after)
 
 
 def _verify_scope_ci_attestation(root: pathlib.Path, tested: str, run_url: str) -> None:

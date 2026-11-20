@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
 import unittest
 
 
@@ -62,13 +63,28 @@ class G2AttestationScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(self.checker.EvidenceError, "repeats a key"):
             self.checker._json_object_without_duplicates([("default", "protected"), ("default", "open")])
 
+    def candidate_evidence(self):
+        markdown = (ROOT / self.checker.SCOPE_EVIDENCE_PATH).read_text(encoding="utf-8")
+        for name, value in (
+            ("Status", "candidate"),
+            ("Tested source commit", "not recorded before remote review"),
+            ("CI attestation", "not recorded before remote review"),
+        ):
+            pattern = rf"^\*\*{name}:\*\* .+$"
+            markdown, count = re.subn(pattern, f"**{name}:** {value}", markdown, flags=re.MULTILINE)
+            self.assertEqual(count, 1)
+        return markdown
+
+    def test_repository_scope_evidence_is_valid(self):
+        self.checker._load_scope_state(ROOT)
+
     def test_candidate_scope_evidence_is_explicit(self):
-        markdown = (ROOT / self.checker.SCOPE_EVIDENCE_PATH).read_text()
+        markdown = self.candidate_evidence()
         status, tested, run_url = self.checker._validate_scope_evidence(markdown)
         self.assertEqual((status, tested, run_url), ("candidate", None, None))
 
     def test_passed_scope_evidence_requires_immutable_source_and_run(self):
-        markdown = (ROOT / self.checker.SCOPE_EVIDENCE_PATH).read_text()
+        markdown = self.candidate_evidence()
         passed = markdown.replace("**Status:** candidate", "**Status:** passed")
         passed = passed.replace(
             "**Tested source commit:** not recorded before remote review",
@@ -188,9 +204,22 @@ class G2AttestationScopeTests(unittest.TestCase):
 
     def test_compare_requires_tree_scope_for_nonancestor_safe_changes(self):
         compare, tested, terminal = self.compare_response()
-        self.assertTrue(
-            self.checker._compare_requires_tree_scope(compare, tested, terminal, self.scope)
-        )
+        before = {self.checker.SCOPE_EVIDENCE_PATH: self.blob_a}
+        after = {self.checker.SCOPE_EVIDENCE_PATH: self.blob_b, "README.md": self.blob_a}
+        self.checker._validate_scope_relationship(compare, tested, terminal, self.scope, before, after)
+
+    def test_squashed_candidate_uses_both_endpoint_trees(self):
+        path = "scripts/check-g2-evidence.py"
+        compare, tested, terminal = self.compare_response(files=[
+            {"filename": path, "status": "modified"},
+            {"filename": "README.md", "status": "added"},
+        ])
+        before = {path: self.blob_a}
+        after = {path: self.blob_a, "README.md": self.blob_b}
+        self.checker._validate_scope_relationship(compare, tested, terminal, self.scope, before, after)
+        after[path] = self.blob_b
+        with self.assertRaises(self.checker.EvidenceError):
+            self.checker._validate_scope_relationship(compare, tested, terminal, self.scope, before, after)
 
     def test_compare_keeps_original_evidence_only_ancestor_contract(self):
         tested = "1" * 40
@@ -204,16 +233,16 @@ class G2AttestationScopeTests(unittest.TestCase):
             "commits": [{"sha": terminal}],
             "files": [{"filename": "docs/G2-EVIDENCE.md", "status": "modified"}],
         }
-        self.assertFalse(
-            self.checker._compare_requires_tree_scope(compare, tested, terminal, self.scope)
-        )
+        self.checker.validate_evidence_only_compare(compare, tested, terminal)
+        with self.assertRaisesRegex(self.checker.EvidenceError, "does not cover"):
+            self.checker._validate_scope_relationship(compare, tested, terminal, self.scope, {}, {})
 
     def test_nonancestor_legacy_evidence_only_compare_fails_closed(self):
         compare, tested, terminal = self.compare_response(
             files=[{"filename": "docs/G2-EVIDENCE.md", "status": "modified"}]
         )
         with self.assertRaisesRegex(self.checker.EvidenceError, "ancestor"):
-            self.checker._compare_requires_tree_scope(compare, tested, terminal, self.scope)
+            self.checker.validate_evidence_only_compare(compare, tested, terminal)
 
     def test_compare_rejects_copy_rename_truncation_and_protected_files(self):
         mutations = (
@@ -226,8 +255,8 @@ class G2AttestationScopeTests(unittest.TestCase):
             compare, tested, terminal = self.compare_response(files=files)
             with self.subTest(status=files[0]["status"], count=len(files)):
                 with self.assertRaises(self.checker.EvidenceError):
-                    self.checker._compare_requires_tree_scope(
-                        compare, tested, terminal, self.scope
+                    self.checker._validate_scope_relationship(
+                        compare, tested, terminal, self.scope, {}, {}
                     )
 
     def test_path_parser_rejects_absolute_parent_backslash_and_directory_paths(self):
