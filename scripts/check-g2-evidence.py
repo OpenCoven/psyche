@@ -436,6 +436,8 @@ def _proposal_merge_base(root: pathlib.Path, base: str, terminal: str) -> str:
 
 
 def _validate_readiness_operations(
+    root: pathlib.Path,
+    proposal_base: str,
     prior: Mapping[str, tuple[str, str, str]],
     terminal: Mapping[str, tuple[str, str, str]],
     scope: Mapping[str, Mapping[str, tuple[str, ...]]],
@@ -445,6 +447,29 @@ def _validate_readiness_operations(
     previous_entries = {path: prior[path] for path in scope if path in prior}
     next_entries = {path: terminal[path] for path in scope if path in terminal}
     _validate_attested_changes(previous_entries, next_entries, scope)
+
+    # A copy leaves its source entry unchanged. Let Git compare the whole
+    # proposal so an unchanged source outside the readiness set is visible too.
+    raw = subprocess.check_output(
+        [
+            "git", "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
+            "--find-renames=50%", "--find-copies=50%", "--find-copies-harder", "-l0",
+            "--diff-filter=CR", proposal_base, "HEAD", "--",
+        ],
+        cwd=root,
+    )
+    if not raw:
+        return
+    records = raw.split(b"\0")
+    if records.pop() != b"" or len(records) % 3:
+        fail("Git returned incomplete G2 copy or rename records")
+    for status, source, destination in zip(records[::3], records[1::3], records[2::3]):
+        if not re.fullmatch(rb"[CR][0-9]{1,3}", status):
+            fail("Git returned an invalid G2 copy or rename status")
+        old_path = _safe_repository_path(os.fsdecode(source))
+        new_path = _safe_repository_path(os.fsdecode(destination))
+        if new_path in scope or (status.startswith(b"R") and old_path in scope):
+            fail(f"readiness policy rejects a proposed copy or rename: {old_path} to {new_path}")
 
 
 def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
@@ -464,7 +489,7 @@ def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
     # On an already delivered main revision, check the change from its first parent.
     if baseline == head:
         baseline = "HEAD^1"
-    _validate_readiness_operations(_local_tree_entries(root, baseline), after, scope)
+    _validate_readiness_operations(root, baseline, _local_tree_entries(root, baseline), after, scope)
 
 
 def _actions_proposal(root: pathlib.Path) -> tuple[str, str]:
@@ -523,7 +548,7 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
     before = _remote_tree_entries(root, scope_tested)
     after = _remote_tree_entries(root, terminal)
     _validate_scope_relationship(compare, scope_tested, terminal, scope, before, after)
-    _validate_readiness_operations(_remote_tree_entries(root, proposal_base), after, scope)
+    _validate_readiness_operations(root, proposal_base, _remote_tree_entries(root, proposal_base), after, scope)
 
 
 def _verify_scope_ci_attestation(root: pathlib.Path, tested: str, run_url: str) -> None:

@@ -393,7 +393,13 @@ class ReadinessDeliveryTests(unittest.TestCase):
     def assert_delivery(self, operation):
         readme = self.root / "README.md"
         if operation != "first addition":
-            readme.write_text("Published guide\n", encoding="utf-8")
+            readme.write_text(
+                "Install the pinned Rust toolchain.\n"
+                "Run the repository bootstrap script.\n"
+                "Check formatting before submitting.\n"
+                "Verify the retained source evidence.\n",
+                encoding="utf-8",
+            )
             self.commit("Publish initial readiness guide")
         delivery_base = self.git("rev-parse", "HEAD")
         self.git("switch", "-qc", "readiness")
@@ -403,10 +409,30 @@ class ReadinessDeliveryTests(unittest.TestCase):
         elif operation == "delete":
             readme.unlink()
             self.commit("Remove guide")
-        # The terminal commit changes a different allowed file. HEAD^1 alone
-        # cannot distinguish a prior deletion in this PR from an absent file.
+        elif operation in {"copy", "copy with edits"}:
+            contents = readme.read_bytes()
+            if operation == "copy with edits":
+                contents = contents.replace(b"Check formatting before submitting.",
+                                            b"Include the affected crate in the review.")
+            (self.root / "CONTRIBUTING.md").write_bytes(contents)
+            self.commit("Publish contributor guide")
+        # A second commit changes a different path from the operation under test.
         (self.root / "AGENTS.md").write_text("Contributor guide\n", encoding="utf-8")
         self.terminal = self.commit("Publish contributor notes")
+        # Check the Git classification independently of the verifier. The source
+        # exists only in the delivered baseline, never in the pinned source.
+        delivery_changes = self.git(
+            "diff", "--name-status", "--find-copies-harder", "--find-copies=50%",
+            "--find-renames=50%", delivery_base, self.terminal,
+        ).splitlines()
+        if operation == "copy":
+            self.assertIn("C100\tREADME.md\tCONTRIBUTING.md", delivery_changes)
+        elif operation == "copy with edits":
+            self.assertRegex("\n".join(delivery_changes),
+                             r"(?m)^C0[5-9][0-9]\tREADME\.md\tCONTRIBUTING\.md$")
+        elif operation == "first addition":
+            self.assertIn("A\tREADME.md", delivery_changes)
+        self.assertIn("A\tAGENTS.md", delivery_changes)
         self.git("switch", "-q", "main")
         (self.root / "LICENSE").write_text("License on a parallel main change\n", encoding="utf-8")
         main_tip = self.commit("Main advanced after the topic branched")
@@ -448,8 +474,13 @@ class ReadinessDeliveryTests(unittest.TestCase):
                 for verify in (self.checker.verify_local_source_relationship,
                                self.checker.verify_actions_source_relationship):
                     with self.subTest(event=event_name, entrypoint=verify.__name__):
-                        if operation == "delete":
-                            with self.assertRaisesRegex(self.checker.EvidenceError, r"README\.md"):
+                        denied_path = {
+                            "delete": r"README\.md",
+                            "copy": r"CONTRIBUTING\.md",
+                            "copy with edits": r"CONTRIBUTING\.md",
+                        }.get(operation)
+                        if denied_path:
+                            with self.assertRaisesRegex(self.checker.EvidenceError, denied_path):
                                 verify(self.root, self.pinned)
                         else:
                             verify(self.root, self.pinned)
@@ -465,6 +496,12 @@ class ReadinessDeliveryTests(unittest.TestCase):
 
     def test_prior_readiness_file_removed_earlier_in_the_delivery(self):
         self.assert_delivery("delete")
+
+    def test_unchanged_readiness_file_copied_to_another_allowed_path(self):
+        self.assert_delivery("copy")
+
+    def test_git_reports_edited_copy_from_unchanged_readiness_file(self):
+        self.assert_delivery("copy with edits")
 
 
 if __name__ == "__main__":
