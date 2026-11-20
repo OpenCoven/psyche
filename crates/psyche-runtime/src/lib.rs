@@ -337,10 +337,10 @@ impl Runtime {
         // first would miss a `Stopped` that was published before this caller
         // subscribed, and wait for a transition that can never come.
         loop {
-            if *receiver.borrow_and_update() == LifecycleState::Stopped {
-                if let Some(outcome) = self.lifecycle().terminal_outcome.clone() {
-                    return outcome;
-                }
+            // Release the watch borrow before taking the lifecycle mutex.
+            let stopped = *receiver.borrow_and_update() == LifecycleState::Stopped;
+            if stopped && let Some(outcome) = self.lifecycle().terminal_outcome.clone() {
+                return outcome;
             }
             if receiver.changed().await.is_err() {
                 // Unreachable: the sender lives in `self`, which this call
@@ -412,7 +412,7 @@ impl Runtime {
 // sharing across threads — but a daemon that supervises anything acquires all
 // three, and the point of asserting them now is the note below about where the
 // error would otherwise appear.
-const _: fn() = || {
+const _: fn(&Runtime, Config) = |runtime, config| {
     fn assert_send_sync_static<T: Send + Sync + 'static>() {}
     assert_send_sync_static::<Runtime>();
     assert_send_sync_static::<RuntimeError>();
@@ -425,10 +425,8 @@ const _: fn() = || {
     // rather than against the seam that caused it. These two assertions put the
     // error here instead, where the fix is.
     fn assert_send<T: Send>(_: &T) {}
-    fn futures_are_send(runtime: &Runtime, config: Config) {
-        assert_send(&Runtime::start(config));
-        assert_send(&runtime.shutdown());
-    }
+    assert_send(&Runtime::start(config));
+    assert_send(&runtime.shutdown());
 };
 
 #[cfg(test)]
