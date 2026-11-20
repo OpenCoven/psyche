@@ -42,7 +42,7 @@ See [Protocol ownership](docs/PROTOCOL-OWNERSHIP.md) for the proposed cross-repo
 | `docs` | Architecture, schemas, testing, evidence, ownership, and roadmap |
 | `scripts` | Evidence and repository verification tools |
 
-Read each crate’s Cargo manifest to identify its dependencies. For example, `psyche-config` depends on `psyche-core`. The architecture diagram’s arrow legend has an open correction in #21. [Config crate manifest](crates/psyche-config/Cargo.toml) · [Architecture](docs/ARCHITECTURE.md)
+Read each crate’s Cargo manifest to identify its dependencies. For example, `psyche-config` depends on `psyche-core`. The architecture diagram uses the same direction. [Config crate manifest](crates/psyche-config/Cargo.toml) · [Architecture](docs/ARCHITECTURE.md)
 
 ## Requirements
 
