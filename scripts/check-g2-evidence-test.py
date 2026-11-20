@@ -131,7 +131,8 @@ class G2EvidenceCheckerTests(unittest.TestCase):
                 "head": {
                     "sha": head or "fedcba9876543210fedcba9876543210fedcba98",
                     "repo": {"full_name": repository},
-                }
+                },
+                "number": 123,
             },
         }
 
@@ -157,6 +158,7 @@ class G2EvidenceCheckerTests(unittest.TestCase):
             },
             "merge_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "merged_at": "2026-08-12T03:04:34Z",
+            "number": 123,
             "state": "closed",
         }
 
@@ -620,6 +622,68 @@ class G2EvidenceCheckerTests(unittest.TestCase):
             ],
         )
 
+    def test_shallow_actions_verifier_accepts_site_only_pull_request(self) -> None:
+        tested = "0123456789abcdef0123456789abcdef01234567"
+        event = json.dumps(self.pull_request_event())
+        compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        compare["status"] = "diverged"
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
+        with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+            self.checker.pathlib.Path, "read_text", return_value=event
+        ), mock.patch.object(
+            self.checker,
+            "run_json",
+            side_effect=(compare, [{"filename": "site/overview.md"}]),
+        ) as run_json:
+            self.checker.verify_actions_source_relationship(ROOT, tested)
+        self.assertEqual(
+            [call.args[0] for call in run_json.call_args_list],
+            [
+                [
+                    "gh", "api",
+                    "repos/OpenCoven/psyche/compare/"
+                    "0123456789abcdef0123456789abcdef01234567..."
+                    "fedcba9876543210fedcba9876543210fedcba98",
+                ],
+                ["gh", "api", "repos/OpenCoven/psyche/pulls/123/files?per_page=100"],
+            ],
+        )
+
+    def test_shallow_actions_verifier_accepts_site_only_squash_merge_push(self) -> None:
+        tested = "0123456789abcdef0123456789abcdef01234567"
+        event = json.dumps(self.squash_merge_push_event())
+        tree = "cccccccccccccccccccccccccccccccccccccccc"
+        merge_commit = {
+            "parents": [{"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+            "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "tree": {"sha": tree},
+        }
+        terminal_commit = {
+            "sha": "fedcba9876543210fedcba9876543210fedcba98",
+            "tree": {"sha": tree},
+        }
+        compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        compare["status"] = "diverged"
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
+        with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+            self.checker.pathlib.Path, "read_text", return_value=event
+        ), mock.patch.object(
+            self.checker,
+            "run_json",
+            side_effect=(
+                [self.merged_pull_request()],
+                merge_commit,
+                terminal_commit,
+                compare,
+                [{"filename": "site/overview.md"}],
+            ),
+        ) as run_json:
+            self.checker.verify_actions_source_relationship(ROOT, tested)
+        self.assertEqual(
+            run_json.call_args_list[-1].args[0],
+            ["gh", "api", "repos/OpenCoven/psyche/pulls/123/files?per_page=100"],
+        )
+
     def test_shallow_actions_verifier_rejects_malformed_event_payload(self) -> None:
         passed = self.passed_evidence()
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
@@ -707,7 +771,11 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
             self.checker.pathlib.Path, "read_text", return_value=event
-        ), mock.patch.object(self.checker, "run_json", return_value=compare):
+        ), mock.patch.object(
+            self.checker,
+            "run_json",
+            side_effect=(compare, [{"filename": "crates/psyche-core/src/lib.rs"}]),
+        ):
             with self.assertRaisesRegex(self.checker.EvidenceError, "ancestor"):
                 self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
 
