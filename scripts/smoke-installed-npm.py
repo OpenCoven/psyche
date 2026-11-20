@@ -72,6 +72,8 @@ def expect_checksum_failure(consumer, launcher, expected_hash, found_hash, env):
 def exercise(work, env):
     platform, arch = json.loads(run(["node", "-p", "JSON.stringify([process.platform,process.arch])"], ROOT, env).stdout)
     key = f"{platform}-{arch}"
+    expected_key = env.get("PSYCHE_EXPECTED_NPM_PLATFORM", key)
+    require(key == expected_key, f"expected npm platform {expected_key}, measured {key}")
     npm = "npm.cmd" if os.name == "nt" else "npm"
     source = run(["git", "rev-parse", "HEAD"], ROOT, env).stdout.strip()
     manifest = json.loads((WRAPPER / "package.json").read_text(encoding="utf-8"))
@@ -138,7 +140,8 @@ def exercise(work, env):
         handle.write(b"npm-smoke-mismatch")
     expect_checksum_failure(consumer, launcher, measured, sha256(installed_binary), env)
     return {
-        "source": source, "platform": key, "node": run(["node", "--version"], ROOT, env).stdout.strip(),
+        "source": source, "platform": key, "expected_platform": expected_key,
+        "node": run(["node", "--version"], ROOT, env).stdout.strip(),
         "npm": run([npm, "--version"], ROOT, env).stdout.strip(),
         "rustc": run(["rustc", "--version"], ROOT, env).stdout.strip(),
         "binary_sha256": measured, "companion_sha256": sha256(companion_tar),
