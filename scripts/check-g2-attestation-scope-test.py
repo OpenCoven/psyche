@@ -222,6 +222,27 @@ class G2AttestationScopeTests(unittest.TestCase):
         with self.assertRaises(self.checker.EvidenceError):
             self.checker._validate_scope_relationship(compare, tested, terminal, self.scope, before, after)
 
+    def test_post_squash_reviewed_file_removal_move_and_copy_are_inherited(self):
+        removed, added = "docs/previous-name.md", "docs/current-name.md"
+        for operation in ("removed", "renamed", "copied"):
+            with self.subTest(operation=operation):
+                entry = {"filename": removed, "status": operation}
+                before = {}
+                if operation in {"renamed", "copied"}:
+                    entry.update(filename=added, previous_filename=removed)
+                    before[added] = self.blob_a
+                if operation == "copied":
+                    before[removed] = self.blob_a
+                compare, tested, terminal = self.compare_response(files=[
+                    entry, {"filename": "README.md", "status": "added"},
+                ])
+                after = {**before, "README.md": self.blob_b}
+                self.checker._validate_scope_relationship(compare, tested, terminal, self.scope, before, after)
+                # An actual endpoint change at either source or destination still invalidates the proof.
+                after[removed] = self.blob_b
+                with self.assertRaises(self.checker.EvidenceError):
+                    self.checker._validate_scope_relationship(compare, tested, terminal, self.scope, before, after)
+
     def test_compare_keeps_original_evidence_only_ancestor_contract(self):
         tested = "1" * 40
         terminal = "2" * 40

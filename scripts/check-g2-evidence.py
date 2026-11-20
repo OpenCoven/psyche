@@ -361,8 +361,6 @@ def _compare_common(compare: object, tested: str, terminal: str) -> tuple[str, l
         file_status = raw.get("status")
         if path in seen or file_status not in {"added", "modified", "removed", "renamed", "copied", "changed"}:
             fail(f"GitHub compare file list contains an invalid or duplicate entry: {raw}")
-        if file_status in {"renamed", "copied"}:
-            fail(f"GitHub compare uses an unsupported rename/copy status: {path}")
         seen.add(path)
         normalized.append(raw)
     return str(status), normalized
@@ -379,16 +377,30 @@ def _validate_scope_relationship(
     status, files = _compare_common(compare, tested, terminal)
     for raw in files:
         path = str(raw["filename"])
-        # GitHub lists files relative to the merge base. After a squash, that
-        # list includes the original candidate changes even on a docs-only PR.
-        # Discount an inherited entry only with exact mode, type and blob proof.
+        # GitHub compares to the common ancestor, which predates a squash.
+        # Discount inherited operations only when the two complete endpoint
+        # trees prove the tested entries and their modes are unchanged.
         file_status = str(raw["status"])
-        if status == "diverged" and path in before and path in after:
-            if before[path] == after[path]:
+        if file_status in {"renamed", "copied"}:
+            previous = _safe_repository_path(raw.get("previous_filename"))
+            inherited_source = (
+                previous not in before and previous not in after
+                if file_status == "renamed"
+                else previous in before and before[previous] == after.get(previous)
+            )
+            if (
+                status == "diverged" and previous != path and inherited_source
+                and path in before and before[path] == after.get(path)
+            ):
                 continue
-            # A file first introduced on the candidate appears as added in
-            # the merge-base diff even when the terminal edits that file.
-            file_status = "modified"
+            fail(f"retained G2 attestation does not cover {file_status} path: {path}")
+        if status == "diverged":
+            if file_status == "removed" and path not in before and path not in after:
+                continue
+            if path in before and path in after:
+                if before[path] == after[path]:
+                    continue
+                file_status = "modified"
         if path == SCOPE_EVIDENCE_PATH and file_status == "modified":
             continue
         rule = scope.get(path)
