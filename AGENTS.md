@@ -42,6 +42,7 @@ Psyche Build is the first planned reference client; it is not the protocol owner
 | `crates/psyche-surfaces/**` | bounded surface ports |
 | `crates/psyche-runtime/**` | runtime composition and shutdown |
 | `crates/psyche-cli/**` | process/CLI boundary |
+| `crates/psyche-config/**` | versioned configuration loading and validation |
 | `crates/psyche-test-support/**` | reusable conformance evidence, not production authority |
 | `packages/psyche-npm/**` | npm wrapper and packed distribution |
 | `.github/**`, `scripts/**` | CI, evidence, release, and verification controls |
@@ -99,7 +100,7 @@ Treat these as requiring focused owner review:
 
 ## Generated and evidence files
 
-Do not edit generated artifacts manually. Use the documented generator or update the generator and artifact in the same PR.
+`agent/manifest.yaml` lists the protected review surfaces, verification commands and required handoff evidence. No generated repository paths are currently declared. Do not edit generated artifacts manually. Use the documented generator or update the generator and artifact in the same PR.
 
 `docs/G2-EVIDENCE.md` is retained evidence tied to immutable commits and runs. It is not a mutable status dashboard. New evidence must identify source SHA, command, result, and immutable artifact/run.
 
@@ -110,7 +111,7 @@ Do not edit generated artifacts manually. Use the documented generator or update
 ./scripts/agent-check full
 ```
 
-The full local script intentionally does not replace GitHub's cross-platform, cargo-deny, or full-history secret jobs. A local pass is necessary, not sufficient.
+Both modes preserve existing staged, unstaged and untracked edits and fail if the index or nonignored working tree changes during verification. GitHub runs separate cross-platform, dependency-audit, full-history secret and G2 relationship gates.
 
 ## Cross-repository changes
 

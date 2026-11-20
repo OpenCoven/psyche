@@ -32,7 +32,8 @@ risk:
     - scripts/g2-test-manifest.json
     - scripts/check-g2-evidence.py
     - docs/G2-EVIDENCE.md
-    - .github/workflows/**
+    - crates/psyche-runtime/**
+    - .github/**
     - Cargo.lock
     - deny.toml
   generated_paths: []
@@ -44,6 +45,8 @@ risk:
 agent:
   entrypoint: AGENTS.md
   bootstrap: ./scripts/agent-bootstrap
+  offline_bootstrap: PSYCHE_BOOTSTRAP_OFFLINE=1 ./scripts/agent-bootstrap
+  working_tree_policy: preserve-existing-index-and-nonignored-contents
   verify:
     fast: ./scripts/agent-check fast
     full: ./scripts/agent-check full
@@ -81,7 +84,13 @@ contracts:
       owner: https://github.com/OpenCoven/psyche/issues/13
 
 toolchains:
+  shell: bash
+  windows_shell: git-bash
   rust: 1.88.0
+  rust_pin_source: rust-toolchain.toml
+  rust_components: [rustfmt, clippy]
+  bootstrap_tools: [git, rustc, cargo, python3, node, npm]
+  g2_workspace_tools: [bash, jq]
   node_minimum: "20"
   python_minimum: "3"
   lockfiles:

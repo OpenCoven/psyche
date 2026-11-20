@@ -1,7 +1,8 @@
 # OpenCoven protocol ownership
 
-**Status:** proposed baseline pending [OpenCoven/psyche#12](https://github.com/OpenCoven/psyche/issues/12)  
-**Last reconciled:** 2026-08-26
+**Status:** proposed baseline pending [OpenCoven/psyche#12](https://github.com/OpenCoven/psyche/issues/12)
+
+**Last reconciled:** 2026-11-20
 
 This document prevents implementation order from becoming accidental canonical ownership.
 
@@ -10,6 +11,10 @@ This document prevents implementation order from becoming accidental canonical o
 A durable identity or consequential transition has exactly one canonical owner. Products and adapters may cache, project, or reference protocol state, but must not create a second source of truth.
 
 Transport location, process identity, filesystem paths, tmux panes, worktrees, branches, provider sessions, Beads, GitHub issues, and UI selections are implementation references—not protocol identity or authority.
+
+## Recorded Telegram boundary
+
+The separate Rust Telegram adapter belongs in Psyche. Familiar Contract owns familiar/person identity, Threads owns protected-surface authorization, Psyche composes local admission and orchestration, and Coven owns execution, adoption and fencing. The recorded scope permits interface and denial-vector planning. Actual integration depends on G4/Coven #1230, production child dispatch on G6, and cutover on applicable G10. The cross-repository profile, old-to-current rebind obligations and spec provenance remain open in #12. [Decision and gates](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462) · [Product placement](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303108240)
 
 ## Proposed ownership matrix
 

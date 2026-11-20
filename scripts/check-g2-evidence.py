@@ -769,9 +769,7 @@ def validate_docs(root: pathlib.Path, overrides: Mapping[str, str]) -> None:
 
 
 def run_json(command: list[str], root: pathlib.Path) -> object:
-    completed = subprocess.run(
-        command, cwd=root, text=True, capture_output=True, check=False, encoding="utf-8"
-    )
+    completed = subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
     if completed.returncode:
         fail(f"command failed: {' '.join(command)}\n{completed.stdout}{completed.stderr}")
     try:

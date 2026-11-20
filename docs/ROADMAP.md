@@ -1,8 +1,11 @@
 # Psyche roadmap
 
-**Status:** active program  
-**Last reconciled:** 2026-08-26  
-**Roadmap control:** [OpenCoven/psyche#9](https://github.com/OpenCoven/psyche/issues/9)  
+**Status:** active program
+
+**Last reconciled:** 2026-11-20
+
+**Roadmap control:** [OpenCoven/psyche#9](https://github.com/OpenCoven/psyche/issues/9)
+
 **Owner:** [@BunsDev](https://github.com/BunsDev)
 
 Psyche is graduating from a strong G2 contract foundation into OpenCoven's consumer-ready canonical orchestration protocol.
@@ -11,7 +14,7 @@ The roadmap is gate-driven. Target dates coordinate work; they never replace com
 
 ## Baseline
 
-Implemented and evidenced today:
+The immutable W2/G2 source and run are retained in the G2 evidence document. The items below describe that implementation. Issue #9 tracks subsequent delivery and exact candidate evidence. [G2 evidence](G2-EVIDENCE.md) · [Active delivery plan](https://github.com/OpenCoven/psyche/issues/9#issuecomment-7035832051)
 
 - canonical records, IDs, validation, serialization, digests, and structured denials;
 - append-only durable storage, migrations, quarantine, retention, and crash recovery;
@@ -21,6 +24,8 @@ Implemented and evidenced today:
 - Linux, macOS, Windows, dependency-audit, secret, and npm CI surfaces.
 
 The current foundation is not yet a consumer-ready protocol release. Stable schemas, immutable profile artifacts, downstream pins, compatibility policy, reference-client canaries, support windows, and release governance remain explicit work.
+
+The bounded Telegram decision places its Rust adapter in Psyche. Real integration needs G4/Coven #1230, production child dispatch needs G6, and cutover needs the applicable G10. The stable consumer profile requires #12 ownership decisions and #11 immutable artifacts before #13 can qualify the reference client. [Telegram decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462)
 
 ## Program outcomes
 
@@ -34,7 +39,8 @@ The current foundation is not yet a consumer-ready protocol release. Stable sche
 
 ## Phase 0 — control and agent readiness
 
-**Target:** Aug 26–Sep 8, 2026  
+**Target:** Aug 26–Sep 8, 2026
+
 **Owners:** #10, #12, and the minimum security floor in #14
 
 Deliver:
@@ -51,7 +57,8 @@ Deliver:
 
 ## Phase 1 — protocol v1 publication
 
-**Target:** Sep 9–Sep 29, 2026  
+**Target:** Sep 9–Sep 29, 2026
+
 **Owners:** #11 and #12
 
 Deliver:
@@ -68,7 +75,8 @@ Deliver:
 
 ## Phase 2 — Psyche Build reference client
 
-**Target:** Sep 30–Oct 20, 2026  
+**Target:** Sep 30–Oct 20, 2026
+
 **Owners:** #13 and [OpenCoven/psyche-build#253](https://github.com/OpenCoven/psyche-build/issues/253)
 
 Deliver:
@@ -100,7 +108,8 @@ Deliver executable lifecycle semantics for:
 
 ## Phase 4 — release candidate and governance
 
-**Target:** Nov 11–Nov 24, 2026  
+**Target:** Nov 11–Nov 24, 2026
+
 **Owner:** #14
 
 Deliver:

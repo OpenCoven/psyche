@@ -4,6 +4,13 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+case "${1:-}" in
+  "") ;;
+  --check-tools) ;;
+  *) printf 'Usage: %s [--check-tools]\n' "$0" >&2; exit 2 ;;
+esac
+[[ $# -le 1 ]] || { printf 'Expected at most one option.\n' >&2; exit 2; }
+
 required_commands=(cargo rustc git python3 node npm)
 missing=()
 for command_name in "${required_commands[@]}"; do
@@ -17,9 +24,11 @@ if ((${#missing[@]} > 0)); then
   exit 1
 fi
 
+rust_pin="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+[[ -n "$rust_pin" ]] || { printf 'Missing channel in rust-toolchain.toml.\n' >&2; exit 1; }
 rust_version="$(rustc --version | awk '{print $2}')"
-if [[ "$rust_version" != "1.88.0" ]]; then
-  printf 'Psyche requires rustc 1.88.0; found %s. Install/use the pinned rust-toolchain.toml toolchain.\n' "$rust_version" >&2
+if [[ "$rust_version" != "$rust_pin" ]]; then
+  printf 'Psyche requires rustc %s, found %s. Put the rustup proxies first on PATH.\n' "$rust_pin" "$rust_version" >&2
   exit 1
 fi
 
@@ -29,11 +38,27 @@ if [[ ! "$node_major" =~ ^[0-9]+$ ]] || ((node_major < 20)); then
   exit 1
 fi
 
-if [[ "${PSYCHE_BOOTSTRAP_OFFLINE:-0}" == "1" ]]; then
-  cargo fetch --locked --offline
-else
-  cargo fetch --locked
+cargo_version="$(cargo --version | awk '{print $2}')"
+if [[ "$cargo_version" != "$rust_pin" ]]; then
+  printf 'Psyche requires cargo %s, found %s. Put the rustup proxies first on PATH.\n' "$rust_pin" "$cargo_version" >&2
+  exit 1
 fi
+cargo fmt --version >/dev/null && cargo clippy --version >/dev/null || {
+  printf 'Install the rustfmt and clippy components for %s.\n' "$rust_pin" >&2
+  exit 1
+}
+
+[[ "${1:-}" != "--check-tools" ]] || exit 0
+case "${PSYCHE_BOOTSTRAP_OFFLINE:-0}" in
+  0) cargo fetch --locked ;;
+  1)
+    cargo fetch --locked --offline || {
+      printf 'Offline bootstrap requires a warm Cargo cache. Run ./scripts/agent-bootstrap with network access first.\n' >&2
+      exit 1
+    }
+    ;;
+  *) printf 'PSYCHE_BOOTSTRAP_OFFLINE must be 0 or 1.\n' >&2; exit 2 ;;
+esac
 
 cargo metadata --locked --no-deps --format-version 1 >/dev/null
 npm --prefix packages/psyche-npm test >/dev/null

@@ -4,7 +4,7 @@ Psyche is OpenCoven's canonical orchestration protocol and reference implementat
 
 It defines how tasks, graphs, lanes, execution attempts, delegations, deliveries, approvals, receipts, cancellation, recovery, and terminal outcomes are represented and verified without coupling those identities to a UI, tracker, process, transport, or persistence provider.
 
-> **Status:** pre-1.0 protocol foundation. The current repository has passed the documented G2 contract-foundation evidence. Consumer-ready protocol v1 artifacts and the first Psyche Build compatibility canary are tracked on the active roadmap. Do not infer support beyond retained evidence.
+> **Status:** pre-1.0 protocol foundation. The retained G2 evidence covers the implementation at its recorded source and run. Consumer-ready protocol v1 artifacts and the first Psyche Build compatibility canary are tracked on the active roadmap. Do not infer support beyond retained evidence.
 
 ## Canonical ownership
 
@@ -42,7 +42,7 @@ See [Protocol ownership](docs/PROTOCOL-OWNERSHIP.md) for the proposed cross-repo
 | `docs` | Architecture, schemas, testing, evidence, ownership, and roadmap |
 | `scripts` | Evidence and repository verification tools |
 
-The dependency direction and crate ownership are documented in [Architecture](docs/ARCHITECTURE.md).
+Read each crate’s Cargo manifest to identify its dependencies. For example, `psyche-config` depends on `psyche-core`. The architecture diagram’s arrow legend has an open correction in #21. [Config crate manifest](crates/psyche-config/Cargo.toml) · [Architecture](docs/ARCHITECTURE.md)
 
 ## Requirements
 
@@ -51,7 +51,9 @@ The dependency direction and crate ownership are documented in [Architecture](do
 - Python 3 for evidence verification
 - Node.js 20+ and npm for the distribution wrapper checks
 - Git
-- A POSIX shell for the repository helper scripts
+- Bash for both helpers (Git Bash on Windows), including its standard Unix tools
+- jq for the separate `bash scripts/check-g2-workspace.sh` workspace check
+- rustfmt and Clippy from the pinned toolchain. Put the rustup proxies first on PATH when another Rust installation is present.
 
 The GitHub workflow remains the source of truth for the full Linux, macOS, Windows, supply-chain, secret, and npm matrix.
 
@@ -62,7 +64,7 @@ The GitHub workflow remains the source of truth for the full Linux, macOS, Windo
 ./scripts/agent-check fast
 ```
 
-Run the complete local gate before requesting review:
+The first bootstrap fetches locked Cargo dependencies and requires network access. For a previously populated Cargo cache, run `PSYCHE_BOOTSTRAP_OFFLINE=1 ./scripts/agent-bootstrap`. Both verification modes accept staged, unstaged and untracked edits. They compare the index and working-tree contents at entry and exit and report changes made during verification. Run the complete local gate before requesting review.
 
 ```sh
 ./scripts/agent-check full
@@ -72,11 +74,36 @@ Direct Cargo entrypoints remain available:
 
 ```sh
 cargo test --workspace --locked
-cargo test -p psyche-test-support --test conformance
-cargo run -p psyche-cli -- --help
+cargo test --locked -p psyche-test-support --test conformance
+cargo run --locked -p psyche-cli --bin psyche -- --help
 ```
 
-See [CLI](docs/CLI.md), [Configuration](docs/CONFIGURATION.md), and [Testing](docs/TESTING.md).
+The `psyche-cli` crate ships the operator binary `psyche` and the foreground daemon `psyched`. To run a credential-free operator check, create a disposable configuration and empty data directory outside the checkout. Python writes native paths on all three platforms.
+
+```bash
+scratch="$(python3 -c 'import tempfile; print(tempfile.mkdtemp(prefix="psyche-onboarding-"))')"
+python3 - "$scratch" <<'PYCONFIG'
+from pathlib import Path
+import json
+import sys
+
+root = Path(sys.argv[1])
+data = root / "data"
+data.mkdir(mode=0o700)
+(root / "psyche.toml").write_text(
+    'schema_version = "psyche.config.v1"\n'
+    + 'data_dir = ' + json.dumps(data.as_posix()) + '\n[coven]\n'
+    + 'socket = ' + json.dumps((root / "coven.sock").as_posix()) + '\n'
+    + 'required_api_version = "coven.daemon.v1"\n',
+    encoding="utf-8",
+)
+PYCONFIG
+cargo run --locked -p psyche-cli --bin psyche -- --config "$scratch/psyche.toml" doctor --json
+cargo run --locked -p psyche-cli --bin psyche -- --config "$scratch/psyche.toml" status --json
+cargo run --locked -p psyche-cli --bin psyche -- --config "$scratch/psyche.toml" stop
+```
+
+Expect `failed: 0` from doctor and `observed: false` with a null state from status. Stop exits 4 because this build has no daemon IPC. The disposable directory can be removed after inspection. [CLI](docs/CLI.md) · [Configuration](docs/CONFIGURATION.md) · [Testing](docs/TESTING.md)
 
 ## Change policy
 

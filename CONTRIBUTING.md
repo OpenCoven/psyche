@@ -20,7 +20,7 @@ cd psyche
 ./scripts/agent-check fast
 ```
 
-The pinned Rust version is declared in `rust-toolchain.toml`. Use the locked Cargo dependency graph.
+Run both helpers in Bash. The first bootstrap needs a network connection to fill the Cargo cache. On a warm cache use `PSYCHE_BOOTSTRAP_OFFLINE=1 ./scripts/agent-bootstrap`. The pinned Rust version is declared in `rust-toolchain.toml`. Use the locked Cargo dependency graph.
 
 ## Development loop
 
@@ -33,6 +33,8 @@ Keep each pull request focused on one contract or capability boundary.
 # run the directly affected conformance/migration/fault tests
 ./scripts/agent-check full
 ```
+
+Fast and full accept pre-existing staged, unstaged and untracked edits and verify that checks preserve the Git-visible contents. Run one verification at a time and save concurrent edits until it finishes.
 
 Add behavior-level tests before changing canonical records, transitions, persistence, dispatch, or recovery.
 
