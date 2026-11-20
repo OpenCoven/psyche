@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+mode="${1:-fast}"
+
+run_common() {
+  cargo fmt --all -- --check
+  git diff --check
+  git diff --cached --check
+}
+
+run_fast() {
+  run_common
+  cargo check --workspace --locked
+  cargo test -p psyche-core --locked
+  cargo test -p psyche-store --test migrations --locked
+}
+
+run_full() {
+  run_common
+  cargo clippy --locked --workspace --all-targets -- -D warnings
+  cargo test --workspace --locked
+
+  PROPTEST_CASES=2048 \
+  PROPTEST_RNG_SEED=00000000000000000000000000000000 \
+    cargo test --locked -p psyche-test-support --test state_machine
+
+  cargo test --locked -p psyche-test-support --test conformance
+  cargo test --locked -p psyche-store --test migrations
+  cargo test --locked -p psyche-store --features test-fault-injection --test crash
+  cargo clippy --locked -p psyche-store --all-targets --features test-fault-injection -- -D warnings
+
+  python3 scripts/check-g2-evidence-test.py
+  npm --prefix packages/psyche-npm test
+  npm pack ./packages/psyche-npm --dry-run >/dev/null
+
+}
+
+if [[ $# -gt 1 || ( "$mode" != fast && "$mode" != full ) ]]; then
+  printf 'Usage: %s [fast|full]\n' "$0" >&2
+  exit 2
+fi
+
+./scripts/agent-bootstrap --check-tools
+
+# Preserve pre-existing edits, including staged blobs and same-name content changes.
+# The snapshot prints one digest and never writes user content into a log or index.
+snapshot() {
+  python3 - <<'PYTHON'
+import hashlib
+import os
+import stat
+import subprocess
+
+def git(*args):
+    return subprocess.check_output(["git", *args])
+
+state = hashlib.sha256()
+def add(value):
+    state.update(len(value).to_bytes(8, "big"))
+    state.update(value)
+
+add(git("rev-parse", "HEAD"))
+add(git("ls-files", "--stage", "-z"))
+status = git("status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")
+add(status)
+for record in status.split(b"\0"):
+    if not record:
+        continue
+    path = os.fsdecode(record[3:])
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        add(b"missing")
+        continue
+    add(str(mode).encode())
+    if stat.S_ISLNK(mode):
+        add(os.fsencode(os.readlink(path)))
+    elif stat.S_ISREG(mode):
+        content = hashlib.sha256()
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                content.update(chunk)
+        add(content.digest())
+    else:
+        raise SystemExit("Unsupported changed file type in the checkout.")
+print(state.hexdigest())
+PYTHON
+}
+
+before="$(snapshot)"
+check_state() {
+  local result=$?
+  local after
+  after="$(snapshot)" || exit 1
+  if [[ "$after" != "$before" ]]; then
+    printf 'Git index or working tree changed during verification. Inspect git status and git diff.\n' >&2
+    exit 1
+  fi
+  if [[ "$result" == 0 ]]; then
+    printf 'Psyche agent check (%s) passed.\n' "$mode"
+    printf 'See GitHub CI for cross-platform, dependency-audit, secret, and evidence-relationship results.\n'
+  fi
+  exit "$result"
+}
+trap check_state EXIT
+
+if [[ "$mode" == fast ]]; then
+  run_fast
+else
+  run_full
+fi

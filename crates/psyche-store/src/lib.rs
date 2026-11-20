@@ -61,10 +61,10 @@ impl Store {
 
         if file_state == connection::DatabaseFileState::Existing {
             let preflight = connection::open_read_only(&database_path)?;
-            if let Some(found) = connection::file_user_version(&database_path)? {
-                if found > CURRENT_DATABASE_VERSION {
-                    return Err(StoreError::UnsupportedDatabaseVersion { found });
-                }
+            if let Some(found) = connection::file_user_version(&database_path)?
+                && found > CURRENT_DATABASE_VERSION
+            {
+                return Err(StoreError::UnsupportedDatabaseVersion { found });
             }
             let found = match preflight
                 .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))

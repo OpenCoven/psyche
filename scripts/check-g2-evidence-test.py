@@ -68,6 +68,15 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         with self.assertRaises(self.checker.EvidenceError):
             self.checker.validate_ci_structure(workflow)
 
+    def test_run_json_uses_utf8_for_cli_output(self) -> None:
+        command = ["gh", "api", "repos/OpenCoven/psyche/compare"]
+        completed = subprocess.CompletedProcess(command, 0, '{"message":"—"}', "")
+        with mock.patch.object(self.checker.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(self.checker.run_json(command, ROOT), {"message": "—"})
+        run.assert_called_once_with(
+            command, cwd=ROOT, text=True, capture_output=True, check=False, encoding="utf-8"
+        )
+
     def candidate_evidence(self, evidence=None) -> str:
         candidate = evidence if evidence is not None else self.evidence
         fields = {
@@ -710,6 +719,78 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         ), mock.patch.object(self.checker, "run_json", return_value=compare):
             with self.assertRaisesRegex(self.checker.EvidenceError, "ancestor"):
                 self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
+
+    def test_diverged_compare_accepts_unchanged_attested_inputs(self) -> None:
+        compare = self.compare_response(files=[
+            {"filename": "AGENTS.md"},
+            {"filename": "CONTRIBUTING.md"},
+            {"filename": "LICENSE"},
+            {"filename": "README.md"},
+            {"filename": "SECURITY.md"},
+            {"filename": "agent/manifest.yaml"},
+            {"filename": "docs/PROTOCOL-OWNERSHIP.md"},
+            {"filename": "docs/ROADMAP.md"},
+            {"filename": "scripts/agent-bootstrap"},
+            {"filename": "scripts/agent-check"},
+            {"filename": "scripts/check-g2-evidence-test.py"},
+            {"filename": "scripts/check-g2-evidence.py"},
+        ])
+        compare.update(
+            status="diverged",
+            behind_by=1,
+            merge_base_commit={"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        )
+
+        self.checker.validate_evidence_only_compare(
+            compare,
+            "0123456789abcdef0123456789abcdef01234567",
+            "fedcba9876543210fedcba9876543210fedcba98",
+        )
+
+    def test_diverged_compare_rejects_changed_attested_inputs(self) -> None:
+        changed_paths = (
+            "crates/psyche-core/src/lib.rs",
+            "crates/psyche-core/Cargo.toml",
+            "Cargo.toml",
+            "Cargo.lock",
+            ".cargo/config.toml",
+            ".github/workflows/ci.yml",
+            "clippy.toml",
+            "deny.toml",
+            "rust-toolchain.toml",
+            "scripts/g2-test-manifest.json",
+        )
+        for path in changed_paths:
+            compare = self.compare_response(files=[{"filename": path}])
+            compare.update(
+                status="diverged",
+                behind_by=1,
+                merge_base_commit={"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            )
+            with self.subTest(path=path), self.assertRaisesRegex(
+                self.checker.EvidenceError, "attested G2 input"
+            ):
+                self.checker.validate_evidence_only_compare(
+                    compare,
+                    "0123456789abcdef0123456789abcdef01234567",
+                    "fedcba9876543210fedcba9876543210fedcba98",
+                )
+
+        renamed = self.compare_response(files=[{
+            "filename": "docs/renamed.md",
+            "previous_filename": "crates/psyche-core/src/lib.rs",
+        }])
+        renamed.update(
+            status="diverged",
+            behind_by=1,
+            merge_base_commit={"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        )
+        with self.assertRaisesRegex(self.checker.EvidenceError, "attested G2 input"):
+            self.checker.validate_evidence_only_compare(
+                renamed,
+                "0123456789abcdef0123456789abcdef01234567",
+                "fedcba9876543210fedcba9876543210fedcba98",
+            )
 
     def test_remote_verifier_rejects_wrong_workflow_or_event(self) -> None:
         passed = self.passed_evidence()

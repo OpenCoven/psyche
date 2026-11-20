@@ -104,7 +104,7 @@ NON_RUST_CI_COMMAND_JOBS = {
 # Pins the complete reviewed workflow, including setup/actions and every writer
 # that could poison GITHUB_ENV or GITHUB_PATH. Newlines are normalized first so
 # the same reviewed content verifies on Windows checkouts.
-REVIEWED_WORKFLOW_SHA256 = "1f908303c1a8940ce5ec8c81182ddaf5d82e5c6bddd5ece7fb33e1baf9a087f1"
+REVIEWED_WORKFLOW_SHA256 = "5aa95e0aa2ec3fe60518dba3cf80d203964e9cc8233c3690918991d73f294e99"
 CI_WORKFLOW_ID = 326408880
 
 
@@ -769,7 +769,9 @@ def validate_docs(root: pathlib.Path, overrides: Mapping[str, str]) -> None:
 
 
 def run_json(command: list[str], root: pathlib.Path) -> object:
-    completed = subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
+    completed = subprocess.run(
+        command, cwd=root, text=True, capture_output=True, check=False, encoding="utf-8"
+    )
     if completed.returncode:
         fail(f"command failed: {' '.join(command)}\n{completed.stdout}{completed.stderr}")
     try:
@@ -817,21 +819,52 @@ def validate_evidence_only_compare(compare: object, tested: str, terminal: str) 
         fail("GitHub compare response does not end at the pull-request terminal commit")
     if compare.get("ahead_by") != len(commits) or compare.get("total_commits") != len(commits):
         fail("GitHub compare response commit counts are inconsistent")
+    if not isinstance(merge_base, dict) or not isinstance(merge_base.get("sha"), str):
+        fail("tested source is not the pull-request head's merge-base ancestor")
+    if compare.get("status") == "ahead" and merge_base["sha"] == tested:
+        files = compare.get("files")
+        if (
+            not isinstance(files, list)
+            or len(files) != 1
+            or not isinstance(files[0], dict)
+            or files[0].get("filename") != "docs/G2-EVIDENCE.md"
+            or files[0].get("status") != "modified"
+        ):
+            fail(f"passed source-to-pull-request diff is not one modified evidence file: {files}")
+        return
     if (
-        compare.get("status") != "ahead"
-        or not isinstance(merge_base, dict)
-        or merge_base.get("sha") != tested
+        compare.get("status") != "diverged"
+        or merge_base["sha"] == tested
+        or type(compare.get("behind_by")) is not int
+        or compare["behind_by"] <= 0
     ):
         fail("tested source is not the pull-request head's merge-base ancestor")
     files = compare.get("files")
-    if (
-        not isinstance(files, list)
-        or len(files) != 1
-        or not isinstance(files[0], dict)
-        or files[0].get("filename") != "docs/G2-EVIDENCE.md"
-        or files[0].get("status") != "modified"
-    ):
-        fail(f"passed source-to-pull-request diff is not one modified evidence file: {files}")
+    if not isinstance(files, list) or len(files) >= 300:
+        fail("diverged source comparison has an invalid or truncated file list")
+    for changed_file in files:
+        if not isinstance(changed_file, dict) or not isinstance(changed_file.get("filename"), str):
+            fail("diverged source comparison contains an invalid file entry")
+        paths = [changed_file["filename"]]
+        previous_filename = changed_file.get("previous_filename")
+        if previous_filename is not None:
+            if not isinstance(previous_filename, str):
+                fail("diverged source comparison contains an invalid previous filename")
+            paths.append(previous_filename)
+        if any(
+            path.startswith(("crates/", ".cargo/", ".github/"))
+            or path.endswith(".rs")
+            or path.rsplit("/", 1)[-1] in {"Cargo.toml", "Cargo.lock"}
+            or path in {
+                "clippy.toml",
+                "deny.toml",
+                "rust-toolchain",
+                "rust-toolchain.toml",
+                "scripts/g2-test-manifest.json",
+            }
+            for path in paths
+        ):
+            fail("diverged source comparison changes an attested G2 input")
 
 
 def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
