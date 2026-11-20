@@ -1,9 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "",
-  "buildCommand": "",
-  "outputDirectory": "dist",
+  "installCommand": "npm ci --prefix site",
+  "buildCommand": "npm --prefix site run check",
+  "outputDirectory": "site/dist",
   "cleanUrls": true,
   "trailingSlash": true,
   "headers": [
@@ -17,7 +17,7 @@
     },
     {
       "source": "/assets/fonts/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
     }
   ]
 }
