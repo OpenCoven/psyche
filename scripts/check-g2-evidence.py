@@ -54,6 +54,19 @@ EXPECTED_UNATTESTED_PATHS = {
 }
 
 
+# gh emits UTF-8 JSON independently of the Windows console code page.
+def run_json(command: list[str], root: pathlib.Path) -> object:
+    completed = subprocess.run(
+        command, cwd=root, text=True, capture_output=True, check=False, encoding="utf-8"
+    )
+    if completed.returncode:
+        fail(f"command failed: {' '.join(command)}\n{completed.stdout}{completed.stderr}")
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        fail(f"command did not return JSON: {' '.join(command)}: {error}")
+
+
 def _json_object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
     value: dict[str, object] = {}
     for key, item in pairs:
