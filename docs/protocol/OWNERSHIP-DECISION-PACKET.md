@@ -1,0 +1,76 @@
+# Proposed cross-repository ownership decision, revision 1
+
+For decision by BunsDev on Psyche #12. Scope is the first consumer profile. The only recorded decisions used here are the Telegram planning boundary and the merged Coven O4 design. The remaining rows require owner selection before #11 can promote them. The G2 document registry identifies implementations on Psyche main `1e47b40dbbb9db21962b4884afe49763321f04b0`. The onboarding PR contains the earlier ownership proposal. [Decision request](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303087073) · [Telegram decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303108240) · [O4 delivery](https://github.com/OpenCoven/coven/issues/1629#issuecomment-6532541070) · [Earlier proposal](https://github.com/OpenCoven/psyche/blob/3b167863bd1fcc73f26c9a91685dca70eecfc8fe/docs/PROTOCOL-OWNERSHIP.md)
+
+## Producer and consumer decisions
+
+Each row proposes one producer for the named fact. Different rows can contribute separately to one operation. Status indicates the scope where the owner has already acted. A client that cannot resolve the producer, exact revision or required authority must retain the operation as denied, unknown or recovery-required according to its existing state.
+
+| Identity or transition | Canonical producer | Consumers and permitted behavior | Decision status |
+|---|---|---|---|
+| Familiar identity, declaration revision and person binding | Familiar Contract | Psyche resolves one binding, records provenance, compares exact revision. Coven compares the sealed tuple. | Decided for Telegram planning. General profile proposed. |
+| Protected surface action and destination authorization | Coven Threads | Psyche binds principal, action, effect digest, policy revision, expiry and destination. Adapter enforces per physical effect. | Decided for Telegram planning. General profile proposed. |
+| Telegram transport principal, locator, activation, account/chat/topic restrictions | Psyche Telegram component | Resolves the normalized transport coordinates against the preceding two authorities and may further restrict local admission. | Decided for the route-key, denial and prerequisite planning slice on #1235, #1236 and #1237 in Coven. |
+| Identity snapshot, intent, surface event | Psyche | Build, Cave and authorized clients consume opaque IDs and pinned provenance. Input admission requires exact principal, project and facts. | Proposed general profile. Historical rebind disputed below. |
+| Graph, node, orchestration task/lane/attempt, delegation, budget | Psyche | Build projects current task and lane; runtimes receive scope-limited requests. Admit, schedule, reserve, dispatch and recover under approved gates. | Proposed. Task and lane mapping require an explicit released representation. |
+| Orchestration lease, grant and revocation correlation | Psyche | Build validates actor, revisions, epoch, exact capability, scope and expiry. Actual runtime access still goes to its resource owner. | Proposed. Current Build lease IDs remain product-local. |
+| Approval request, lifecycle and human response correlation | Psyche | Cave/Build present and submit authenticated responses. Persist exact target/action, digest, scope, expiry, consume-once and outcome. | Proposed. G2 Approval alone lacks some Build fields. |
+| Decision granting an effect on a protected runtime resource | Coven | Psyche presents sealed request and relevant approvals. Coven enforces its own execution policy at admission. | Decided for Telegram planning. Proposed generally. |
+| Execution session, request admission, adoption/non-adoption, ordered event cursor and physical terminal fact | Coven | Psyche binds a durable Attempt to the daemon's opaque session, verified disposition and exact request. Runtime descriptors constrain capability negotiation. | Bounded O4 design approved. General support and real-daemon qualification remain open. |
+| Runtime descriptor, supported capability and conformance declaration | Coven Runtimes | Coven advertises implementation support. Psyche intersects requirements with observed capabilities and exact version. | Proposed. Descriptor or advertisement alone grants no permission. |
+| Process-attempt fence issuance, enforcement and coverage of descendants | Issuer disputed under #19; host enforcement requires the actual resource owner | Psyche consumes a correlated committed disposition. Graph-owning host issuance is proposed in #20. Surviving subprocess/tool or missing acknowledgement keeps the attempt unknown. | Disputed. O4 design does not settle the process-host issuer. |
+| Termination acknowledgement or unresolved result | Coven | Psyche records correlated immutable revisions, request/session identifiers, evidence and bounds. UI observes the stored outcome. | Proposed general profile. Raw process disappearance supplies no acknowledgement. |
+| Orchestration surface effect, delivery, action, receipt and idempotency | Psyche | Build/Cave reuse exact request correlation. Adapter supplies the physical outcome. Unknown delivery blocks blind retries. | Proposed. Profile needs action and receipt representation and replay semantics. |
+| Result/blob evidence, artifact byte identity and runtime lifetime | Coven as result producer in this profile | Psyche verifies request/session correlation, size, media type, digest and lifetime at ingestion. Psyche store owns its retention decision. | Proposed. Other producers require explicit named profiles. |
+| Evidence, sealed verdict, addon, cancellation/recovery orchestration and graph terminal record | Psyche | Build/Cave show the durable known/unknown result. Verifier and source authority remain explicit. | Proposed. Policy domains deferred in the current foundation require owners before promotion. |
+| Host-local pane/worktree/branch, terminal attachment, product lease generation, UI selection | Psyche Build | Build projects protocol identities as additive bindings; the canonical task survives rename, pane loss, restart and rollback. | Proposed. Merged Stage 0 map supplies current product facts. |
+| Cross-device observation and approval interaction | Coven Cave | Reconnect resumes same project/principal/task/approval and last committed cursor. Duplicate approval replies retain their original outcome. | Proposed. Requires Cave/device evidence for acceptance. |
+| Public client query profile | SDK consumes Psyche | Query only the negotiated fields for authorized scope. Any mutation needs a separately approved owner, operation and negative canary. | Proposed. |
+| Memory projection | Coven Memory consumes released read profile | Read authorized evidence with expiry and scope. Memory writes need their own authority. | Proposed. |
+| Documentation and compatibility ledger | Coven Docs consumes producer artifacts | Render versioned producer facts, digests, owners and canary receipts. | Proposed. |
+
+## Historical identity rebind decision
+
+ADR 1 is disputed. The historical requirement `coven.familiar.identityRebind.v1` applies when a prior session may still act and adoption is unknown. The producer's O2 binding comparison, O3 idempotency and O4 return-or-fence design each cover narrower facts. A route change must identify the prior session, old principal/snapshot, candidate principal/snapshot, project, attempt, immutable request, authority and disposition. The producer must prove resolution or complete fencing before any route can act under the replacement identity. Record stale, mismatched, unavailable and blocked-route outcomes and confirm replay after restart. [Historical acceptance matrix](https://github.com/OpenCoven/coven/issues/1230#issuecomment-6303076065)
+
+| Owner option | Evidence and consequence |
+|---|---|
+| Retain the historical capability | Select its canonical owner and supported version. Keep affected routes closed until pinned real-daemon tests exercise old identity, unknown adoption, complete fencing and blocked routing. |
+| Replace through an explicit old-to-current mapping | Name the producer, contract/version, canary and denial for each historical guarantee, including survivors, unresolved adoption and restart. Only specifically proven rows can migrate. |
+| Supersede or retire it | Record why each old guarantee is preserved elsewhere or why the route is removed, which consumers lose compatibility, and how rollback preserves identity. Unmapped guarantees remain open. |
+
+ADR 2 is disputed. Historical specification revision `9b07c500ad10a8d509d451d64b9739a1bdc4dc0f` was unavailable in the recorded Git object/REST checks. The owner can supply the original artifact with verifiable digest and provenance or approve a documented correction that names the original reference, its replacement and differences for each requirement. Until then mark the source unavailable and retain every historical obligation. The G2 source pins in the current evidence document serve their own distinct scope. [Source disposition request](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303087073)
+
+ADR 3 is disputed. #20 proposes the graph-owning host as the only process-attempt fence issuer. The owner must choose that issuer or specify a different producer and evidence chain. Require issuer identity, exact attempt and generation, authenticated containment coverage including child processes/tools, durable disposition and reopening after lost write or response. Reject an unknown issuer, stale disposition or surviving actor. A fenced disposition resolves ambiguity for that attempt. A fresh dispatch requires its own admission. [Psyche #19](https://github.com/OpenCoven/psyche/issues/19) · [Candidate #20](https://github.com/OpenCoven/psyche/pull/20)
+
+## Compatibility, release order and rollback proposal
+
+```text
+Familiar Contract    Coven Threads    Coven Runtimes    Coven daemon contracts
+       |                   |                |                   |
+       +-------------------+----------------+-------------------+
+                                      |
+                                Psyche profile
+                                      |
+                    +-----------+-----+-------+-----------+
+                    |           |             |           |
+                Psyche Build   Cave          SDK        Memory
+                                      |
+                         consumer evidence to #13
+```
+
+Arrows indicate which published input a consumer pins. Docs can read each producer's artifacts. Consumer reports return to the tracker as evidence. No producer contract depends on a Build or Cave release to define its meaning. Runtime integration may call both directions using published interfaces without introducing a release dependency cycle. During promotion, record the exact version and digest of each dependency and walk the graph from source to each consumer. Any edge back to a consumer that defines its producer's semantics blocks promotion.
+
+1. Each producer publishes immutable versioned facts and bounded acceptance/rejection vectors. The Psyche owner reviews the rows and selects one exact supported profile. Unrecognized schema major, enum, required capability or authority scope fails closed. G2 strict fields mean even an added field needs a negotiated revision or a new wire shape. Never infer compatibility solely from a minor-version number.
+2. #11 packages the selected rows and their compatibility range. Changing authority, identity, persisted meaning, required fields or narrowing a previously accepted reader's input requires explicit migration and rollback proof. Add optional capabilities only where existing readers can omit them and unchanged behavior is demonstrated. Start the support window with one qualified exact profile. Widen it only after testing each producer/consumer pair.
+3. Build pins manifest, artifact digest, signature identity, producer revision, runner version and vector digests. Run the existing and candidate pins on an isolated copy of representative persisted state. Require success for accepted operations and exact denials for stale scope, widening, unknown major, ambiguity, restart and incompatible downgrade. Cave, SDK and Memory run their bounded profile subsets before claiming support.
+4. Roll out behind the consumer adapter switch, keep old correlation and durable read paths, and preserve transactional writes or an explicitly reversible migration. To roll back, disable new writes, restore the previously accepted pin, reopen previously migrated records, and verify the exact original IDs, authorities and receipt chain. An old reader that cannot prove compatibility must block the write and preserve the original bytes.
+5. Deprecate with a named replacement, supported consumer list, migration horizon and observed old-pin usage. Remove only after dependent owners record migration or explicitly retire the profile. For emergency revocation, the producer identifies affected immutable digests and constrains or disables the operation. Resume only against a reviewed pin with fresh negative canaries and durable reconciliation of outstanding effects.
+
+## Contract-change review and reference flow
+
+A change request must name each changed fact and producer, affected clients, prior and proposed compatibility range, immutable source and artifact pins, expected positive and denial outcomes, migration/rollback fixtures, actual canary results, qualified platforms, deprecation horizon and reviewer. The release owner records the approved rows and any excluded obligations. Approval trails for #10, the #12 decision, the release in #11 and each consumer canary must remain separately identifiable.
+
+For the Build reference scenario, create one task and isolated lane on a pinned client, capture its protocol IDs, start one correlated attempt and require an approval tied to one scoped action. Persist the authoritative receipt, disconnect, restart and reopen the original task. Compare project, task, lane, attempt, action, approval and receipt and verify zero repeated effects. Change the local pane, path, provider session or selected tab and confirm the same identity resolves. Repeat with a stale approval and an ambiguous delivery; retain the exact denial or unknown state. Disable the adapter, restore the supported old pin and verify the same task reopens without data loss or identity fork. Record exact pin, consumer SHA, macOS behavior, CI and evidence on #13 and Build #253/#201. [Merged Build map](https://github.com/OpenCoven/psyche-build/blob/73dc6f5d733745894385f906c2f0993f1fd1f818/docs/PSYCHE-COMPATIBILITY-MAP.md) · [Reference flow](https://github.com/OpenCoven/psyche/issues/13)
+
+**Owner decision to record.** For each disputed ADR, select the option, scope, canonical producer, source pin, evidence links, excluded obligations and downstream gates. For each proposed row, mark approved, deferred or returned for revision. Link the reviewed matrix revision and compatibility range to #11 and #19. Coven #1230 retains G1b, the pinned real-daemon C-S1–C-S12 run for G4, and C-M1–C-M9 for G6 before production child dispatch. Historical #1237 depends on its complete G1b packet. [Downstream matrix](https://github.com/OpenCoven/coven/issues/1230#issuecomment-6303076065)
