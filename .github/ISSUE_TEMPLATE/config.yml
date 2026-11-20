@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Repository security policy
+    url: https://github.com/OpenCoven/psyche/security/policy
+    about: Find the reporting route before sharing a security concern.

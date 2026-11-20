@@ -1,0 +1,27 @@
+name: Change request
+description: Track a scoped change and its acceptance evidence
+body:
+  - type: markdown
+    attributes:
+      value: Use this form for ordinary contributions. For a possible vulnerability, visit the [security policy](https://github.com/OpenCoven/psyche/security/policy). Request a private channel before sharing details.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome and owner
+      description: Name the intended result, responsible owner and related issue or contract.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and risk
+      description: Identify affected paths, public contracts, consumers, migration and rollback as applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Acceptance evidence
+      description: State the observable result. Share only bounded summaries, public commit identifiers and public check links.
+    validations:
+      required: true
