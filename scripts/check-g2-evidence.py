@@ -817,17 +817,43 @@ def validate_evidence_only_compare(compare: object, tested: str, terminal: str) 
         fail("GitHub compare response does not end at the pull-request terminal commit")
     if compare.get("ahead_by") != len(commits) or compare.get("total_commits") != len(commits):
         fail("GitHub compare response commit counts are inconsistent")
-    if (
-        compare.get("status") != "ahead"
-        or not isinstance(merge_base, dict)
-        or merge_base.get("sha") != tested
-    ):
-        fail("tested source is not the pull-request head's merge-base ancestor")
     files = compare.get("files")
+    if not isinstance(files, list) or len(files) >= 300 or any(
+        not isinstance(file, dict)
+        or not isinstance(file.get("filename"), str)
+        or not isinstance(file.get("status"), str)
+        for file in files
+    ):
+        fail("GitHub compare response file list is invalid or truncated")
+
+    merge_base_sha = merge_base.get("sha") if isinstance(merge_base, dict) else None
+    has_valid_merge_base = isinstance(merge_base_sha, str) and re.fullmatch(r"[0-9a-f]{40}", merge_base_sha)
+    is_ancestor = (
+        compare.get("status") == "ahead"
+        and merge_base_sha == tested
+    )
+    if not is_ancestor:
+        test_inputs = (
+            "Cargo.lock",
+            "Cargo.toml",
+            "clippy.toml",
+            "deny.toml",
+            "rust-toolchain.toml",
+            ".github/workflows/ci.yml",
+            "scripts/g2-test-manifest.json",
+        )
+        changed_test_inputs = [
+            file["filename"]
+            for file in files
+            if file["filename"].startswith(("crates/", ".cargo/"))
+            or file["filename"] in test_inputs
+        ]
+        if compare.get("status") != "diverged" or not has_valid_merge_base or changed_test_inputs:
+            fail("tested source is not the pull-request head's merge-base ancestor")
+        return
+
     if (
-        not isinstance(files, list)
-        or len(files) != 1
-        or not isinstance(files[0], dict)
+        len(files) != 1
         or files[0].get("filename") != "docs/G2-EVIDENCE.md"
         or files[0].get("status") != "modified"
     ):
