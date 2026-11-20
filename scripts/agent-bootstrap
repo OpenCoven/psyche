@@ -32,6 +32,11 @@ if [[ "$rust_version" != "$rust_pin" ]]; then
   exit 1
 fi
 
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))'; then
+  printf 'Psyche evidence checks require Python 3.9 or newer.\n' >&2
+  exit 1
+fi
+
 node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
 if [[ ! "$node_major" =~ ^[0-9]+$ ]] || ((node_major < 20)); then
   printf 'Psyche requires Node.js 20 or newer; found %s.\n' "$(node --version)" >&2

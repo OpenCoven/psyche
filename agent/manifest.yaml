@@ -92,7 +92,7 @@ toolchains:
   bootstrap_tools: [git, rustc, cargo, python3, node, npm]
   g2_workspace_tools: [bash, jq]
   node_minimum: "20"
-  python_minimum: "3"
+  python_minimum: "3.9"
   lockfiles:
     - Cargo.lock
 
