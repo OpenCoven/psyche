@@ -69,9 +69,10 @@ def main():
     )
     with tempfile.TemporaryDirectory() as scratch:
         fixture = Path(scratch)
-        # A scratch copy made by Git preserves the contributor's worktree.
+        # Hosted Windows checks out on D: and places temporary files on C:.
+        # Copy the Git objects so this fixture also works across volumes.
         subprocess.run(
-            ["git", "clone", "-q", "--local", "--no-checkout", str(ROOT), str(fixture)],
+            ["git", "clone", "-q", "--no-hardlinks", "--no-checkout", str(ROOT), str(fixture)],
             check=True,
         )
         subprocess.run(
