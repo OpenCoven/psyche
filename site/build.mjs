@@ -45,13 +45,11 @@ const leads = {
   TESTING: 'Exercise adapter contracts with deterministic fixtures, fault injection, and restart tests.',
 };
 
-function git(...args) {
-  return execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }).trim();
-}
-// Pin source links to the latest runtime or manual change, excluding site-only commits.
-const commit = git('log', '-1', '--format=%H', '--', '.', ':(exclude)site/**');
+// Vercel supplies the triggering Git revision even when build inputs have no Git history.
+const commit = process.env.VERCEL_GIT_COMMIT_SHA ??
+  execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Expected the full Git commit SHA');
 const shortCommit = commit.slice(0, 7);
-const commitDate = git('show', '-s', '--format=%cs', commit);
 const blobUrl = (path) => `https://github.com/${REPO}/blob/${commit}/${path}`;
 const treeUrl = (path) => `https://github.com/${REPO}/tree/${commit}/${path}`;
 
@@ -211,9 +209,7 @@ function readingMinutes(source) {
 const pages = new Map();
 for (const group of groups) {
   for (const id of group.pages) {
-    const source = id === 'overview'
-      ? readFileSync(join(here, 'overview.md'), 'utf8')
-      : git('show', `${commit}:docs/${id}.md`) + '\n';
+    const source = readFileSync(id === 'overview' ? join(here, 'overview.md') : join(repoRoot, 'docs', `${id}.md`), 'utf8');
     const h1 = /^# (.+)\n/.exec(source);
     if (!h1) throw new Error(`docs/${id}.md must open with an H1 title`);
     const env = {
@@ -353,8 +349,8 @@ ${card(next, 'Next', 'is-next', icons.arrowRight)}
 }
 
 function render(page) {
-  const sourcePath = page.id === 'overview' ? 'docs' : `docs/${page.id}.md`;
-  const sourceUrl = page.id === 'overview' ? treeUrl('docs') : blobUrl(sourcePath);
+  const sourcePath = page.id === 'overview' ? 'site/overview.md' : `docs/${page.id}.md`;
+  const sourceUrl = blobUrl(sourcePath);
   const canonical = BASE_URL ? `${BASE_URL}${page.url}` : '';
   const title = page.id === 'overview' ? SITE_NAME : `${page.navName} | ${SITE_NAME}`;
   const description = md
@@ -425,7 +421,7 @@ ${page.body}
   </div>
   ${footerNav(page)}
   <footer class="ct-colophon">
-    <p>${page.id === 'overview' ? 'Based on' : 'Rendered from'} <a href="${sourceUrl}"><code>${sourcePath}</code></a> at <a href="https://github.com/${REPO}/commit/${commit}"><code>${shortCommit}</code></a> (${commitDate}).</p>
+    <p>Rendered from <a href="${sourceUrl}"><code>${sourcePath}</code></a> at <a href="https://github.com/${REPO}/commit/${commit}"><code>${shortCommit}</code></a>.</p>
   </footer>
 </article>
 </main>
