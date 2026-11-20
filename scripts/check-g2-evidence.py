@@ -369,9 +369,13 @@ def _validate_scope_relationship(
         # GitHub lists files relative to the merge base. After a squash, that
         # list includes the original candidate changes even on a docs-only PR.
         # Discount an inherited entry only with exact mode, type and blob proof.
-        if status == "diverged" and path in before and before[path] == after.get(path):
-            continue
         file_status = str(raw["status"])
+        if status == "diverged" and path in before and path in after:
+            if before[path] == after[path]:
+                continue
+            # A file first introduced on the candidate appears as added in
+            # the merge-base diff even when the terminal edits that file.
+            file_status = "modified"
         if path == SCOPE_EVIDENCE_PATH and file_status == "modified":
             continue
         rule = scope.get(path)

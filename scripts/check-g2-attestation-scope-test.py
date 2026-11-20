@@ -212,10 +212,11 @@ class G2AttestationScopeTests(unittest.TestCase):
         path = "scripts/check-g2-evidence.py"
         compare, tested, terminal = self.compare_response(files=[
             {"filename": path, "status": "modified"},
+            {"filename": self.checker.SCOPE_EVIDENCE_PATH, "status": "added"},
             {"filename": "README.md", "status": "added"},
         ])
-        before = {path: self.blob_a}
-        after = {path: self.blob_a, "README.md": self.blob_b}
+        before = {path: self.blob_a, self.checker.SCOPE_EVIDENCE_PATH: self.blob_a}
+        after = {**before, self.checker.SCOPE_EVIDENCE_PATH: self.blob_b, "README.md": self.blob_b}
         self.checker._validate_scope_relationship(compare, tested, terminal, self.scope, before, after)
         after[path] = self.blob_b
         with self.assertRaises(self.checker.EvidenceError):
