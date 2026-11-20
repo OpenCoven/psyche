@@ -904,7 +904,42 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
     return terminal
 
 
-def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
+def pull_request_evidence_is_unchanged(
+    root: pathlib.Path, pull_request: dict[str, object], markdown: str
+) -> bool:
+    """Return whether a PR leaves its base's reviewed evidence unchanged."""
+    base = pull_request.get("base")
+    base_repository = base.get("repo") if isinstance(base, dict) else None
+    base_sha = base.get("sha") if isinstance(base, dict) else None
+    if (
+        not isinstance(base_repository, dict)
+        or base_repository.get("full_name") != "OpenCoven/psyche"
+        or not isinstance(base_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", base_sha)
+    ):
+        fail("GitHub Actions pull-request base provenance is invalid")
+    response = run_json(
+        ["gh", "api", f"repos/OpenCoven/psyche/contents/docs/G2-EVIDENCE.md?ref={base_sha}"],
+        root,
+    )
+    if (
+        not isinstance(response, dict)
+        or response.get("path") != "docs/G2-EVIDENCE.md"
+        or response.get("type") != "file"
+        or response.get("encoding") != "base64"
+        or not isinstance(response.get("content"), str)
+    ):
+        fail("GitHub pull-request base evidence response is invalid")
+    try:
+        base_evidence = base64.b64decode(response["content"])
+    except (ValueError, TypeError) as error:
+        fail(f"GitHub pull-request base evidence is invalid: {error}")
+    return base_evidence == markdown.encode("utf-8")
+
+
+def verify_actions_source_relationship(
+    root: pathlib.Path, tested: str, markdown: str | None = None
+) -> None:
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if not event_path:
         fail("GitHub Actions event payload path is absent")
@@ -931,6 +966,10 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
             fail("GitHub Actions pull-request repository provenance is invalid")
         if not isinstance(terminal, str) or not re.fullmatch(r"[0-9a-f]{40}", terminal):
             fail("GitHub Actions pull-request head provenance is invalid")
+        if markdown is None:
+            markdown = read_text(root, "docs/G2-EVIDENCE.md")
+        if pull_request_evidence_is_unchanged(root, pull_request, markdown):
+            return
     else:
         terminal = squash_merge_terminal(root, event)
 
@@ -945,7 +984,7 @@ def verify_passed(root: pathlib.Path, markdown: str, source_rows: list[list[str]
     tested = field(markdown, "Tested source commit")
     run_url = field(markdown, "CI attestation")
     if os.environ.get("GITHUB_ACTIONS") == "true":
-        verify_actions_source_relationship(root, tested)
+        verify_actions_source_relationship(root, tested, markdown)
     else:
         verify_local_source_relationship(root, tested)
     match = re.fullmatch(r"https://github\.com/(OpenCoven)/(psyche)/actions/runs/([0-9]+)", run_url)
