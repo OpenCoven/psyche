@@ -128,11 +128,23 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         return {
             "repository": {"full_name": "OpenCoven/psyche"},
             "pull_request": {
+                "base": {
+                    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "repo": {"full_name": "OpenCoven/psyche"},
+                },
                 "head": {
                     "sha": head or "fedcba9876543210fedcba9876543210fedcba98",
                     "repo": {"full_name": repository},
                 }
             },
+        }
+
+    def base_evidence_response(self, markdown: str) -> dict[str, str]:
+        return {
+            "content": self.checker.base64.b64encode(markdown.encode()).decode(),
+            "encoding": "base64",
+            "path": "docs/G2-EVIDENCE.md",
+            "type": "file",
         }
 
     def squash_merge_push_event(self):
@@ -564,11 +576,21 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         ), mock.patch.object(
             self.checker.subprocess, "run", side_effect=AssertionError("local git must not run in Actions")
         ), mock.patch.object(
-            self.checker, "run_json", side_effect=(self.compare_response(), run, rest, workflow)
+            self.checker,
+            "run_json",
+            side_effect=(self.base_evidence_response("older evidence"), self.compare_response(), run, rest, workflow),
         ) as run_json, mock.patch.object(self.checker, "verify_coven_blob"):
             self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
         self.assertEqual(
             run_json.call_args_list[0].args[0],
+            [
+                "gh", "api",
+                "repos/OpenCoven/psyche/contents/docs/G2-EVIDENCE.md"
+                "?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+        )
+        self.assertEqual(
+            run_json.call_args_list[1].args[0],
             [
                 "gh", "api",
                 "repos/OpenCoven/psyche/compare/"
@@ -646,7 +668,11 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
             self.checker.pathlib.Path, "read_text", return_value=event
-        ), mock.patch.object(self.checker, "run_json", return_value=compare):
+        ), mock.patch.object(
+            self.checker,
+            "run_json",
+            side_effect=(self.base_evidence_response("older evidence"), compare),
+        ):
             with self.assertRaisesRegex(self.checker.EvidenceError, "modified evidence"):
                 self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
 
@@ -666,7 +692,11 @@ class G2EvidenceCheckerTests(unittest.TestCase):
                 os.environ, environment, clear=False
             ), mock.patch.object(
                 self.checker.pathlib.Path, "read_text", return_value=event
-            ), mock.patch.object(self.checker, "run_json", return_value=compare):
+            ), mock.patch.object(
+                self.checker,
+                "run_json",
+                side_effect=(self.base_evidence_response("older evidence"), compare),
+            ):
                 with self.assertRaisesRegex(self.checker.EvidenceError, "modified evidence"):
                     self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
 
@@ -678,7 +708,11 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
             self.checker.pathlib.Path, "read_text", return_value=event
-        ), mock.patch.object(self.checker, "run_json", return_value=compare):
+        ), mock.patch.object(
+            self.checker,
+            "run_json",
+            side_effect=(self.base_evidence_response("older evidence"), compare),
+        ):
             with self.assertRaisesRegex(self.checker.EvidenceError, "commit counts"):
                 self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
 
@@ -696,7 +730,11 @@ class G2EvidenceCheckerTests(unittest.TestCase):
                 os.environ, environment, clear=False
             ), mock.patch.object(
                 self.checker.pathlib.Path, "read_text", return_value=event
-            ), mock.patch.object(self.checker, "run_json", return_value=compare):
+            ), mock.patch.object(
+                self.checker,
+                "run_json",
+                side_effect=(self.base_evidence_response("older evidence"), compare),
+            ):
                 with self.assertRaisesRegex(self.checker.EvidenceError, "terminal commit"):
                     self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
 
@@ -707,9 +745,51 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
             self.checker.pathlib.Path, "read_text", return_value=event
-        ), mock.patch.object(self.checker, "run_json", return_value=compare):
+        ), mock.patch.object(
+            self.checker,
+            "run_json",
+            side_effect=(self.base_evidence_response("older evidence"), compare),
+        ):
             with self.assertRaisesRegex(self.checker.EvidenceError, "ancestor"):
                 self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
+
+    def test_unchanged_base_evidence_skips_pr_head_comparison(self) -> None:
+        passed = self.passed_evidence()
+        tested = "0123456789abcdef0123456789abcdef01234567"
+        run_url = "https://github.com/OpenCoven/psyche/actions/runs/123456"
+        run = {
+            "conclusion": "success", "event": "pull_request", "headSha": tested,
+            "url": run_url, "workflowName": "CI",
+        }
+        rest = {
+            "conclusion": "success", "event": "pull_request",
+            "head_repository": {"full_name": "OpenCoven/psyche"}, "head_sha": tested,
+            "html_url": run_url, "id": 123456, "path": ".github/workflows/ci.yml",
+            "repository": {"full_name": "OpenCoven/psyche"}, "status": "completed",
+            "workflow_id": 326408880,
+        }
+        workflow = {
+            "id": 326408880, "name": "CI", "path": ".github/workflows/ci.yml", "state": "active",
+        }
+        event = json.dumps(self.pull_request_event())
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
+        with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+            self.checker.pathlib.Path, "read_text", return_value=event
+        ), mock.patch.object(
+            self.checker,
+            "run_json",
+            side_effect=(self.base_evidence_response(passed), run, rest, workflow),
+        ) as run_json, mock.patch.object(self.checker, "verify_coven_blob"):
+            self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
+        self.assertEqual(run_json.call_count, 4)
+        self.assertEqual(
+            run_json.call_args_list[0].args[0],
+            [
+                "gh", "api",
+                "repos/OpenCoven/psyche/contents/docs/G2-EVIDENCE.md"
+                "?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+        )
 
     def test_remote_verifier_rejects_wrong_workflow_or_event(self) -> None:
         passed = self.passed_evidence()

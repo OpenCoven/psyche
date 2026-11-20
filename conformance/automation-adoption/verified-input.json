@@ -1,0 +1,42 @@
+{
+  "producer": "coven:fixture",
+  "source": {
+    "automationId": "daily-report",
+    "automationRevision": 7,
+    "definitionDigest": {
+      "algorithm": "sha256",
+      "canonicalization": "jcs-rfc8785",
+      "value": "c6cdf7b2517ed277dec2e92c084bd1bc7efc9358eb6ea12ea5822f14273cc5ac"
+    },
+    "occurrenceId": "occ-001",
+    "occurrenceKey": "daily-report@2026-11-20T08:00:00.000Z",
+    "occurrenceFenceGeneration": 3,
+    "runId": "run-001",
+    "attemptId": "attempt-002",
+    "attemptAdoptionKey": "dispatch-002",
+    "dispatchGeneration": 2
+  },
+  "authority": {
+    "principalRef": "principal:fixture",
+    "projectRef": "project:fixture",
+    "workspaceRef": "workspace:fixture",
+    "familiarBindingRef": "binding:fixture",
+    "familiarBindingDigest": "sha256:bf83568a9f5d03f5fcc641ded4976e6d9e19139d4ed5f8d16c4418d727a322a0",
+    "decisionRef": "decision:fixture",
+    "decisionDigest": "sha256:b288528ebc3b9c72fc6d088bc4630718f4b3a59f98dff95159ba4fe8a5f3aab9",
+    "approvalRefs": [],
+    "runtimeRef": "runtime:fixture",
+    "riskClass": "R0",
+    "scope": {
+      "resource": "artifact:input",
+      "operation": "read"
+    }
+  },
+  "granted": [
+    "artifact.read"
+  ],
+  "validUntil": "2026-11-20T08:05:00Z",
+  "revoked": false,
+  "payloadSha256": "5e28de6196341bdb0260c00b44f43d57e82e5c803bd72d4afa2e59f5277ffa9f",
+  "invocationKey": "psyche-adoption-001"
+}
