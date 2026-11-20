@@ -669,9 +669,11 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "psyche-core",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
  "time",
  "tokio",
