@@ -667,7 +667,7 @@ class G2EvidenceCheckerTests(unittest.TestCase):
             ), mock.patch.object(
                 self.checker.pathlib.Path, "read_text", return_value=event
             ), mock.patch.object(self.checker, "run_json", return_value=compare):
-                with self.assertRaisesRegex(self.checker.EvidenceError, "modified evidence"):
+                with self.assertRaisesRegex(self.checker.EvidenceError, "file list|modified evidence"):
                     self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
 
     def test_shallow_actions_verifier_rejects_compare_commit_count_mismatch(self) -> None:
@@ -704,12 +704,30 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         passed = self.passed_evidence()
         event = json.dumps(self.pull_request_event())
         compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        compare["status"] = "diverged"
+        compare["files"] = [{"filename": "crates/psyche-core/src/lib.rs", "status": "modified"}]
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
             self.checker.pathlib.Path, "read_text", return_value=event
         ), mock.patch.object(self.checker, "run_json", return_value=compare):
             with self.assertRaisesRegex(self.checker.EvidenceError, "ancestor"):
                 self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
+
+    def test_squash_merge_compare_accepts_unchanged_g2_test_inputs(self) -> None:
+        compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        compare["status"] = "diverged"
+        compare["files"] = [
+            {"filename": "docs/G2-EVIDENCE.md", "status": "modified"},
+            {"filename": "scripts/check-g2-evidence.py", "status": "modified"},
+            {"filename": "scripts/check-g2-evidence-test.py", "status": "modified"},
+            {"filename": "site/overview.md", "status": "added"},
+        ]
+
+        self.checker.validate_evidence_only_compare(
+            compare,
+            "0123456789abcdef0123456789abcdef01234567",
+            "fedcba9876543210fedcba9876543210fedcba98",
+        )
 
     def test_remote_verifier_rejects_wrong_workflow_or_event(self) -> None:
         passed = self.passed_evidence()
