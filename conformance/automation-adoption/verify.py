@@ -13,6 +13,7 @@ import unittest
 HERE = Path(__file__).resolve().parent
 NOW = datetime(2026, 11, 20, 8, 1, tzinfo=timezone.utc)
 PROFILE = "draft.psyche.automation-invocation.fixture.1"
+EVENT_PROFILE = "draft.psyche.automation-event.fixture.1"
 
 
 class Denied(Exception):
@@ -42,6 +43,10 @@ def initialize(path):
             run_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
             request BLOB NOT NULL, result BLOB NOT NULL, UNIQUE(producer, invocation_key),
             UNIQUE(producer, run_id, attempt_id)
+        )""")
+        db.execute("""CREATE TABLE observations (
+            execution INTEGER NOT NULL REFERENCES executions(id), sequence INTEGER NOT NULL,
+            body BLOB NOT NULL, PRIMARY KEY(execution, sequence)
         )""")
 
 
@@ -93,6 +98,9 @@ def adopt(path, raw, verified, now=NOW, lose_reply=False):
         }
         db.execute("UPDATE executions SET result=? WHERE id=?",
                    (json.dumps(result).encode(), inserted.lastrowid))
+        first_event = {"profile": EVENT_PROFILE, "sequence": 1, "kind": "adopted", "data": result}
+        db.execute("INSERT INTO observations VALUES (?, 1, ?)",
+                   (inserted.lastrowid, json.dumps(first_event).encode()))
     if lose_reply:
         raise TimeoutError
     return result
