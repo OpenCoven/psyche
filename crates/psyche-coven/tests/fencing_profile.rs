@@ -292,7 +292,7 @@ mod journal {
 
     // The test worker exercises its normal poll path on each reopened journal.
     // A separate recovery decision would have to enqueue new work.
-    fn probe_dispatch(db: &Connection) -> usize {
+    fn probe_dispatch(db: &Connection) -> i64 {
         for kind in ["model", "tool"] {
             db.execute(
                 "INSERT INTO calls SELECT ?1 FROM attempts WHERE state='ready'",

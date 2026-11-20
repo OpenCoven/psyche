@@ -429,6 +429,7 @@ const _: fn() = || {
         assert_send(&Runtime::start(config));
         assert_send(&runtime.shutdown());
     }
+    let _: fn(&Runtime, Config) = futures_are_send;
 };
 
 #[cfg(test)]
