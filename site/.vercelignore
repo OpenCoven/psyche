@@ -1,0 +1,11 @@
+# The site is built locally and uploaded prebuilt: dist/ ships, sources do not.
+/node_modules
+/.vercel
+/.claude
+/assets
+/build.mjs
+/package.json
+/package-lock.json
+/README.md
+/overview.md
+/.env*
