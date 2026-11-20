@@ -834,6 +834,80 @@ def validate_evidence_only_compare(compare: object, tested: str, terminal: str) 
         fail(f"passed source-to-pull-request diff is not one modified evidence file: {files}")
 
 
+def validate_squashed_source_compare(compare: object, tested: str, base_sha: str) -> None:
+    if not isinstance(compare, dict):
+        fail("GitHub source-to-base compare response is invalid")
+    base = compare.get("base_commit")
+    merge_base = compare.get("merge_base_commit")
+    commits = compare.get("commits")
+    if not isinstance(base, dict) or base.get("sha") != tested:
+        fail("GitHub source-to-base compare does not match the tested source")
+    if (
+        not isinstance(merge_base, dict)
+        or not isinstance(merge_base.get("sha"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", merge_base["sha"])
+    ):
+        fail("GitHub source-to-base merge base is invalid")
+    if (
+        not isinstance(commits, list)
+        or not commits
+        or not isinstance(commits[-1], dict)
+        or commits[-1].get("sha") != base_sha
+    ):
+        fail("GitHub source-to-base compare does not end at the pull-request base")
+    if (
+        compare.get("status") not in {"ahead", "diverged"}
+        or compare.get("ahead_by") != len(commits)
+        or compare.get("total_commits") != len(commits)
+    ):
+        fail("GitHub source-to-base compare commit counts are inconsistent")
+    files = compare.get("files")
+    if (
+        not isinstance(files, list)
+        or len(files) != 1
+        or not isinstance(files[0], dict)
+        or files[0].get("filename") != "docs/G2-EVIDENCE.md"
+        or files[0].get("status") != "modified"
+    ):
+        fail(f"tested source-to-pull-request base is not an evidence-only update: {files}")
+
+
+def validate_pull_request_head_compare(compare: object, base_sha: str, terminal: str) -> None:
+    if not isinstance(compare, dict):
+        fail("GitHub pull-request compare response is invalid")
+    base = compare.get("base_commit")
+    merge_base = compare.get("merge_base_commit")
+    commits = compare.get("commits")
+    if not isinstance(base, dict) or base.get("sha") != base_sha:
+        fail("GitHub pull-request compare does not match the pull-request base")
+    if (
+        not isinstance(commits, list)
+        or not commits
+        or not isinstance(commits[-1], dict)
+        or commits[-1].get("sha") != terminal
+    ):
+        fail("GitHub pull-request compare does not end at the pull-request terminal commit")
+    if compare.get("ahead_by") != len(commits) or compare.get("total_commits") != len(commits):
+        fail("GitHub pull-request compare commit counts are inconsistent")
+    if (
+        compare.get("status") != "ahead"
+        or not isinstance(merge_base, dict)
+        or merge_base.get("sha") != base_sha
+    ):
+        fail("pull-request base is not the head's merge-base ancestor")
+    files = compare.get("files")
+    if not isinstance(files, list) or len(files) >= 300:
+        fail("GitHub pull-request file list is invalid or truncated")
+    if any(not isinstance(item, dict) or not isinstance(item.get("filename"), str) for item in files):
+        fail("GitHub pull-request file list is invalid")
+    evidence_files = [item for item in files if item["filename"] == "docs/G2-EVIDENCE.md"]
+    if evidence_files and (
+        len(files) != 1
+        or evidence_files[0].get("status") != "modified"
+    ):
+        fail("pull-request diff must not include a modified evidence file with other changes")
+
+
 def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
     before = event.get("before")
     after = event.get("after")
@@ -924,6 +998,9 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
         head = pull_request.get("head")
         head_repository = head.get("repo") if isinstance(head, dict) else None
         terminal = head.get("sha") if isinstance(head, dict) else None
+        base = pull_request.get("base")
+        base_repository = base.get("repo") if isinstance(base, dict) else None
+        base_sha = base.get("sha") if isinstance(base, dict) else None
         if (
             not isinstance(head_repository, dict)
             or head_repository.get("full_name") != "OpenCoven/psyche"
@@ -931,6 +1008,27 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
             fail("GitHub Actions pull-request repository provenance is invalid")
         if not isinstance(terminal, str) or not re.fullmatch(r"[0-9a-f]{40}", terminal):
             fail("GitHub Actions pull-request head provenance is invalid")
+        if (
+            not isinstance(base, dict)
+            or base.get("ref") != "main"
+            or not isinstance(base_repository, dict)
+            or base_repository.get("full_name") != "OpenCoven/psyche"
+            or not isinstance(base_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", base_sha)
+        ):
+            fail("GitHub Actions pull-request base provenance is invalid")
+        if base_sha != tested:
+            source_base = run_json(
+                ["gh", "api", f"repos/OpenCoven/psyche/compare/{tested}...{base_sha}"],
+                root,
+            )
+            validate_squashed_source_compare(source_base, tested, base_sha)
+        head_compare = run_json(
+            ["gh", "api", f"repos/OpenCoven/psyche/compare/{base_sha}...{terminal}"],
+            root,
+        )
+        validate_pull_request_head_compare(head_compare, base_sha, terminal)
+        return
     else:
         terminal = squash_merge_terminal(root, event)
 

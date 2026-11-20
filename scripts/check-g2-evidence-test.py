@@ -124,10 +124,21 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         )
         return passed.replace("not run remotely | none", f"passed | {run_url}")
 
-    def pull_request_event(self, *, repository="OpenCoven/psyche", head=None):
+    def pull_request_event(
+        self,
+        *,
+        repository="OpenCoven/psyche",
+        head=None,
+        base="0123456789abcdef0123456789abcdef01234567",
+    ):
         return {
             "repository": {"full_name": "OpenCoven/psyche"},
             "pull_request": {
+                "base": {
+                    "ref": "main",
+                    "sha": base,
+                    "repo": {"full_name": "OpenCoven/psyche"},
+                },
                 "head": {
                     "sha": head or "fedcba9876543210fedcba9876543210fedcba98",
                     "repo": {"full_name": repository},
@@ -160,16 +171,16 @@ class G2EvidenceCheckerTests(unittest.TestCase):
             "state": "closed",
         }
 
-    def compare_response(self, *, merge_base=None, files=None):
-        tested = "0123456789abcdef0123456789abcdef01234567"
-        head = "fedcba9876543210fedcba9876543210fedcba98"
+    def compare_response(self, *, base=None, terminal=None, merge_base=None, files=None, status="ahead"):
+        base = base or "0123456789abcdef0123456789abcdef01234567"
+        terminal = terminal or "fedcba9876543210fedcba9876543210fedcba98"
         return {
-            "status": "ahead",
+            "status": status,
             "ahead_by": 1,
             "total_commits": 1,
-            "base_commit": {"sha": tested},
-            "merge_base_commit": {"sha": merge_base or tested},
-            "commits": [{"sha": head}],
+            "base_commit": {"sha": base},
+            "merge_base_commit": {"sha": merge_base or base},
+            "commits": [{"sha": terminal}],
             "files": files if files is not None else [
                 {"filename": "docs/G2-EVIDENCE.md", "status": "modified"}
             ],
@@ -577,6 +588,55 @@ class G2EvidenceCheckerTests(unittest.TestCase):
             ],
         )
 
+    def test_shallow_actions_verifier_accepts_squashed_tested_source_at_pr_base(self) -> None:
+        tested = "0123456789abcdef0123456789abcdef01234567"
+        base = "1111111111111111111111111111111111111111"
+        head = "fedcba9876543210fedcba9876543210fedcba98"
+        source_base = self.compare_response(
+            base=tested,
+            terminal=base,
+            merge_base="2222222222222222222222222222222222222222",
+            status="diverged",
+        )
+        pull_request_head = self.compare_response(
+            base=base,
+            terminal=head,
+            files=[{"filename": "crates/psyche-coven/tests/fencing_profile.rs", "status": "modified"}],
+        )
+        event = json.dumps(self.pull_request_event(base=base))
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
+        with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+            self.checker.pathlib.Path, "read_text", return_value=event
+        ), mock.patch.object(
+            self.checker, "run_json", side_effect=(source_base, pull_request_head)
+        ) as run_json:
+            self.checker.verify_actions_source_relationship(ROOT, tested)
+        self.assertEqual(
+            [call.args[0][-1] for call in run_json.call_args_list],
+            [
+                f"repos/OpenCoven/psyche/compare/{tested}...{base}",
+                f"repos/OpenCoven/psyche/compare/{base}...{head}",
+            ],
+        )
+
+    def test_shallow_actions_verifier_rejects_code_change_in_squashed_base(self) -> None:
+        tested = "0123456789abcdef0123456789abcdef01234567"
+        base = "1111111111111111111111111111111111111111"
+        source_base = self.compare_response(
+            base=tested,
+            terminal=base,
+            merge_base="2222222222222222222222222222222222222222",
+            status="diverged",
+            files=[{"filename": "crates/psyche-core/src/lib.rs", "status": "modified"}],
+        )
+        event = json.dumps(self.pull_request_event(base=base))
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
+        with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+            self.checker.pathlib.Path, "read_text", return_value=event
+        ), mock.patch.object(self.checker, "run_json", return_value=source_base):
+            with self.assertRaisesRegex(self.checker.EvidenceError, "evidence-only"):
+                self.checker.verify_actions_source_relationship(ROOT, tested)
+
     def test_shallow_actions_verifier_accepts_reviewed_squash_merge_push(self) -> None:
         tested = "0123456789abcdef0123456789abcdef01234567"
         event = json.dumps(self.squash_merge_push_event())
@@ -642,7 +702,12 @@ class G2EvidenceCheckerTests(unittest.TestCase):
     def test_shallow_actions_verifier_rejects_wrong_compare_files(self) -> None:
         passed = self.passed_evidence()
         event = json.dumps(self.pull_request_event())
-        compare = self.compare_response(files=[{"filename": "src/main.rs", "status": "modified"}])
+        compare = self.compare_response(
+            files=[
+                {"filename": "docs/G2-EVIDENCE.md", "status": "modified"},
+                {"filename": "src/main.rs", "status": "modified"},
+            ]
+        )
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
             self.checker.pathlib.Path, "read_text", return_value=event

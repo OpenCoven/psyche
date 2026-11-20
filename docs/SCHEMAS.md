@@ -69,3 +69,13 @@ surface-specific presentation, artifact blob transport, and automated
 quarantine adjudication to their later named authority owners. The schemas
 freeze interoperability; they do not silently assign those decisions to a
 boundary adapter.
+
+## Proposed process-attempt fencing consumer profile
+
+The producer and consumer are reviewing the following obligations under [Psyche #19](https://github.com/OpenCoven/psyche/issues/19) and [Coven #804](https://github.com/OpenCoven/coven/issues/804). A runtime eligible for this profile needs a named issuer, an authenticated replay route and independent evidence for every resource that can still act. Authority selection remains open under [#12](https://github.com/OpenCoven/psyche/issues/12).
+
+The proposed graph-owning host supplies the immutable reconciliation request. The consumer stores its source alongside the local invocation, attempt and process instance. Each lookup uses that original binding. An authenticated response must validate against the entire request. Checking the disposition shape alone cannot identify its issuer. Only the host can establish that the prior process, delegated descendants and already dispatched tools have all lost the ability to act.
+
+The consumer records one complete validated `Fenced` disposition for the bound attempt in an atomic transition. Exact replay after reopening confirms that record. A different disposition for the same request conflicts and preserves the original. If the host is unavailable, returns `Unresolved` or cannot reproduce its disposition, the consumer keeps the retained history and blocks dispatch. Reconciliation never creates an attempt. A new attempt requires a separate recovery decision from the graph-owning authority.
+
+`fencing_profile.rs` checks the existing Rust value validator and exercises a file-backed consumer journal with modeled host channels. Its subprocess exits on either side of commit. The parent reopens the database, requests replay and checks the one retained transition. `psyche-test-support` cases C-S6/C-S11 cover before-disposition faults, lost committed replies, exact replay and changed-request conflicts against retained in-memory fake state. C-S6 observes `EligibleAfterFence` without dispatch. Real host authentication, loss of effect capability for the old process and every child/tool, and replay across an actual host restart require producer and consumer qualification.
