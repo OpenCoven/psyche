@@ -4,9 +4,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import pathlib
 import re
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -320,6 +325,146 @@ class G2AttestationScopeTests(unittest.TestCase):
             with self.subTest(path=path):
                 with self.assertRaises(self.checker.EvidenceError):
                     self.checker._safe_repository_path(path)
+
+
+class ReadinessDeliveryTests(unittest.TestCase):
+    """Exercise the public relationship checks across a complete readiness delivery."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.checker = load_checker()
+        cls.scope = cls.checker._read_scope_manifest(ROOT)
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = pathlib.Path(temporary.name) / "checkout"
+        self.root.mkdir()
+        self.event_path = self.root.parent / "event.json"
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.name", "Scope fixture")
+        self.git("config", "user.email", "scope@example.invalid")
+        self.git("config", "commit.gpgsign", "false")
+        evidence = self.root / self.checker.SCOPE_EVIDENCE_PATH
+        evidence.parent.mkdir()
+        evidence.write_text("candidate\n", encoding="utf-8")
+        self.pinned = self.commit("Candidate without readiness files")
+        evidence.write_text("passed\n", encoding="utf-8")
+        self.commit("Attest candidate")
+
+    def git(self, *arguments):
+        return subprocess.check_output(
+            ["git", *arguments], cwd=self.root, encoding="utf-8", stderr=subprocess.PIPE
+        ).strip()
+
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-qm", message)
+        return self.git("rev-parse", "HEAD")
+
+    def api(self, command, root):
+        self.assertEqual(root, self.root)
+        endpoint = command[-1].removeprefix("repos/OpenCoven/psyche/")
+        if endpoint == f"compare/{self.pinned}...{self.terminal}":
+            commits = self.git("rev-list", "--reverse", f"{self.pinned}..{self.terminal}").splitlines()
+            changes = self.git("diff", "--name-status", "--no-renames", self.pinned, self.terminal)
+            statuses = {"A": "added", "M": "modified", "D": "removed"}
+            return {
+                "status": "ahead",
+                "ahead_by": len(commits),
+                "total_commits": len(commits),
+                "base_commit": {"sha": self.pinned},
+                "merge_base_commit": {"sha": self.pinned},
+                "commits": [{"sha": commit} for commit in commits],
+                "files": [
+                    {"filename": path, "status": statuses[status]}
+                    for status, path in (line.split("\t") for line in changes.splitlines())
+                ],
+            }
+        if endpoint == f"commits/{self.squash}/pulls":
+            return [dict(self.pull, state="closed", merged_at="2026-01-01T00:00:00Z",
+                         merge_commit_sha=self.squash)]
+        if endpoint.startswith("git/commits/"):
+            commit = endpoint.removeprefix("git/commits/")
+            tree, *parents = self.git("show", "-s", "--format=%T %P", commit).split()
+            return {"sha": commit, "tree": {"sha": tree}, "parents": [{"sha": p} for p in parents]}
+        self.fail(f"Unexpected GitHub request: {command}")
+
+    def assert_delivery(self, operation):
+        readme = self.root / "README.md"
+        if operation != "first addition":
+            readme.write_text("Published guide\n", encoding="utf-8")
+            self.commit("Publish initial readiness guide")
+        delivery_base = self.git("rev-parse", "HEAD")
+        self.git("switch", "-qc", "readiness")
+        if operation in {"first addition", "edit"}:
+            readme.write_text("Updated guide\n", encoding="utf-8")
+            self.commit("Write guide")
+        elif operation == "delete":
+            readme.unlink()
+            self.commit("Remove guide")
+        # The terminal commit changes a different allowed file. HEAD^1 alone
+        # cannot distinguish a prior deletion in this PR from an absent file.
+        (self.root / "AGENTS.md").write_text("Contributor guide\n", encoding="utf-8")
+        self.terminal = self.commit("Publish contributor notes")
+        self.git("switch", "-q", "main")
+        (self.root / "LICENSE").write_text("License on a parallel main change\n", encoding="utf-8")
+        main_tip = self.commit("Main advanced after the topic branched")
+        self.git("update-ref", "refs/remotes/origin/main", main_tip)
+        self.git("switch", "-q", "readiness")
+        repository = {"full_name": "OpenCoven/psyche"}
+        self.pull = {
+            "base": {"ref": "main", "sha": main_tip, "repo": repository},
+            "head": {"sha": self.terminal, "repo": repository},
+        }
+        self.squash = self.git(
+            "commit-tree", self.git("rev-parse", f"{self.terminal}^{{tree}}"),
+            "-p", delivery_base, "-m", "Squash readiness PR",
+        )
+        # Only the retained state and the remote API are fixture data. The
+        # checkout, merge bases, trees and per-delivery changes use real Git.
+        with mock.patch.object(
+            self.checker, "_scope_relationship_for_actual_evidence",
+            return_value=(self.scope, "passed", self.pinned),
+        ), mock.patch.object(
+            self.checker, "_remote_tree_entries", side_effect=self.checker._local_tree_entries,
+        ), mock.patch.object(self.checker, "run_json", side_effect=self.api), mock.patch.dict(
+            os.environ, {"GITHUB_EVENT_PATH": str(self.event_path)},
+        ):
+            events = (
+                ("pull_request", {"repository": repository, "pull_request": self.pull}),
+                ("push", {"repository": repository, "ref": "refs/heads/main",
+                          "before": delivery_base, "after": self.squash}),
+            )
+            for event_name, event in events:
+                if event_name == "push":
+                    # Model a squash onto the actual previous main. The parallel
+                    # tip above is specific to the open-PR merge-base case.
+                    self.pull["base"] = {"ref": "main", "sha": delivery_base, "repo": repository}
+                    self.git("branch", "-f", "main", self.squash)
+                    self.git("switch", "-q", "main")
+                    self.git("update-ref", "refs/remotes/origin/main", self.squash)
+                self.event_path.write_text(json.dumps(event), encoding="utf-8")
+                for verify in (self.checker.verify_local_source_relationship,
+                               self.checker.verify_actions_source_relationship):
+                    with self.subTest(event=event_name, entrypoint=verify.__name__):
+                        if operation == "delete":
+                            with self.assertRaisesRegex(self.checker.EvidenceError, r"README\.md"):
+                                verify(self.root, self.pinned)
+                        else:
+                            verify(self.root, self.pinned)
+
+    def test_initial_readiness_addition(self):
+        self.assert_delivery("first addition")
+
+    def test_existing_readiness_content_edit(self):
+        self.assert_delivery("edit")
+
+    def test_existing_readiness_file_unchanged(self):
+        self.assert_delivery("unchanged")
+
+    def test_prior_readiness_file_removed_earlier_in_the_delivery(self):
+        self.assert_delivery("delete")
 
 
 if __name__ == "__main__":
