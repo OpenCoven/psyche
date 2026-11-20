@@ -490,10 +490,10 @@ fn wal_file_user_version(
         if read_u32_be(&frame_header[..4]) == 1 {
             pending_page_one = Some(read_u32_be(&page[60..64]));
         }
-        if read_u32_be(&frame_header[4..8]) != 0 {
-            if let Some(version) = pending_page_one.take() {
-                committed_page_one = Some(version);
-            }
+        if read_u32_be(&frame_header[4..8]) != 0
+            && let Some(version) = pending_page_one.take()
+        {
+            committed_page_one = Some(version);
         }
     }
 

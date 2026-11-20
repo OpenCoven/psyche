@@ -86,7 +86,7 @@ contracts:
 toolchains:
   shell: bash
   windows_shell: git-bash
-  rust: 1.88.0
+  rust: 1.89.0
   rust_pin_source: rust-toolchain.toml
   rust_components: [rustfmt, clippy]
   bootstrap_tools: [git, rustc, cargo, python3, node, npm]
