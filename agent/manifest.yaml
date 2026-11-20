@@ -24,6 +24,10 @@ risk:
   class: R4
   network_policy: bootstrap-and-explicit-adapters-only
   secrets_policy: forbidden-in-repository-fixtures-logs-and-evidence
+  g2_scope:
+    default: protected
+    manifest: scripts/g2-attestation-scope.json
+    evidence: docs/G2-SCOPE-EVIDENCE.md
   protected_paths:
     - crates/psyche-core/**
     - crates/psyche-store/**
@@ -86,7 +90,7 @@ contracts:
 toolchains:
   shell: bash
   windows_shell: git-bash
-  rust: 1.88.0
+  rust: 1.89.0
   rust_pin_source: rust-toolchain.toml
   rust_components: [rustfmt, clippy]
   bootstrap_tools: [git, rustc, cargo, python3, node, npm]

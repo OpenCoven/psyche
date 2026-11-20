@@ -46,7 +46,7 @@ Read each crate’s Cargo manifest to identify its dependencies. For example, `p
 
 ## Requirements
 
-- Rust **1.88.0**, pinned by `rust-toolchain.toml`
+- Rust **1.89.0**, pinned by `rust-toolchain.toml`
 - Cargo with the locked dependency graph
 - Python 3.9+ for evidence verification
 - Node.js 20+ and npm for the distribution wrapper checks

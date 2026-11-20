@@ -23,7 +23,8 @@ Psyche Build is the first planned reference client; it is not the protocol owner
 - Architecture and dependency direction: `docs/ARCHITECTURE.md`
 - Protocol/schema inventory: `docs/SCHEMAS.md`
 - Deterministic evidence model: `docs/TESTING.md`
-- Current G2 evidence: `docs/G2-EVIDENCE.md`
+- Historic G2 evidence: `docs/G2-EVIDENCE.md`
+- Current G2 scope policy and attestation status: `scripts/g2-attestation-scope.json`, `docs/G2-SCOPE-EVIDENCE.md`
 - CLI boundary: `docs/CLI.md`
 - Configuration: `docs/CONFIGURATION.md`
 - Program roadmap: `docs/ROADMAP.md`
@@ -86,7 +87,7 @@ Never:
 
 ## Protected surfaces
 
-Treat these as requiring focused owner review:
+The G2 scope defaults every unlisted path to protected. Its manifest lists the exact exceptions and permitted operations. Treat these areas as requiring focused owner review:
 
 - canonical ID prefixes and record schemas;
 - canonical JSON and digest construction;
