@@ -460,10 +460,9 @@ impl FakeCoven {
                 session_id: adopted_session,
             },
         ) = (request.input(), disposition)
+            && requested_session != adopted_session
         {
-            if requested_session != adopted_session {
-                return Err(PortError::CorrelationMismatch);
-            }
+            return Err(PortError::CorrelationMismatch);
         }
         let correlation = request.correlation();
         let bytes = canonical_bytes(request.input()).map_err(PortError::from)?;

@@ -680,10 +680,10 @@ impl CovenPort for ScriptedG2Port {
                 disposition: disposition.clone(),
             },
         );
-        if matches!(disposition, TerminationDisposition::Acknowledged { .. }) {
-            if let Some(session) = state.sessions.get_mut(&session_id) {
-                session.authoritative_terminal = true;
-            }
+        if matches!(disposition, TerminationDisposition::Acknowledged { .. })
+            && let Some(session) = state.sessions.get_mut(&session_id)
+        {
+            session.authoritative_terminal = true;
         }
         Ok(disposition)
     }

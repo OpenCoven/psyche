@@ -38,7 +38,7 @@ _SCOPE_TEST_COMMAND = "python3 scripts/check-g2-attestation-scope-test.py"
 if CI_COMMANDS[-1] != "python3 scripts/check-g2-evidence.py" or _SCOPE_TEST_COMMAND in CI_COMMANDS:
     fail("immutable G2 checker core has an unexpected CI command boundary")
 CI_COMMANDS = CI_COMMANDS[:-1] + (_SCOPE_TEST_COMMAND, CI_COMMANDS[-1])
-REVIEWED_WORKFLOW_SHA256 = "bce224826ebea5f2edfe9a63a45ccb332d1a20189462a5895f403c08dca3088d"
+REVIEWED_WORKFLOW_SHA256 = "3c777aaef3e7da294819ea146d7ecd1941aa015c61df29b65d164cdcd6b7f612"
 
 EXPECTED_UNATTESTED_PATHS = {
     "AGENTS.md": {"operations": ("added", "modified"), "modes": ("100644",)},

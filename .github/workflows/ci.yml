@@ -28,7 +28,7 @@ jobs:
       # aligned with the workspace MSRV.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.88.0"
+          toolchain: "1.89.0"
           components: rustfmt, clippy
       # `RUSTFLAGS` is part of this action's cache key (it hashes every env var
       # whose name starts with CARGO/CC/CFLAGS/CXX/CMAKE/RUST). Setting it at
