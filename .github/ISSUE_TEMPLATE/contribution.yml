@@ -3,7 +3,7 @@ description: Track a scoped change and its acceptance evidence
 body:
   - type: markdown
     attributes:
-      value: Use this form for ordinary contributions. For a possible vulnerability, visit the [security policy](https://github.com/OpenCoven/psyche/security/policy). Request a private channel before sharing details.
+      value: For security concerns, use the [private advisory intake](https://github.com/OpenCoven/coven/security/advisories/new) and name OpenCoven/psyche. Keep protected information out of public contributions.
   - type: textarea
     id: outcome
     attributes:
