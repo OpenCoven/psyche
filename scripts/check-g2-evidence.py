@@ -834,7 +834,37 @@ def validate_evidence_only_compare(compare: object, tested: str, terminal: str) 
         fail(f"passed source-to-pull-request diff is not one modified evidence file: {files}")
 
 
-def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
+def pull_request_changes_evidence(root: pathlib.Path, number: object) -> bool:
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        fail("GitHub Actions pull-request number is invalid")
+    pages = run_json(
+        [
+            "gh", "api", "--paginate", "--slurp",
+            f"repos/OpenCoven/psyche/pulls/{number}/files?per_page=100",
+        ],
+        root,
+    )
+    if not isinstance(pages, list) or not pages or not any(pages) or any(
+        not isinstance(page, list) for page in pages
+    ):
+        fail("GitHub pull-request file response is invalid")
+    for page in pages:
+        for file in page:
+            if (
+                not isinstance(file, dict)
+                or not isinstance(file.get("filename"), str)
+                or ("previous_filename" in file and not isinstance(file["previous_filename"], str))
+            ):
+                fail("GitHub pull-request file response is invalid")
+    return any(
+        file.get("filename") == "docs/G2-EVIDENCE.md"
+        or file.get("previous_filename") == "docs/G2-EVIDENCE.md"
+        for page in pages
+        for file in page
+    )
+
+
+def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> tuple[str, bool]:
     before = event.get("before")
     after = event.get("after")
     if (
@@ -901,7 +931,7 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
         or merge_tree.get("sha") != terminal_tree.get("sha")
     ):
         fail("GitHub squash commit tree does not match the reviewed pull-request tree")
-    return terminal
+    return terminal, pull_request_changes_evidence(root, pull.get("number"))
 
 
 def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
@@ -931,8 +961,12 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
             fail("GitHub Actions pull-request repository provenance is invalid")
         if not isinstance(terminal, str) or not re.fullmatch(r"[0-9a-f]{40}", terminal):
             fail("GitHub Actions pull-request head provenance is invalid")
+        if not pull_request_changes_evidence(root, pull_request.get("number")):
+            return
     else:
-        terminal = squash_merge_terminal(root, event)
+        terminal, changes_evidence = squash_merge_terminal(root, event)
+        if not changes_evidence:
+            return
 
     compare = run_json(
         ["gh", "api", f"repos/OpenCoven/psyche/compare/{tested}...{terminal}"],
