@@ -37,5 +37,6 @@
   ],
   "validUntil": "2026-11-20T08:05:00Z",
   "revoked": false,
-  "payloadSha256": "5e28de6196341bdb0260c00b44f43d57e82e5c803bd72d4afa2e59f5277ffa9f"
+  "payloadSha256": "5e28de6196341bdb0260c00b44f43d57e82e5c803bd72d4afa2e59f5277ffa9f",
+  "invocationKey": "psyche-adoption-001"
 }

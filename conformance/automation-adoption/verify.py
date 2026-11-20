@@ -39,7 +39,9 @@ def initialize(path):
     with closing(sqlite3.connect(path)) as db:
         db.execute("""CREATE TABLE executions (
             id INTEGER PRIMARY KEY, producer TEXT NOT NULL, invocation_key TEXT NOT NULL,
-            request BLOB NOT NULL, result BLOB NOT NULL, UNIQUE(producer, invocation_key)
+            run_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
+            request BLOB NOT NULL, result BLOB NOT NULL, UNIQUE(producer, invocation_key),
+            UNIQUE(producer, run_id, attempt_id)
         )""")
 
 
@@ -55,6 +57,7 @@ def adopt(path, raw, verified, now=NOW, lose_reply=False):
     # endpoint, credential verifier, schedule, worker or dispatch hook in this runner.
     request = json.loads(raw)
     if (request["profile"] != PROFILE or request["producer"] != verified["producer"]
+            or request["invocationKey"] != verified["invocationKey"]
             or request["source"] != verified["source"] or request["authority"] != verified["authority"]
             or verified["revoked"] or now >= timestamp(verified["validUntil"])
             or now >= timestamp(request["deadline"])
@@ -71,12 +74,20 @@ def adopt(path, raw, verified, now=NOW, lose_reply=False):
             if row[0] != raw:
                 raise KeyConflict
             return json.loads(row[1])
-        inserted = db.execute("INSERT INTO executions(producer,invocation_key,request,result) VALUES(?,?,?,?)",
-                              (*key, raw, b""))
         source = request["source"]
+        prior = db.execute(
+            "SELECT invocation_key FROM executions WHERE producer=? AND run_id=? AND attempt_id=?",
+            (verified["producer"], source["runId"], source["attemptId"]),
+        ).fetchone()
+        if prior:
+            raise KeyConflict
+        inserted = db.execute(
+            "INSERT INTO executions(producer,invocation_key,run_id,attempt_id,request,result) VALUES(?,?,?,?,?,?)",
+            (*key, source["runId"], source["attemptId"], raw, b""),
+        )
         result = {
             "profile": "draft.psyche.automation-adoption.fixture.1",
-            "invocationKey": key[1], "executionId": f"fixture-execution-{inserted.lastrowid}",
+            "producer": key[0], "invocationKey": key[1], "executionId": f"fixture-execution-{inserted.lastrowid}",
             "occurrenceId": source["occurrenceId"], "runId": source["runId"],
             "attemptId": source["attemptId"], "requestSha256": digest(raw), "state": "adopted",
         }
@@ -118,6 +129,20 @@ class Vectors(unittest.TestCase):
             with self.assertRaises(KeyConflict):
                 self.adoption(raw)
         self.assertEqual(lookup(self.path, "coven:fixture", "psyche-adoption-001"), self.expected)
+        self.assertEqual(self.count(), 1)
+
+    def test_one_adopted_attempt_cannot_fork_by_changing_keys(self):
+        self.adoption()
+        other = json.loads(self.wire)
+        other["invocationKey"] = "psyche-adoption-002"
+        raw = json.dumps(other).encode()
+        with self.assertRaises(Denied):
+            self.adoption(raw)
+        # Even an inconsistent issuer replay cannot fork a retained attempt.
+        self.verified["invocationKey"] = other["invocationKey"]
+        with self.assertRaises(KeyConflict):
+            self.adoption(raw)
+        self.assertIsNone(lookup(self.path, "coven:fixture", other["invocationKey"]))
         self.assertEqual(self.count(), 1)
 
     def test_timeout_after_commit_uses_lookup_on_new_connection(self):
