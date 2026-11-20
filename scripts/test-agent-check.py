@@ -23,6 +23,22 @@ def command(*args, cwd, env=None, check=True):
     )
 
 
+def fixture_bash():
+    if os.name != "nt":
+        return "bash"
+    # The Windows system bash.exe may launch WSL. Select the Bash belonging
+    # to Git for Windows, including installations outside Program Files.
+    git_exec = Path(command("git", "--exec-path", cwd=repo).stdout.strip())
+    for parent in git_exec.parents:
+        bash = parent / "usr" / "bin" / "bash.exe"
+        if bash.is_file():
+            return str(bash)
+    raise RuntimeError("Install Git for Windows with Git Bash to run these fixtures.")
+
+
+bash = fixture_bash()
+
+
 def write_executable(path, code):
     path.write_bytes(code.encode("utf-8"))
     path.chmod(0o755)
@@ -99,7 +115,7 @@ exit 0
             if f.exists()
         }
         result = command(
-            "bash", "scripts/agent-check", mode, cwd=work, env=env, check=False
+            bash, "scripts/agent-check", mode, cwd=work, env=env, check=False
         )
         end = command("git", "status", "--porcelain", cwd=work).stdout
         assert result.returncode == expected, (
