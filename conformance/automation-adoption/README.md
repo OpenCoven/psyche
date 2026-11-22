@@ -1,6 +1,6 @@
 # Automation adoption and replay vectors
 
-This executable design slice models the point where Coven has already adopted an automation attempt and asks Psyche to adopt one orchestration request. Run `python3 conformance/automation-adoption/verify.py -v` and `python3 conformance/automation-adoption/verify_replay.py -v` from a clean checkout. The runners use Python 3.9+ and SQLite from the standard library. All IDs and authority evidence in the fixture are synthetic.
+This executable design slice models the point where Coven has already adopted an automation attempt and asks Psyche to adopt one orchestration request. Run `python3 conformance/automation-adoption/verify.py -v` and `python3 conformance/automation-adoption/verify_replay.py -v` from a clean checkout. `./scripts/agent-check full` runs both. The runners use Python 3.9+ and SQLite from the standard library. All IDs and authority evidence in the fixture are synthetic.
 
 ## Field and authority inventory
 
@@ -42,7 +42,7 @@ The other proposed operations are `status` for authorized snapshots, `subscribe`
 - **Authority member names.** `verify_packages.py` compares the `source` members with the pinned Coven schemas. No runner compares the `authority` members with the Coven, Familiar Contract or Threads schemas.
 - **Refusal records.** A refusal is not written to either journal.
 - **Producer artifacts.** The two Coven artifacts expire on 2027-02-18. `source-pins.json` records the producer run and artifact IDs. No gate runs `verify_packages.py`, because it needs those downloads.
-- **Platforms.** The runners were executed on macOS arm64 with Python 3.9.6 and 3.15.1. Linux and Windows were not run.
+- **Platforms.** The runners were executed on macOS arm64 with Python 3.9.6 and 3.15.1. Linux and Windows were not run locally. The contributor workflow runs `./scripts/agent-check full`, and so both runners, on Linux, macOS and Windows.
 
 ## Run against the packaged Coven profiles
 

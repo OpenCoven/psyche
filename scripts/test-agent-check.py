@@ -58,6 +58,10 @@ def check_case(mode, state, mutation, expected):
             write_executable(helpers / name, content)
         (helpers / "check-g2-evidence-test.py").write_text("pass\n")
         (helpers / "check-g2-attestation-scope-test.py").write_text("pass\n")
+        vectors = work / "conformance" / "automation-adoption"
+        vectors.mkdir(parents=True)
+        for name in ("verify.py", "verify_replay.py"):
+            (vectors / name).write_text("pass\n")
         (work / "rust-toolchain.toml").write_text(
             (repo / "rust-toolchain.toml").read_text()
         )
