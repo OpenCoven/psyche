@@ -12,7 +12,7 @@ Submit the synthetic request to your test consumer, save its observation as `fir
 python3 -I receipt-replay.pyz request.json first.json replay.json
 ```
 
-Exit 0 emits the request ID, request and receipt digests, total executions and additional executions after restart. A denial exits 1 and prints a JSON code. The runner checks the observations the consumer supplies. The qualification fixture additionally queries its durable effects and receipts directly. The profile grants no authority to launch or repeat an actual operation.
+Exit 0 emits the request ID, request and receipt digests, total executions and additional executions after restart. A denial exits 1 and prints a JSON code. The runner checks the observations the consumer supplies. The qualification harness independently witnesses each synthetic effect outside the consumer database and measures the change across a real process restart. A missing store, an effect without its receipt, and a process death between effect and receipt each have a recovery control. Use distinct observations from the two processes and regular JSON files within the documented size limit. The profile grants no authority to launch or repeat an actual operation.
 
 ## Wire files and scope
 
@@ -22,6 +22,6 @@ Exit 0 emits the request ID, request and receipt digests, total executions and a
 
 ## Reproduce the preview
 
-Run `bash profiles/receipt-replay/qualify.sh` in a clean Git checkout on Linux with passwordless sudo for a network namespace, or on macOS with sandbox-exec. The script builds from two separate exports of HEAD, compares the archives byte for byte and copies the archive and independent fixture to a new directory. The fixture runs with networking disabled, restarts its SQLite-backed synthetic consumer and runs positive and negative controls. To retain the archive, pass an absolute output path. The packager reuses the packaging probe’s sorted member list, fixed metadata and per-file SHA-256 manifest. [Original packaging results](https://github.com/OpenCoven/psyche/issues/11#issuecomment-7036825643)
+Run `bash profiles/receipt-replay/qualify.sh` in a clean Git checkout on Linux with passwordless sudo for a network namespace, or on macOS with sandbox-exec. The script builds from two separate exports of HEAD, compares the archives byte for byte, verifies the committed SHA-256 pin and copies the archive and independent fixture to a new directory. The fixture runs with networking disabled, restarts its SQLite-backed synthetic consumer and runs positive and negative controls. To retain the archive, pass an absolute output path. The packager reuses the packaging probe’s sorted member list, fixed metadata and per-file SHA-256 manifest. [Original packaging results](https://github.com/OpenCoven/psyche/issues/11#issuecomment-7036825643)
 
 Consumers can discard this preview by deleting the archive and their synthetic fixture directory. No production data migration or Build activation is part of this profile.

@@ -3,8 +3,8 @@
 import errno
 import hashlib
 import json
+import runpy
 import socket
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -44,17 +44,14 @@ def network_disabled():
 def qualify(pin):
     network_disabled()
     require(hashlib.sha256(ARCHIVE.read_bytes()).hexdigest() == pin, "wrong archive pin")
-    require(not Path("fixture.sqlite").exists(), "consumer must start with fresh storage")
-    for name in ("first.json", "replay.json"):
-        with Path(name).open("xb") as log:
-            subprocess.run([*PYTHON, "submit.py"], stdout=log, check=True)
+    recovery = runpy.run_path(str(Path(__file__).with_name("recovery.py")))
+    receipt, effects, restart_delta = recovery["exercise_recovery"]()
     args = ["request.json", "first.json", "replay.json"]
     passed = command("passed", *args)
-    with sqlite3.connect("file:fixture.sqlite?mode=ro", uri=True) as db:
-        effects = db.execute("SELECT action FROM effects").fetchall()
-        receipts = db.execute("SELECT receipt FROM outcomes").fetchall()
-    require(effects == [("fixture-action",)] and len(receipts) == 1, "unexpected durable effects")
-    require(passed["receipt_digest"] == "sha256:" + hashlib.sha256(receipts[0][0]).hexdigest(), "wrong receipt")
+    require(effects == 1 and restart_delta == 0, "independent effect count disagrees")
+    require(passed["receipt_digest"] == "sha256:" + hashlib.sha256(receipt).hexdigest(), "wrong receipt")
+    controls = runpy.run_path(str(Path(__file__).with_name("check_inputs.py")))
+    controls["run_controls"](command, args)
     replay = json.loads(Path("replay.json").read_bytes())
     for change, denial in [
         ({"schema_version": "psyche.experimental.receipt-replay.v2"}, "unsupported_version"),
@@ -91,8 +88,8 @@ def qualify(pin):
                         data += b" "
                     archive.writestr(name, data)
             command(denial, *args, archive=altered)
-    print(json.dumps({"archive_sha256": pin, "network": "disabled", "durable_effects": len(effects),
-                      "executions_after_restart": 0, "platform": sys.platform, "result": "qualified"}))
+    print(json.dumps({"archive_sha256": pin, "network": "disabled", "durable_effects": effects,
+                      "executions_after_restart": restart_delta, "platform": sys.platform, "result": "qualified"}))
 
 
 if __name__ == "__main__":
