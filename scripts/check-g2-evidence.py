@@ -27,6 +27,7 @@ _LEGACY_VALIDATE_EVIDENCE_ONLY_COMPARE = validate_evidence_only_compare
 _LEGACY_VERIFY_ACTIONS_SOURCE_RELATIONSHIP = verify_actions_source_relationship
 _LEGACY_VERIFY_PASSED = verify_passed
 _LEGACY_VALIDATE_REPOSITORY = validate_repository
+_LEGACY_VALIDATE_CI_STRUCTURE = validate_ci_structure
 
 SCOPE_SCHEMA = "psyche.g2-attestation-scope/v1"
 SCOPE_MANIFEST_PATH = "scripts/g2-attestation-scope.json"
@@ -38,6 +39,7 @@ ROOT_LICENSE_ENTRY = ("100644", "blob", "5f5ad1fba60dd07f73285e82ed67c974aed3497
 SITE_NOTICE_PATH = "site/assets/LICENSE-threads.txt"
 SITE_NOTICE_ENTRY = ("100644", "blob", "0cea5dc1a1ce3355c1353b961a8ca7a90367f976")
 _SCOPE_TEST_COMMAND = "python3 scripts/check-g2-attestation-scope-test.py"
+_REVIEWED_WORKFLOW_PERMISSION_BLOCK = "permissions:\n  contents: read\n\n"
 
 if CI_COMMANDS[-1] != "python3 scripts/check-g2-evidence.py" or _SCOPE_TEST_COMMAND in CI_COMMANDS:
     fail("immutable G2 checker core has an unexpected CI command boundary")
@@ -55,6 +57,25 @@ EXPECTED_UNATTESTED_PATHS = {
     "scripts/agent-bootstrap": {"operations": ("added", "modified"), "modes": ("100755",)},
     "scripts/agent-check": {"operations": ("added", "modified"), "modes": ("100755",)},
 }
+
+
+def _workflow_without_read_only_permissions(workflow: str) -> str:
+    if workflow.count(_REVIEWED_WORKFLOW_PERMISSION_BLOCK) != 1:
+        fail("CI workflow must declare only read-only contents permissions")
+    return workflow.replace(_REVIEWED_WORKFLOW_PERMISSION_BLOCK, "", 1)
+
+
+def validate_ci_structure(workflow: str) -> None:
+    normalized = workflow.replace("\r\n", "\n").replace("\r", "\n")
+    _LEGACY_VALIDATE_CI_STRUCTURE(_workflow_without_read_only_permissions(normalized))
+
+
+def validate_ci_workflow(workflow: str) -> None:
+    normalized = workflow.replace("\r\n", "\n").replace("\r", "\n")
+    reviewed = _workflow_without_read_only_permissions(normalized)
+    if hashlib.sha256(reviewed.encode("utf-8")).hexdigest() != REVIEWED_WORKFLOW_SHA256:
+        fail("CI workflow differs from the complete reviewed workflow")
+    validate_ci_structure(normalized)
 
 
 # gh emits UTF-8 JSON independently of the Windows console code page.

@@ -525,6 +525,18 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         poison = "      - name: Poison PATH\n        run: echo /tmp/poison >> $GITHUB_PATH\n"
         self.assert_rejected(hash_only=True, overrides={path: workflow.replace(anchor, poison + anchor, 1)})
 
+    def test_workflow_requires_exact_read_only_contents_permission(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.checker.validate_ci_structure(workflow)
+        mutations = (
+            workflow.replace("  contents: read\n", "  contents: write\n", 1),
+            workflow.replace("  contents: read\n", "  contents: read\n  issues: write\n", 1),
+            workflow.replace("permissions:\n  contents: read\n\n", "", 1),
+        )
+        for index, mutated in enumerate(mutations):
+            with self.subTest(index=index):
+                self.assert_structure_rejected(mutated)
+
     def test_passed_remote_verifier_accepts_exact_ci_attestation(self) -> None:
         passed = self.passed_evidence()
         completed = (
