@@ -39,7 +39,7 @@ def serve_effects(channel, sink):
             channel.sendall((execution_id + "\n").encode("ascii"))
 
 
-def invoke(command, workspace, message, sink=None):
+def invoke(command, workspace, message, sink=None, *, inherited=()):
     env = dict(PATH=os.defpath, HOME=str(workspace), TSX_DISABLE_CACHE="1", PYTHONDONTWRITEBYTECODE="1")
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryFile() as output, ThreadPoolExecutor(max_workers=1) as pool:
         env["TMPDIR"] = tmp
@@ -53,7 +53,7 @@ def invoke(command, workspace, message, sink=None):
                 worker = pool.submit(serve_effects, parent, sink)
             result = subprocess.run(command, cwd=workspace, env=env, input=json.dumps(message).encode(),
                                     stdout=output, stderr=subprocess.DEVNULL, timeout=45,
-                                    pass_fds=() if endpoint is None else (fd,))
+                                    pass_fds=inherited if endpoint is None else (fd,))
         finally:
             if endpoint is not None:
                 endpoint.close()

@@ -23,7 +23,8 @@ def build(replay, output):
     files = {'__main__.py': (HERE / 'run.py').read_bytes(), 'receipt-replay.pyz': data, 'request.json': request}
     for name in ('runtime.py', 'effect_sink.py', 'evidence_checks.py'):
         files[name] = (HERE / name).read_bytes()
-    files['packaged_controls.py'] = (HERE / 'tests' / 'packaged_controls.py').read_bytes()
+    for name in ('packaged_controls.py', 'reference_fixture.py'):
+        files[name] = (HERE / 'tests' / name).read_bytes()
     manifest = {'profile': PROFILE, 'status': 'experimental', 'supported_readers': [2],
                 'receipt_source': 'bada1b6a854e72e0cc20cfe8e54ca2d11c6ca7a9',
                 'files': {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}}

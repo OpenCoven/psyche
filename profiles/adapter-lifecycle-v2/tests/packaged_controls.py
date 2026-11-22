@@ -1,6 +1,6 @@
 """Exercise the verifier in the pinned zipapp using controlled positive and negative evidence."""
 import argparse
-from dataclasses import replace
+from dataclasses import asdict, replace
 import hashlib
 import json
 from pathlib import Path
@@ -31,9 +31,63 @@ def main():
     run_controls(args.archive.resolve(), args.pin)
 
 
+def end_to_end(archive, pin):
+    # The child processes use only files extracted from the verified package.
+    vectors = [
+        (1, "extra-success", "effect_count_mismatch"), (1, "extra-lost_ack", "effect_count_mismatch"),
+        (2, "success-replay-request_id", "refusal_mismatch"), (2, "success-replay-payload_digest", "refusal_mismatch"),
+        (3, "unknown_input-first-profile", "refusal_mismatch"), (3, "unknown_input-unrecognized-enum", "refusal_mismatch"),
+        (3, "success-replay-version", "refusal_mismatch"),
+        (4, "cancel-rollback-reopen", "refusal_mismatch"), (4, "agent_approval-replay-reopen", "refusal_mismatch"),
+        (5, "success-rollback-ids", "refusal_mismatch"), (5, "lost_ack-rollback-ids", "refusal_mismatch"),
+        (6, "nonzero-child", "child_failed"), (6, "duplicate-key", "duplicate_field"), (6, "oversize", "oversize_output"),
+        (6, "invalid-refusal", "invalid_refusal"), (6, "changed-workspace", "refusal_changed_workspace"),
+        (6, "observer-write", "observer_changed_workspace"), (6, "reply-field", "invalid_fields"),
+        (6, "unknown-field", "invalid_native_fields"), (6, "native-id", "native_effect_mismatch"),
+        (6, "request-bytes", "persisted_request_mismatch"), (6, "missing-approval", "invalid_native_approval"),
+        (6, "receipt-bytes", "native_receipt_mismatch"), (6, "report-count", "effect_count_mismatch"),
+        (6, "reopen-id", "execution_identity_mismatch"), (6, "lost-state", "terminal_state_mismatch"),
+    ]
+    with TemporaryDirectory() as folder, ZipFile(archive) as package:
+        root = Path(folder)
+        fixture, golden = (root / name for name in ("reference_fixture.py", "request.json"))
+        for path in (fixture, golden):
+            path.write_bytes(package.read(path.name))
+        duplicate_ids = []
+        reported_counts = []
+        for group, vector, code in [(0, "conforming", None), *vectors]:
+            audit = root / (vector + ".jsonl")
+            def command(role):
+                return [sys.executable, "-I", str(fixture), role, vector, str(golden), str(audit)]
+            child = subprocess.run([sys.executable, "-I", str(archive), "--sha256", pin, "--observer",
+                                    json.dumps(command("observer")), "--", *command("adapter")], cwd=root,
+                                   capture_output=True, timeout=120)
+            result = json.loads(child.stdout)
+            if code is None:
+                cases = result["cases"]
+                if child.returncode or result["result"] != "passed" or len(cases) != 32:
+                    raise AssertionError(f"reference lifecycle incomplete: {result}")
+                continue
+            if child.returncode != 1 or result.get("code") != code:
+                raise AssertionError(f"{vector} expected {code}: {result}")
+            print(json.dumps(dict(group=group, case=vector, outcome="rejected", code=code, command="packaged-cli")))
+            if vector.startswith("extra-"):
+                target = "action-" + vector.removeprefix("extra-")
+                ids = [row["execution_id"] for row in map(json.loads, audit.read_text().splitlines())
+                       if row["binding"]["action_id"] == target]
+                if len(set(ids)) != 3:
+                    raise AssertionError("missing duplicate control inputs")
+                duplicate_ids.extend(ids)
+                reported_counts.append(int(audit.with_suffix(".reported").read_text()))
+        if len(set(duplicate_ids)) != 6 or reported_counts != [1, 1]:
+            raise AssertionError("missing distinct execution IDs")
+        print(json.dumps(dict(independent_invocations=len(duplicate_ids), reported_per_action=reported_counts, execution_ids=duplicate_ids)))
+
+
 def run_controls(archive, pin):
     if hashlib.sha256(archive.read_bytes()).hexdigest() != pin:
         raise ValueError("test input differs from the expected kit")
+    end_to_end(archive, pin)
     # Load the shipped verifier and its own dependencies. Source checkout files
     # are deliberately absent from the isolated interpreter's import path.
     sys.path.insert(0, str(archive))
@@ -45,10 +99,11 @@ def run_controls(archive, pin):
         target = driver["Scenario"](root, "records", [], [], raw, [])
         launch = json.loads(raw)
         bind = binding_type(launch["request_id"], "sha256:" + hashlib.sha256(raw).hexdigest(),
-                            launch["attempt_id"], "task-A", "action-A", "approval-A", "abc")
+                            launch["attempt_id"], "task-A", "action-A", "approval-A", "a" * 64)
+        eid = target.sink.invoke(bind)
         receipt = b'{"state":"succeeded"}'
-        native = dict(binding=vars(bind), request_hex=raw.hex(), state="succeeded", receipt_hex=receipt.hex())
-        reply = dict(**vars(bind), state="succeeded", receipt_hex=receipt.hex(), executions=1)
+        native = dict(binding=vars(bind), refusal=None, effects=[asdict(row) for row in target.sink.observe()], request_hex=raw.hex(), state="succeeded", receipt_hex=receipt.hex())
+        reply = dict(**vars(bind), execution_id=eid, state="succeeded", receipt_hex=receipt.hex(), executions=1)
 
         def terminal(native_record, reported, scenario=target, **extra):
             # Only the transport is replayed. The archived runner reads the real fixture sink.
@@ -56,7 +111,6 @@ def run_controls(archive, pin):
                             native_record if sink is None else reported):
                 return scenario.terminal("first", "succeeded", **extra)
 
-        eid = target.sink.invoke(bind)
         assert terminal(native, reply)[0] == eid
         for key in ("request_id", "request_digest", "attempt_id"):
             different = dict(native, binding=dict(native["binding"], **{key: "other"}))
@@ -78,16 +132,11 @@ def run_controls(archive, pin):
                 source.sink.invoke(action)
         observed = target.sink.observe() + other.sink.observe()
         assert len({row.execution_id for row in observed}) == 6
-        reported_counts = []
         for scenario, binding in ((target, bind), (other, second)):
-            recorded = dict(native, binding=vars(binding))
+            recorded = dict(native, binding=vars(binding), effects=[asdict(row) for row in scenario.sink.observe()])
             reported = dict(reply, **vars(binding))
-            reported_counts.append(reported["executions"])
             expect_error(1, "extra_invocations_" + binding.action_id, "effect_count_mismatch",
                          lambda: terminal(recorded, reported, scenario))
-        print(json.dumps(dict(independent_invocations=len(observed), reported_per_action=reported_counts,
-                              execution_ids=[row.execution_id for row in observed])))
-
         empty = driver["Scenario"](root, "refusals", [], [], raw, [])
         for phase, expected, group in [("new-phase", "unsupported_request", 3), ("first", "unsupported_version", 3),
                                       ("replay", "incompatible_downgrade", 3), ("replay", "operator_required", 4),

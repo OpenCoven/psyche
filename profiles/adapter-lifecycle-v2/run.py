@@ -2,14 +2,15 @@
 import argparse
 from contextlib import redirect_stdout
 import io
-from dataclasses import fields
+from dataclasses import asdict, fields
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, TemporaryFile
 from zipfile import BadZipFile, ZipFile
 
 from effect_sink import Binding, Witness
@@ -17,7 +18,7 @@ from evidence_checks import Observation, verify_refusal, verify_terminal
 from runtime import invoke, strict_object
 
 PROFILE = "psyche.experimental.adapter-lifecycle.v2"
-MODULES = {"__main__.py", "effect_sink.py", "evidence_checks.py", "runtime.py", "packaged_controls.py", "request.json", "receipt-replay.pyz"}
+MODULES = {"__main__.py", "effect_sink.py", "evidence_checks.py", "runtime.py", "packaged_controls.py", "reference_fixture.py", "request.json", "receipt-replay.pyz"}
 
 
 def sha(data):
@@ -69,31 +70,49 @@ class Scenario:
         reply = invoke(self.adapter, self.workspace, self.message(phase, **extra), self.sink)
         verify_refusal(expected, reply.get("code"), before, self.sink.observe())
         require(set(reply) == {"code", "executions"} and type(reply["executions"]) is int and reply["executions"] == count, "invalid_refusal")
+        witness = self.observe({"operation": "effects"})
+        require(set(witness) == {"effects"}, "invalid_native_fields")
+        self.verify_effects(witness["effects"])
         if readonly:
             require(snapshot(self.workspace) == files, "refusal_changed_workspace")
         self.rows.append(dict(case=self.name, probe=label, phase=phase, code=expected, executions=count))
 
-    def read_native(self):
+    def observe(self, message):
         before = snapshot(self.workspace)
-        native = invoke(self.observer, self.workspace, {})
+        native = invoke(self.observer, self.workspace, message)
         require(snapshot(self.workspace) == before, "observer_changed_workspace")
+        return native
+
+    def verify_effects(self, records):
+        require(records == [asdict(row) for row in self.sink.observe()], "native_effect_mismatch")
+
+    def read_native(self):
+        native = self.observe({"operation": "binding"})
+        require(set(native) == {"binding", "request_hex", "state", "receipt_hex", "refusal", "effects"}, "invalid_native_fields")
+        require(set(native["binding"]) == {f.name for f in fields(Binding)}, "invalid_native_binding")
         binding = Binding(**native["binding"])
         require(all(isinstance(getattr(binding, f.name), str) and 0 < len(getattr(binding, f.name)) <= 256
                     for f in fields(binding)), "invalid_native_binding")
-        require(bytes.fromhex(native["request_hex"]) == self.raw and binding.request_id == self.launch["request_id"]
+        require(native["request_hex"] == self.raw.hex() and binding.request_id == self.launch["request_id"]
                 and binding.request_digest == "sha256:" + sha(self.raw)
                 and binding.attempt_id == self.launch["attempt_id"], "persisted_request_mismatch")
+        require(re.fullmatch("[0-9a-f]{64}", binding.approval_digest) and binding.approval_id.casefold() not in {"none", "null"}, "invalid_native_approval")
+        self.verify_effects(native["effects"])
         return binding, native
 
     def terminal(self, phase, expected, original=None, **extra):
         reply = invoke(self.adapter, self.workspace, self.message(phase, **extra), self.sink)
         binding, native = self.read_native()
         keys = {f.name for f in fields(Binding)}
-        require(set(reply) == keys | {"state", "receipt_hex", "executions"}, "invalid_fields")
+        require(set(reply) == keys | {"state", "receipt_hex", "executions", "execution_id"}, "invalid_fields")
+        require(native["refusal"] is None, "unexpected_native_refusal")
+        require(all(isinstance(value, str) and re.fullmatch("(?:[0-9a-f]{2})+", value)
+                    for value in (native["receipt_hex"], reply["receipt_hex"])), "native_receipt_mismatch")
         reported = Observation(Binding(**{k: reply[k] for k in keys}), reply["state"],
                                bytes.fromhex(reply["receipt_hex"]), reply["executions"])
         effect = verify_terminal(binding, native["state"], bytes.fromhex(native["receipt_hex"]), reported,
                                  self.sink.observe(), expected, original[0] if original else None)
+        require(reply["execution_id"] == effect, "execution_identity_mismatch")
         record = (effect, binding, reported.receipt)
         require(original is None or original == record, "reopened_observation_changed")
         self.rows.append(dict(case=self.name, phase=phase, execution_id=effect, task_id=binding.task_id,
@@ -107,6 +126,7 @@ def qualify(root, raw, comparator, adapter, observer, rows):
         return Scenario(root, name, adapter, observer, raw, rows)
     invalid = scenario("unknown_input")
     for key, value, code in [("profile", PROFILE + ".next", "unsupported_version"),
+                             ("profile", PROFILE + ".retired", "unsupported_version"),
                              ("reader_version", 0, "incompatible_downgrade"),
                              ("reader_version", 3, "incompatible_downgrade"),
                              ("fault", "unrecognized", "unsupported_request")]:
@@ -138,10 +158,12 @@ def qualify(root, raw, comparator, adapter, observer, rows):
                 mutated = dict(target.launch)
                 mutated[field] = ("req_01J00000000000000000000001" if field == "request_id" else "sha256:" + "0" * 64)
                 canonical = json.dumps(mutated, sort_keys=True, separators=(",", ":")).encode()
-                target.refuse(field, "replay", "stale_correlation", 1, request_id=mutated["request_id"], request_hex=canonical.hex())
-            for field in ids:
-                target.refuse("wrong_" + field, "rollback", "stale_correlation", 1, **{**ids, field: "other-native-id"})
-            target.refuse("downgrade", "replay", "incompatible_downgrade", 1, reader_version=1)
+                target.refuse(field, "replay", "stale_correlation", 1, request_id=mutated["request_id"], request_hex=canonical.hex(), **ids)
+        for field in ids:
+            target.refuse("wrong_" + field, "rollback", "stale_correlation", 1, **{**ids, field: "other-native-id"})
+        for phase in ("replay", "rollback"):
+            target.refuse("downgrade", phase, "incompatible_downgrade", 1, reader_version=1, **ids)
+            target.refuse("unknown_profile", phase, "unsupported_version", 1, profile=PROFILE + ".next", **ids)
         first = dict(schema_version="psyche.experimental.receipt-replay.v1", request_id=binding.request_id,
                      request_digest=binding.request_digest, receipt_hex=receipt.hex(), executions=1)
         first_file = root / "first.json"
@@ -150,10 +172,12 @@ def qualify(root, raw, comparator, adapter, observer, rows):
             _, _, observed = target.terminal(phase, state, original, **ids)
             current = root / "current.json"
             current.write_text(json.dumps(dict(first, receipt_hex=observed.hex())))
-            # Extract from immutable verified bytes immediately before each invocation.
-            checker = root / "checker.pyz"
-            checker.write_bytes(comparator)
-            verified = invoke([sys.executable, "-I", str(checker), str(request_path), str(first_file), str(current)], root, {})
+            with TemporaryFile() as checker:
+                checker.write(comparator)
+                checker.seek(0)
+                fd = checker.fileno()
+                verified = invoke([sys.executable, "-I", f"/dev/fd/{fd}", str(request_path), str(first_file), str(current)],
+                                  root, {}, inherited=(fd,))
             require(verified.get("result") == "passed" and verified.get("additional_executions") == 0, "comparator_failed")
 
 
