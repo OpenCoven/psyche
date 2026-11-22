@@ -23,12 +23,15 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       # `rust-toolchain.toml` controls the cargo/rustc version used in this
       # checkout. The action pin avoids a redundant download; keep both pins
       # aligned with the workspace MSRV.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.88.0"
+          toolchain: "1.89.0"
           components: rustfmt, clippy
       # `RUSTFLAGS` is part of this action's cache key (it hashes every env var
       # whose name starts with CARGO/CC/CFLAGS/CXX/CMAKE/RUST). Setting it at
@@ -57,6 +60,8 @@ jobs:
         run: cargo clippy -p psyche-store --all-targets --features test-fault-injection -- -D warnings
       - name: G2 evidence checker unit tests
         run: python3 scripts/check-g2-evidence-test.py
+      - name: G2 attestation scope tests
+        run: python3 scripts/check-g2-attestation-scope-test.py
       - name: G2 evidence relationships
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,6 +72,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       # cargo-deny is tooling, not a shipped dependency. The action and the
       # explicit `+stable` install select its toolchain independently of the
       # workspace pin. No components are needed here.
@@ -87,6 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       # The gitleaks CLI, not `gitleaks/gitleaks-action`. The action is
       # separately licensed: its entrypoint looks up the repository owner and,
@@ -139,6 +147,8 @@ jobs:
         node: ['20', '22']
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
