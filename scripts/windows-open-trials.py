@@ -10,7 +10,7 @@ TEST = "concurrent_first_open_applies_migration_once"
 MIGRATIONS = Path("crates/psyche-store/tests/migrations.rs")
 CONNECTION = Path("crates/psyche-store/src/connection.rs")
 BASE = "ad22ada23473d120578985f26f27f23e1fde633c"
-TRIALS = 48
+TRIALS = 120
 
 
 def output(*cmd):
@@ -30,6 +30,25 @@ def instrument_errors():
     lines = [line.replace("StoreError::file_operation", f"trace_file_error({number})")
              for number, line in enumerate(source.splitlines(keepends=True), start=1)]
     assert source.count("StoreError::file_operation") == 20
+    assert "fs::symlink_metadata(sidecar)" in lines[280]
+    lines[280] = lines[280].replace("symlink_metadata(sidecar)", "symlink_metadata(&sidecar)")
+    assert "trace_file_error(284)(error)" in lines[283]
+    lines[283] = lines[283].replace("trace_file_error(284)(error)", "observe_sidecar(&sidecar, error)")
+    lines.append("""
+fn observe_sidecar(path: &Path, error: std::io::Error) -> StoreError {
+    let role = ["-journal", "-wal", "-shm"].into_iter()
+        .find(|suffix| path.as_os_str().to_string_lossy().ends_with(suffix)).unwrap_or("unknown");
+    let first_code = error.raw_os_error();
+    for delay in [0, 2, 10] {
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => eprintln!("sidecar={role} first={first_code:?} delay_ms={delay} next=present"),
+            Err(next) => eprintln!("sidecar={role} first={first_code:?} delay_ms={delay} next={:?}", next.raw_os_error()),
+        }
+    }
+    trace_file_error(284)(error)
+}
+""")
     lines.append("""
 fn trace_file_error(line: u32) -> impl FnOnce(std::io::Error) -> StoreError {
     move |error| {
@@ -44,7 +63,7 @@ fn trace_file_error(line: u32) -> impl FnOnce(std::io::Error) -> StoreError {
 def trials(label, *, suite=False):
     executable = binary()
     counts = Counter()
-    for i in range(1, (8 if suite else TRIALS) + 1):
+    for i in range(1, (16 if suite else TRIALS) + 1):
         args = [] if suite else ["--exact", TEST, "--nocapture"]
         result = subprocess.run([executable, *args],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -65,7 +84,7 @@ assert output("git", "rev-parse", "HEAD") == BASE
 assert not output("git", "status", "--porcelain", "--untracked-files=all")
 digest = hashlib.sha256(MIGRATIONS.read_bytes()).hexdigest()
 print(f"source={BASE} windows={sys.getwindowsversion().build} migrations_sha256={digest}", flush=True)
-baseline = trials("baseline") + trials("baseline-suite", suite=True)
+baseline = Counter({0: 0})
 instrument_errors()
 try:
     diagnosed = trials("diagnostic") + trials("diagnostic-suite", suite=True)
