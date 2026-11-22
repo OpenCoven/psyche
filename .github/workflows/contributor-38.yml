@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 6d1b2b0c54c2315dfd104bc208a14224059cb1b7
+          ref: ad22ada23473d120578985f26f27f23e1fde633c
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -37,7 +37,7 @@ jobs:
           ARCH: ${{ runner.arch }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 6d1b2b0c54c2315dfd104bc208a14224059cb1b7
+          test "$(git rev-parse HEAD)" = ad22ada23473d120578985f26f27f23e1fde633c
           test "$(git rev-parse HEAD^{tree})" = 2c321f4df0971b27349d094c630aed6c9f9012ed
           echo "head=$(git rev-parse HEAD) os=$OS arch=$ARCH bash=$BASH_VERSION restored-cargo-cache=$CACHE_HIT"
           rustc --version && cargo --version && node --version && npm --version && python3 --version
