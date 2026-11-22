@@ -119,8 +119,8 @@ The owning issue must approve:
 - Cave/iOS approval and reconnect flow;
 - SDK mutation profiles;
 - release-order and emergency compatibility policy;
-- the trusted issuer and enforcer of a process-attempt fence, and the evidence that every surviving resource is covered ([#19](https://github.com/OpenCoven/psyche/issues/19));
-- how a Psyche Build receipt binds to Psyche records ([#13](https://github.com/OpenCoven/psyche/issues/13)).
+- for a process-bound (coven-agents) attempt, the trusted issuer and enforcer of its fence, and the evidence that every surviving resource is covered ([#19](https://github.com/OpenCoven/psyche/issues/19));
+- which released record or projection binds a Psyche Build task ID, action or idempotency key and terminal receipt to a Psyche execution request ID and digest, who issues and verifies that binding, and what a consumer does when the stored outcome is missing, ambiguous or conflicting after restart ([question on #12](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7074231074), adoption tracked in [#13](https://github.com/OpenCoven/psyche/issues/13)).
 
 A proposed decision packet for #12 is in review as [draft #29](https://github.com/OpenCoven/psyche/pull/29). It is a proposal and approves nothing.
 
