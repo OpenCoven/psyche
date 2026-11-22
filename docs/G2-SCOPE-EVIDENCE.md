@@ -1,8 +1,8 @@
 # G2 Attestation Scope Evidence
 
-**Status:** candidate
-**Tested source commit:** not recorded before remote review
-**CI attestation:** not recorded before remote review
+**Status:** passed
+**Tested source commit:** `b701da3316b242d3524ad0afb34b4cf81e1286ad`
+**CI attestation:** https://github.com/OpenCoven/psyche/actions/runs/44999935048
 **Scope schema:** `psyche.g2-attestation-scope/v1`
 **Scope manifest:** `scripts/g2-attestation-scope.json`
 **Scope manifest SHA-256:** `sha256:4e535973d4ab49de80e78cd35177bde658d5c31f6d0fd3a5d91edb579a118fa4`
