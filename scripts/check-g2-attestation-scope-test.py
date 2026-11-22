@@ -60,6 +60,7 @@ class G2AttestationScopeTests(unittest.TestCase):
     def test_repository_scope_manifest_is_exact_and_fail_closed(self):
         self.assertEqual(set(self.scope), set(self.checker.EXPECTED_UNATTESTED_PATHS))
         self.assertNotIn("crates/psyche-core/src/contracts/mod.rs", self.scope)
+        self.assertNotIn("LICENSE", self.scope)
         self.assertNotIn(".github/workflows/ci.yml", self.scope)
         self.assertNotIn("scripts/check-g2-evidence.py", self.scope)
         self.assertNotIn("docs/G2-EVIDENCE.md", self.scope)
@@ -484,6 +485,58 @@ class ReadinessDeliveryTests(unittest.TestCase):
                                 verify(self.root, self.pinned)
                         else:
                             verify(self.root, self.pinned)
+
+    def prepare_license_proposal(self, *, edit=False, executable=False, extra_copy=False):
+        notice = self.root / self.checker.SITE_NOTICE_PATH
+        notice.parent.mkdir(parents=True)
+        # Read committed bytes, independent of checkout line-ending settings.
+        notice.write_bytes(subprocess.check_output(
+            ["git", "cat-file", "blob", self.checker.SITE_NOTICE_ENTRY[2]], cwd=ROOT
+        ))
+        base = self.commit("Record the existing site notice")
+        license_file = self.root / "LICENSE"
+        license_file.write_bytes(subprocess.check_output(
+            ["git", "cat-file", "blob", self.checker.ROOT_LICENSE_ENTRY[2]], cwd=ROOT
+        ))
+        if edit:
+            license_file.write_bytes(license_file.read_bytes().replace(b"2026", b"2027"))
+        if extra_copy:
+            (self.root / "CONTRIBUTING.md").write_bytes(notice.read_bytes())
+        self.git("add", "-A")
+        if executable:
+            self.git("update-index", "--chmod=+x", "LICENSE")
+        self.git("commit", "-qm", "Propose root license")
+        return base
+
+    def verify_license_proposal(self, base):
+        self.checker._validate_root_license(self.root)
+        self.checker._validate_readiness_operations(
+            self.root, base, self.checker._local_tree_entries(self.root, base),
+            self.checker._local_tree_entries(self.root, "HEAD"), self.scope,
+        )
+
+    def test_exact_protected_license_accepts_reviewed_copy(self):
+        base = self.prepare_license_proposal()
+        self.assertEqual(
+            self.git("diff", "--name-status", "--find-copies-harder", "-C", base, "HEAD"),
+            "C096\tsite/assets/LICENSE-threads.txt\tLICENSE",
+        )
+        self.verify_license_proposal(base)
+
+    def test_root_license_rejects_changed_text(self):
+        base = self.prepare_license_proposal(edit=True)
+        with self.assertRaisesRegex(self.checker.EvidenceError, "root LICENSE"):
+            self.verify_license_proposal(base)
+
+    def test_root_license_rejects_executable_mode(self):
+        base = self.prepare_license_proposal(executable=True)
+        with self.assertRaisesRegex(self.checker.EvidenceError, "root LICENSE"):
+            self.verify_license_proposal(base)
+
+    def test_approved_license_does_not_authorize_another_copy(self):
+        base = self.prepare_license_proposal(extra_copy=True)
+        with self.assertRaisesRegex(self.checker.EvidenceError, "to CONTRIBUTING.md"):
+            self.verify_license_proposal(base)
 
     def test_initial_readiness_addition(self):
         self.assert_delivery("first addition")
