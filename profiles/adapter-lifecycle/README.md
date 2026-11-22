@@ -4,7 +4,7 @@ The kit drives a consumer-supplied executable through a synthetic launch, approv
 
 ## Build and consume
 
-Fetch the immutable receipt-profile commit named in `qualify.sh`. From a clean producer checkout, run `bash profiles/adapter-lifecycle/qualify.sh /tmp/adapter-lifecycle.pyz`. It builds from two independent exports and compares the entire archive and every member. Its manifest pins the embedded replay comparator, launch golden, schemas and vectors. Obtain the outer SHA-256 from the reviewed consumer pin and verify it before executing Python.
+Fetch the immutable receipt-profile commit named in `qualify.sh`. From a clean producer checkout, run `bash profiles/adapter-lifecycle/qualify.sh /tmp/adapter-lifecycle.pyz`. It builds from two independent exports and compares the entire archive and every member. It also runs the descendant and sibling path controls against the packaged receipt checker and tests exact JSON execution counts through the lifecycle command at first delivery, denial, replay and rollback. Its manifest pins the embedded replay comparator, launch golden, schemas and vectors. Obtain the outer SHA-256 from the reviewed consumer pin and verify it before executing Python.
 
 From an empty offline directory, run `python3 -I /absolute/path/adapter-lifecycle.pyz --sha256 "$PIN" -- /absolute/path/to/adapter`. Arguments following the executable are passed literally. The caller enforces network isolation. Each phase is a fresh process in the same temporary scenario directory. Standard input and output each carry one JSON object. A successful run prints a bounded transcript, including fixture denials and a receipt digest for each observation. Errors produce a nonzero exit and a bounded reason.
 

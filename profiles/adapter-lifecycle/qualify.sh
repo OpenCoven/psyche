@@ -2,7 +2,7 @@
 # Called from the producer checkout. Both inputs are immutable Git objects.
 set -euo pipefail
 output=${1:?supply an absolute output archive path}
-receipt=18d84903a28aa1d8fcc055864f245561c436ded5
+receipt=7babd21136bc4fdd85f03cf9505337f1099f88ac
 head=$(git rev-parse HEAD)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
@@ -29,4 +29,5 @@ if a != b:
     raise SystemExit('reproducibility mismatch')
 print(json.dumps(a, sort_keys=True))
 PY
+python3 -I "$scratch/a/lifecycle/profiles/adapter-lifecycle/test_wire.py" "$scratch/a/kit.pyz"
 cp "$scratch/a/kit.pyz" "$output"

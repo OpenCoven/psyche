@@ -6,7 +6,7 @@ import sys
 from zipfile import ZipFile, ZipInfo
 
 HERE = Path(__file__).resolve().parent
-REPLAY_SHA = 'faf50e5eac4b06c9e8ea6c4dfb78c3f5f8eee3199db6f9e820ac7fce307e4c53'
+REPLAY_SHA = '6ee74ca1f7e67b2f1c8f6afacac921318a8121b1cd4eb0f970081f4714bfb3a8'
 PROFILE = 'psyche.experimental.adapter-lifecycle.v1'
 
 
@@ -25,7 +25,7 @@ def build(replay, output):
     for name in ('adapter-input.schema.json', 'adapter-output.schema.json'):
         files[name] = canonical(json.loads((HERE / name).read_bytes()))
     manifest = {'profile': PROFILE, 'status': 'experimental', 'supported_readers': [1],
-                'receipt_source': '18d84903a28aa1d8fcc055864f245561c436ded5',
+                'receipt_source': '7babd21136bc4fdd85f03cf9505337f1099f88ac',
                 'files': {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}}
     files['manifest.json'] = canonical(manifest)
     with ZipFile(output, 'w') as bundle:

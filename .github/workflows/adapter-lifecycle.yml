@@ -11,7 +11,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - name: Fetch immutable receipt profile source
-        run: git fetch --no-tags origin 18d84903a28aa1d8fcc055864f245561c436ded5
+        run: git fetch --no-tags origin 7babd21136bc4fdd85f03cf9505337f1099f88ac
       - name: Compare independent builds and member hashes
         run: bash profiles/adapter-lifecycle/qualify.sh "$RUNNER_TEMP/adapter-lifecycle.pyz"
       - uses: actions/upload-artifact@v4

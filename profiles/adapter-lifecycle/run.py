@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import re
 import subprocess
@@ -46,7 +47,7 @@ def invoke(argv, root, message=None):
                                          'TSX_DISABLE_CACHE': '1', 'PYTHONDONTWRITEBYTECODE': '1'})
         require(result.returncode == 0, 'child_failed')
         require(output.stat().st_size <= LIMIT, 'oversize_output')
-        return json.loads(output.read_bytes(), object_pairs_hook=unique)
+        return json.loads(output.read_bytes(), object_pairs_hook=unique, parse_float=Decimal)
 
 
 def snapshot(root):
@@ -64,8 +65,16 @@ def load_bundle(path, pin):
     return files
 
 
+def check_count(value, expected, error):
+    # JSON Schema accepts any spelling of an integral number. Compare before
+    # converting so a tiny fraction cannot round to one or a large exponent expand.
+    count = value.get('executions') if isinstance(value, dict) else None
+    require(type(count) in (int, Decimal) and count == expected, error)
+    value['executions'] = expected
+
+
 def observation(value, expected, schema):
-    require(isinstance(value, dict) and type(value.get('executions')) is int, 'invalid_observation')
+    check_count(value, expected['executions'], 'invalid_observation')
     require(set(value) == set(schema['oneOf'][1]['required']) | {'request_id', 'request_digest'}, 'invalid_fields')
     for key in ('task_id', 'action_id', 'approval_id', 'approval_digest', 'receipt_hex', 'request_id', 'request_digest'):
         rule = schema['properties'][key]
@@ -89,8 +98,8 @@ def qualify(files, adapter, root, results):
     def check_denial(case, workspace, **changes):
         before = snapshot(workspace)
         out = invoke(adapter, workspace, {**message, **changes})
-        require(isinstance(out, dict) and type(out.get('executions')) is int and out == vectors[case],
-                case + '_wrong_denial')
+        check_count(out, vectors[case]['executions'], case + '_wrong_denial')
+        require(out == vectors[case], case + '_wrong_denial')
         if changes['phase'] == 'replay' or case == 'unknown_version':
             require(before == snapshot(workspace), case + '_mutated_store')
         results.append(dict(case=case, **out))
@@ -116,7 +125,9 @@ def qualify(files, adapter, root, results):
         for phase, observed in [('first', first), ('replay', None), ('rollback', None)]:
             if observed is None:
                 observed = invoke(adapter, workspace, dict(message, phase=phase, task_id=first['task_id'], action_id=first['action_id']))
-            require(observed == (native_binding if phase == 'rollback' else first) and type(observed['executions']) is int, case + '_' + phase + '_diverged')
+            error = case + '_' + phase + '_diverged'
+            check_count(observed, vectors[case]['executions'], error)
+            require(observed == (native_binding if phase == 'rollback' else first), error)
             path = first_path if phase == 'first' else root / 'current.json'
             path.write_text(json.dumps({'schema_version': 'psyche.experimental.receipt-replay.v1',
                 'request_id': first['request_id'], 'request_digest': first['request_digest'],
@@ -140,7 +151,7 @@ def main():
         files = load_bundle(Path(sys.argv[0]), args.sha256)
         with TemporaryDirectory() as root:
             qualify(files, argv, Path(root), results)
-    except (OSError, ValueError, KeyError, TypeError, BadZipFile, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, KeyError, TypeError, InvalidOperation, BadZipFile, subprocess.TimeoutExpired) as exc:
         print(json.dumps(dict(result='failed', code=str(exc) if isinstance(exc, Failure) else 'invalid_run', cases=results)))
         return 1
     print(json.dumps(dict(result='passed', profile=PROFILE, sha256=args.sha256, cases=results), sort_keys=True))
