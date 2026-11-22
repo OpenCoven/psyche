@@ -116,10 +116,16 @@ def qualify(root, raw, comparator, adapter, observer, rows):
         denied = scenario(fault)
         denied.refuse("initial", "first", code, 0, readonly=False, fault=fault)
         binding, first_native = denied.read_native()
+        require(first_native.get("refusal") == code, "missing_native_refusal")
         ids = dict(task_id=binding.task_id, action_id=binding.action_id)
         for phase in ("replay", "rollback"):
-            denied.refuse("reopen", phase, code, 0, **ids)
-            require(denied.read_native() == (binding, first_native), "refused_native_state_changed")
+            denied.refuse("reopen", phase, code, 0, readonly=phase == "rollback", **ids)
+            reopened_binding, reopened = denied.read_native()
+            require(reopened_binding == binding and reopened.get("refusal") == code and
+                    reopened.get("state") == "failed", "refused_native_state_changed")
+            if phase == "rollback":
+                require(reopened == first_native, "refused_native_state_changed")
+            first_native = reopened
     request_path = root / "request.json"
     request_path.write_bytes(raw)
     for name, state in [("success", "succeeded"), ("lost_ack", "unknown")]:
