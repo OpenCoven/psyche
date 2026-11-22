@@ -276,9 +276,27 @@ pub(crate) fn enforce_database_permissions(path: &Path) -> Result<(), StoreError
     Ok(())
 }
 
+fn read_sidecar<T>(mut read: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    // Windows can deny access while SQLite removes a sidecar as a connection
+    // closes. Retry the same operation so only a real NotFound signals absence.
+    #[cfg(windows)]
+    {
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        for delay_ms in [1, 4, 16] {
+            match read() {
+                Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+                result => return result,
+            }
+        }
+    }
+    read()
+}
+
 pub(crate) fn validate_sidecars(path: &Path) -> Result<(), StoreError> {
     for sidecar in sqlite_sidecar_paths(path) {
-        match fs::symlink_metadata(sidecar) {
+        match read_sidecar(|| fs::symlink_metadata(&sidecar)) {
             Ok(metadata) => validate_database_metadata(&metadata)?,
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(StoreError::file_operation(error)),
@@ -383,7 +401,7 @@ enum WalFileVersion {
 }
 
 fn existing_file_len(path: &Path) -> Result<Option<u64>, StoreError> {
-    match fs::symlink_metadata(path) {
+    match read_sidecar(|| fs::symlink_metadata(path)) {
         Ok(metadata) => {
             validate_database_metadata(&metadata)?;
             Ok(Some(metadata.len()))
@@ -427,7 +445,7 @@ fn wal_file_user_version(
     path: &Path,
     expected_page_size: u32,
 ) -> Result<WalFileVersion, StoreError> {
-    let file = match File::open(path) {
+    let file = match read_sidecar(|| File::open(path)) {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Ok(WalFileVersion::Absent);
@@ -532,7 +550,7 @@ fn read_u32_be(bytes: &[u8]) -> u32 {
 }
 
 fn enforce_existing_sidecar_permissions(path: &Path) -> Result<(), StoreError> {
-    match fs::symlink_metadata(path) {
+    match read_sidecar(|| fs::symlink_metadata(path)) {
         Ok(metadata) => validate_database_metadata(&metadata)?,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(StoreError::file_operation(error)),
@@ -687,6 +705,31 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{configure, ensure_local_filesystem, open_read_write, prepare};
+
+    #[cfg(windows)]
+    #[test]
+    fn sidecar_read_rechecks_transient_denial_and_preserves_terminal_errors() {
+        use std::io::Error;
+
+        // Each sequence must be consumed exactly, including the final error.
+        for (codes, expected) in [
+            (&[5, 0][..], 0),
+            (&[5, 2][..], 2),
+            (&[5, 5, 5, 5][..], 5),
+            (&[32][..], 32),
+        ] {
+            let mut sequence = codes.iter();
+            let result = super::read_sidecar(|| match *sequence.next().unwrap() {
+                0 => Ok(()),
+                code => Err(Error::from_raw_os_error(code)),
+            });
+            assert_eq!(
+                result.err().map_or(0, |e| e.raw_os_error().unwrap()),
+                expected
+            );
+            assert_eq!(sequence.next(), None);
+        }
+    }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
