@@ -26,7 +26,7 @@ Psyche Build is the first planned reference client; it is not the protocol owner
 - Deterministic evidence model: `docs/TESTING.md`
 - Code map, where each record, digest, lifecycle rule and its tests live: `docs/CODEMAP.md`
 - Historic G2 evidence: `docs/G2-EVIDENCE.md`
-- Current G2 scope policy and attestation status: `scripts/g2-attestation-scope.json`, `docs/G2-SCOPE-EVIDENCE.md`
+- Current G2 scope policy, what a protected change requires, and attestation status: `docs/G2-ATTESTATION-SCOPE.md`, `scripts/g2-attestation-scope.json`, `docs/G2-SCOPE-EVIDENCE.md`
 - CLI boundary: `docs/CLI.md`
 - Configuration: `docs/CONFIGURATION.md`
 - Program roadmap: `docs/ROADMAP.md`

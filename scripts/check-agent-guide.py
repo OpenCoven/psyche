@@ -11,7 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 HELP = "cargo run --locked -p psyche-cli --bin psyche -- --help"
 ARCHITECTURE = "docs/ARCHITECTURE.md"
 CODEMAP = "docs/CODEMAP.md"
-CONTRACTS = "crates/psyche-core/src/contracts/mod.rs"
+CONTRACTS_DIR = "crates/psyche-core/src/contracts"
+CONTRACTS = f"{CONTRACTS_DIR}/mod.rs"
+RECORDS = "crates/psyche-store/src/records.rs"
+BINDINGS = "crates/psyche-store/src/execution_bindings.rs"
 POISON = ("GIT_DIR", "GIT_WORK_TREE")
 
 
@@ -42,43 +45,95 @@ def read(root, path):
     return (root / path).read_text(encoding="utf-8")
 
 
-def declares(source, suffix, symbol):
-    """Whether a file's text declares `symbol`; `Owner::member` checks both."""
+WORD = re.compile(r"[A-Za-z0-9_]+")
+# Each pattern captures, at every position, the whole word that follows a
+# declaration keyword, so a lookup in the captured set is exactly a search
+# for the keyword followed by that word. The lookahead keeps overlapping
+# matches such as `struct type Name`.
+DECLARATIONS = {
+    "def": re.compile(r"(?=\bdef\s+(\w+))"),
+    "fn": re.compile(r"(?=\b(?:fn|mod)\s+(\w+))"),
+    "macro": re.compile(r"(?=\bmacro_rules!\s+(\w+))"),
+    "field": re.compile(r"(?=\b(\w+):(?!:))"),
+    "const": re.compile(r"(?=\b(?:const|static)\s+(\w+))"),
+    "type": re.compile(r"(?=\b(?:struct|enum|trait|type|union)\s+(\w+))"),
+}
+INDEXES = {}
 
-    def word(name):
-        return re.search(
-            rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", source
+
+class SourceIndex:
+    """A file's whole words and declared names, computed once per text."""
+
+    def __init__(self, source):
+        self.source = source
+        self.words = set(WORD.findall(source))
+        self.found = {}
+
+    def word(self, name):
+        if WORD.fullmatch(name):
+            return name in self.words
+        return bool(
+            re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", self.source
+            )
         )
 
+    def declared(self, kind, name):
+        if kind not in self.found:
+            self.found[kind] = set(DECLARATIONS[kind].findall(self.source))
+        return name in self.found[kind]
+
+
+def source_index(source):
+    if source not in INDEXES:
+        INDEXES[source] = SourceIndex(source)
+    return INDEXES[source]
+
+
+def declares(source, suffix, symbol):
+    """Whether a file's text declares `symbol`, by textual match only.
+
+    Every `::` part must occur as a whole word and the last part must follow
+    a declaration keyword somewhere in the file, comments and strings
+    included. `Owner::member` does not tie the member to the owner.
+    """
+    index = source_index(source)
     parts = symbol.split("::")
     last = parts[-1]
-    if not all(word(part) for part in parts):
+    if not all(index.word(part) for part in parts):
         return False
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", last):
         return True
     lower = re.fullmatch(r"[a-z_][a-z0-9_]*", last)
     if suffix == ".py" and lower:
-        return bool(re.search(rf"\bdef\s+{last}\b", source))
+        return index.declared("def", last)
     if suffix != ".rs":
         return True
     if lower:
         # A function, test, module or macro; `Owner::member` may be a field.
-        field = rf"|\b{last}:(?!:)" if len(parts) > 1 else ""
-        pattern = rf"\b(?:fn|mod)\s+{last}\b|\bmacro_rules!\s+{last}\b{field}"
-    elif re.fullmatch(r"[A-Z][A-Z0-9_]*", last):
-        pattern = rf"\b(?:const|static)\s+{last}\b"
-    elif len(parts) == 1:
-        pattern = rf"\b(?:struct|enum|trait|type|union)\s+{last}\b"
-    else:
-        return True  # `Enum::Variant`: both names occur as whole words.
-    return bool(re.search(pattern, source))
+        return (
+            index.declared("fn", last)
+            or index.declared("macro", last)
+            or (len(parts) > 1 and index.declared("field", last))
+        )
+    if re.fullmatch(r"[A-Z][A-Z0-9_]*", last):
+        return index.declared("const", last)
+    if len(parts) == 1:
+        return index.declared("type", last)
+    return True  # `Enum::Variant`: both names occur as whole words.
+
+
+SYMBOL = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
 
 
 def codemap_references(text):
-    """Yield (line, token, symbols) for every backticked span in the map.
+    """Yield (line, token, symbols, stray) for every backticked span in the map.
 
     A reference is `path` or `path` :: `A`, `B`. Spans pair left to right, so
     the symbols are exactly the spans joined to a path by ` :: ` and `, `.
+    `stray` is (separator, name) when the next span looks like one more
+    symbol but is joined by other spaces, colons or commas, which would
+    otherwise leave it unchecked.
     """
     for number, line in enumerate(text.splitlines(), 1):
         spans = list(re.finditer(r"`([^`]*)`", line))
@@ -95,13 +150,28 @@ def codemap_references(text):
                 symbols.append(spans[index][1])
                 index += 1
                 joiner = ", "
-            yield number, token, symbols
+            stray = None
+            if index < len(spans) and ("/" in token or symbols):
+                separator = line[spans[index - 1].end() : spans[index].start()]
+                if re.fullmatch(r"[\s:,]*", separator) and SYMBOL.fullmatch(
+                    spans[index][1]
+                ):
+                    stray = (separator, spans[index][1])
+            yield number, token, symbols, stray
 
 
 def validate_codemap_references(root, text):
     sources = {}
-    for number, token, symbols in codemap_references(text):
+    for number, token, symbols, stray in codemap_references(text):
         row = f"{CODEMAP}:{number}:"
+        for span in [token] + symbols:
+            require("\\" not in span, f"{row} backslash in a backticked token: {span}")
+        if stray:
+            separator, name = stray
+            raise ValueError(
+                f"{row} separator {separator!r} before {name} is neither ' :: '"
+                " after a path nor ', ' between symbols"
+            )
         if "/" not in token:
             require(not symbols, f"{row} `::` must follow a repository path: {token}")
             continue
@@ -124,8 +194,46 @@ def validate_codemap_references(root, text):
             )
 
 
+NUMBERS = (
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen"
+    " fourteen fifteen sixteen seventeen eighteen nineteen twenty"
+).split()
+ORDINALS = {1: "first", 2: "second", 3: "third", 5: "fifth", 8: "eighth"}
+ORDINALS.update({9: "ninth", 12: "twelfth", 20: "twentieth"})
+
+
+def number(value):
+    return NUMBERS[value] if value < len(NUMBERS) else str(value)
+
+
+def ordinal(value):
+    return ORDINALS.get(value, number(value) + "th")
+
+
+def store_tables(root):
+    """Which schema kinds `Store::insert` diverts to the binding revisions."""
+    records = read(root, RECORDS)
+    found = re.search(r"\n    fn insert_with_status\((.*?)\n    \}\n", records, re.S)
+    named = set(re.findall(r"CanonicalDocument::(\w+)", found[1])) if found else set()
+    diverted = set(
+        re.findall(
+            r"if let CanonicalDocument::(\w+)\(\w+\) = document \{"
+            r"\s*return execution_bindings::insert\(",
+            found[1] if found else "",
+        )
+    )
+    require(
+        diverted
+        and named == diverted
+        and "INSERT INTO canonical_records" in records
+        and "INSERT INTO execution_binding_revisions" in read(root, BINDINGS),
+        f"{RECORDS}: cannot parse the table routing in insert_with_status",
+    )
+    return diverted
+
+
 def record_kinds(root):
-    """Map each RecordKind to its prefix and schema strings, failing closed."""
+    """Map each RecordKind to its table cells and the registry, failing closed."""
     source = read(root, CONTRACTS)
 
     def body(name, signature):
@@ -170,17 +278,77 @@ def record_kinds(root):
         and all(schema in names for schema, _ in stored),
         f"{CONTRACTS}: RecordKind, prefix and schema registry disagree",
     )
-    return {
-        kind: (
-            prefixes[kind],
-            sorted(
-                f"psyche.{names[schema]}.v{major[1]}"
-                for schema, stored_as in stored
-                if stored_as == kind
-            ),
+    listed = re.search(r"const ALL: \[SchemaKind; (\d+)\] = \[(.*?)\];", source, re.S)
+    entries = re.findall(r"SchemaKind::(\w+)", listed[2]) if listed else []
+    require(
+        listed
+        and int(listed[1]) == len(entries)
+        and sorted(entries) == sorted(names),
+        f"{CONTRACTS}: SchemaKind::ALL does not list exactly the SchemaKind::name arms",
+    )
+    documents = dict(
+        re.findall(
+            r"^\s+(\w+)\((\w+)\),$",
+            body("CanonicalDocument", r"pub enum CanonicalDocument"),
+            re.M,
         )
-        for kind in variants
+    )
+    missing = sorted(set(names) - set(documents))
+    require(
+        not missing,
+        f"{CONTRACTS}: CanonicalDocument has no variant for {', '.join(missing)}",
+    )
+    modules = {}
+    for module, group, single in re.findall(
+        r"^pub use (\w+)::(?:\{([^}]*)\}|(\w+));$", source, re.M
+    ):
+        for name in re.findall(r"\w+", group or single):
+            modules[name] = module
+    unexported = sorted({t for t in documents.values() if t not in modules})
+    require(
+        not unexported,
+        f"{CONTRACTS}: no `pub use` exports {', '.join(unexported)}",
+    )
+    diverted = store_tables(root)
+
+    def schema(kind):
+        return f"psyche.{names[kind]}.v{major[1]}"
+
+    def rust_type(kind):
+        held = documents[kind]
+        return f"`{CONTRACTS_DIR}/{modules[held]}.rs` :: `{held}`"
+
+    kinds = {}
+    for kind in variants:
+        schemas = sorted((s for s, stored_as in stored if stored_as == kind), key=schema)
+        kinds[kind] = {
+            "prefix": prefixes[kind],
+            "schemas": [schema(s) for s in schemas],
+            "types": "; ".join(rust_type(s) for s in schemas),
+            "tables": ", ".join(
+                sorted(
+                    {
+                        "`execution_binding_revisions`"
+                        if s in diverted
+                        else "`canonical_records`"
+                        for s in schemas
+                    }
+                )
+            ),
+        }
+    unstored = [s for s in names if s not in {s for s, _ in stored}]
+    registry = {
+        "variants": len(variants),
+        "schemas": len(names),
+        "unstored": [(schema(s), documents[s]) for s in unstored],
     }
+    return kinds, registry
+
+
+def cell(text):
+    """A table cell as written, without backticks when it is one code span."""
+    found = re.fullmatch(r"`([^`]*)`", text)
+    return found[1] if found else text
 
 
 def validate_codemap_kinds(root, text):
@@ -188,29 +356,68 @@ def validate_codemap_kinds(root, text):
     section = re.search(r"^## Record kinds\n(.*?)(?=^## |\Z)", text, re.S | re.M)
     require(section, f"{where} section not found")
     rows = {}
-    for kind, prefix, schemas in re.findall(
-        r"^\| `([A-Z][A-Za-z0-9]*)` \| `([^`]*)` \| (`[^|]*`) \|",
-        section[1],
-        re.M,
+    for kind, rest in re.findall(
+        r"^\| `([A-Z][A-Za-z0-9]*)` \| (`.*) \|$", section[1], re.M
     ):
         require(kind not in rows, f"{where} duplicate row {kind}")
-        rows[kind] = (prefix, sorted(re.findall(r"`([^`]*)`", schemas)))
+        cells = rest.split(" | ")
+        require(len(cells) == 4, f"{where} {kind} row does not have five columns")
+        rows[kind] = cells
     require(rows, f"{where} table not found")
-    expected = record_kinds(root)
+    expected, registry = record_kinds(root)
     missing = sorted(set(expected) - set(rows))
     extra = sorted(set(rows) - set(expected))
     require(not missing, f"{where} missing {', '.join(missing)}")
     require(not extra, f"{where} extra {', '.join(extra)}")
-    for kind, (prefix, schemas) in expected.items():
+    for kind, want in expected.items():
+        prefix, schemas, types, tables = rows[kind]
         require(
-            rows[kind][0] == prefix,
-            f"{where} {kind} prefix is {rows[kind][0]}, RecordKind::prefix says {prefix}",
+            cell(prefix) == want["prefix"],
+            f"{where} {kind} prefix is {cell(prefix)},"
+            f" RecordKind::prefix says {want['prefix']}",
+        )
+        schemas = sorted(re.findall(r"`([^`]*)`", schemas))
+        require(
+            schemas == want["schemas"],
+            f"{where} {kind} schema is {', '.join(schemas)},"
+            f" the registry says {', '.join(want['schemas'])}",
         )
         require(
-            rows[kind][1] == schemas,
-            f"{where} {kind} schema is {', '.join(rows[kind][1])},"
-            f" the registry says {', '.join(schemas)}",
+            types == want["types"],
+            f"{where} {kind} Rust type is {types}, CanonicalDocument holds {want['types']}",
         )
+        require(
+            tables == want["tables"],
+            f"{where} {kind} table is {cell(tables)},"
+            f" the store writes it to {cell(want['tables'])}",
+        )
+    sentence = re.search(
+        r"^(\w+) `RecordKind` variants, (\w+) schema strings\."
+        r" The (\w+), `([^`]*)`, decodes to `(\w+)` and is never stored\.$",
+        section[1],
+        re.M,
+    )
+    require(sentence, f"{where} count sentence not found")
+    variants, schemas, nth, string, held = sentence.groups()
+    require(
+        variants.lower() == number(registry["variants"]),
+        f"{where} says {variants} RecordKind variants, RecordKind has"
+        f" {registry['variants']}",
+    )
+    require(
+        schemas.lower() == number(registry["schemas"]),
+        f"{where} says {schemas} schema strings, SchemaKind::name has"
+        f" {registry['schemas']}",
+    )
+    unstored = [
+        f"the {ordinal(registry['schemas'])}, {name}, decodes to {document}"
+        for name, document in registry["unstored"]
+    ]
+    require(
+        unstored == [f"the {nth}, {string}, decodes to {held}"],
+        f"{where} says the {nth}, {string}, decodes to {held} and is never stored;"
+        f" the registry says {'; '.join(unstored) or 'every schema is stored'}",
+    )
 
 
 def validate_architecture(root, crates, edges):
@@ -296,6 +503,12 @@ def reject(check, label, expected, exact):
         matched = str(exc) == expected if exact else expected in str(exc)
         require(matched, f"unexpected failure: {exc}")
         print(f"rejected {label}: {exc}")
+    except Exception as exc:
+        # A check removed upstream of a lookup surfaces here as a crash.
+        raise AssertionError(
+            f"{label} crashed instead of failing with {expected!r}:"
+            f" {type(exc).__name__}: {exc}"
+        ) from exc
     else:
         raise AssertionError(f"accepted drift in {label}")
 
@@ -456,6 +669,199 @@ def main():
                     CODEMAP
                     + " record kinds: Addon schema is psyche.addons.v1,"
                     + " the registry says psyche.addon.v1",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "| `crates/psyche-core/src/contracts/foundation.rs` :: `Budget` |",
+                    "| `crates/psyche-core/src/contracts/foundation.rs` :: `Approval` |",
+                    CODEMAP
+                    + " record kinds: Budget Rust type is"
+                    + " `crates/psyche-core/src/contracts/foundation.rs` :: `Approval`,"
+                    + " CanonicalDocument holds"
+                    + " `crates/psyche-core/src/contracts/foundation.rs` :: `Budget`",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "`ExecutionBinding` | `execution_binding_revisions` |",
+                    "`ExecutionBinding` | `canonical_records` |",
+                    CODEMAP
+                    + " record kinds: Attempt table is canonical_records,"
+                    + " the store writes it to execution_binding_revisions",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "Fifteen `RecordKind` variants",
+                    "Sixteen `RecordKind` variants",
+                    CODEMAP
+                    + " record kinds: says Sixteen RecordKind variants, RecordKind has 15",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "variants, sixteen schema strings.",
+                    "variants, seventeen schema strings.",
+                    CODEMAP
+                    + " record kinds: says seventeen schema strings,"
+                    + " SchemaKind::name has 16",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "decodes to `ErrorEnvelope` and is never stored.",
+                    "decodes to `Intent` and is never stored.",
+                    CODEMAP
+                    + " record kinds: says the sixteenth, psyche.error.v1, decodes to"
+                    + " Intent and is never stored; the registry says the sixteenth,"
+                    + " psyche.error.v1, decodes to ErrorEnvelope",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "Fifteen `RecordKind` variants, sixteen",
+                    "Fifteen RecordKind variants, sixteen",
+                    CODEMAP + " record kinds: count sentence not found",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "| `bud_` | `psyche.budget.v1` |",
+                    "| `bud_` `psyche.budget.v1` |",
+                    CODEMAP + " record kinds: Budget row does not have five columns",
+                    True,
+                ),
+                (
+                    CONTRACTS,
+                    "        SchemaKind::Addon,\n",
+                    "",
+                    CONTRACTS
+                    + ": SchemaKind::ALL does not list exactly the SchemaKind::name arms",
+                    True,
+                ),
+                (
+                    CONTRACTS,
+                    '            SchemaKind::Addon => "addon",\n',
+                    "",
+                    CONTRACTS + ": RecordKind, prefix and schema registry disagree",
+                    True,
+                ),
+                (
+                    CONTRACTS,
+                    "const SUPPORTED_MAJOR: u16 = 1;",
+                    "const SUPPORTED_MAJOR: u16 = ONE;",
+                    CONTRACTS + ": cannot parse SUPPORTED_MAJOR",
+                    True,
+                ),
+                (
+                    CONTRACTS,
+                    "    Addon(Addon),\n",
+                    "",
+                    CONTRACTS + ": CanonicalDocument has no variant for Addon",
+                    True,
+                ),
+                (
+                    CONTRACTS,
+                    "pub use foundation::{Addon, ",
+                    "pub use foundation::{",
+                    CONTRACTS + ": no `pub use` exports Addon",
+                    True,
+                ),
+                (
+                    RECORDS,
+                    "return execution_bindings::insert(",
+                    "return execution_bindings::insert_binding(",
+                    RECORDS + ": cannot parse the table routing in insert_with_status",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "`crates/psyche-core/src/digest.rs` :: `canonical_bytes`",
+                    "`crates\\psyche-core\\src\\digest.rs` :: `canonical_bytes`",
+                    CODEMAP
+                    + ":{line}: backslash in a backticked token:"
+                    + " crates\\psyche-core\\src\\digest.rs",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "`crates/psyche-core/src/digest.rs` :: `canonical_bytes`",
+                    "`crates/psyche-core/src/digest.rs`::`canonical_octets`",
+                    CODEMAP
+                    + ":{line}: separator '::' before canonical_octets is neither"
+                    + " ' :: ' after a path nor ', ' between symbols",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "`canonical_bytes`, `digest`, `Sha256Digest`,",
+                    "`canonical_bytes`,`canonical_octets`, `Sha256Digest`,",
+                    CODEMAP
+                    + ":{line}: separator ',' before canonical_octets is neither"
+                    + " ' :: ' after a path nor ', ' between symbols",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "`crates/psyche-core/src/digest.rs` :: `canonical_bytes`",
+                    "`crates/psyche-core/src/` :: `canonical_bytes`",
+                    CODEMAP + ":{line}: symbols need a file: crates/psyche-core/src/",
+                    True,
+                ),
+                # One control per declaration rule. Each name occurs in the
+                # file as a whole word, so only the rule itself rejects it.
+                (
+                    CODEMAP,
+                    "`compare`, `observation` compares",
+                    "`compare`, `hashlib` compares",
+                    CODEMAP
+                    + ":{line}: symbol hashlib is not declared in"
+                    + " profiles/receipt-replay/run.py",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "`Sha256Digest::parse`",
+                    "`Sha256Digest::serde_json_canonicalizer`",
+                    CODEMAP
+                    + ":{line}: symbol Sha256Digest::serde_json_canonicalizer is not"
+                    + " declared in crates/psyche-core/src/digest.rs",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "Registry and decoder: `crates/psyche-core/src/contracts/mod.rs`"
+                    + " :: `RecordKind`, `RecordKind::ALL`,",
+                    "Registry and decoder: `crates/psyche-core/src/contracts/mod.rs`"
+                    + " :: `RecordKind`, `RecordKind::ULID`,",
+                    CODEMAP
+                    + ":{line}: symbol RecordKind::ULID is not declared in "
+                    + CONTRACTS,
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "`digest`, `Sha256Digest`, `Sha256Digest::parse`",
+                    "`digest`, `Serialize`, `Sha256Digest::parse`",
+                    CODEMAP
+                    + ":{line}: symbol Serialize is not declared in"
+                    + " crates/psyche-core/src/digest.rs",
+                    True,
+                ),
+                (
+                    ARCHITECTURE,
+                    "```text\n",
+                    "```txt\n",
+                    ARCHITECTURE + " diagram not found",
+                    True,
+                ),
+                (
+                    ARCHITECTURE,
+                    "psyche-core <- psyche-config\n",
+                    "psyche-core -> psyche-config\n",
+                    ARCHITECTURE
+                    + " diagram has an unreadable line: psyche-core -> psyche-config",
                     True,
                 ),
                 (
