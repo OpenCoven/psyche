@@ -128,6 +128,35 @@ Also outstanding for G12: this repository declares MIT in both `package.json`
 and `Cargo.toml` but contains no `LICENSE` file, so the tarball would ship a
 licence claim with no licence text.
 
+## Test the installed launcher
+
+Run `python3 scripts/smoke-installed-npm.py` from a clean repository checkout
+with the pinned Rust toolchain, Node.js and npm. The command builds the host CLI
+in release mode, packs temporary companion and wrapper tarballs, and installs
+them offline in disposable directories. It exercises the installed launcher,
+checks both digest rejections and emits the source revision, measured platform
+and artifact hashes.
+
+Before it builds anything, the script refuses to continue when the active
+`rustc` or `cargo` is not the version pinned in `rust-toolchain.toml`, when the
+host platform has no companion package or checksum entry in this wrapper, or
+when the platform keys listed in `.github/workflows/native-npm-smoke.yml` differ
+from the keys this wrapper declares.
+
+CI sets `PSYCHE_EXPECTED_NPM_PLATFORM` for each of the five supported platforms.
+The script compares that value with Node's `process.platform` and `process.arch`
+on the runner, so a runner whose Node reports a different platform or
+architecture fails the check. The target of the built binary is not inspected.
+
+This is a rehearsal, not release verification. The wrapper packed from this
+directory is only shown to refuse the freshly built binary, because its digests
+are still placeholders. The launch that succeeds uses a temporary wrapper copy
+whose digest for the host platform is replaced with the one measured from that
+local build, and a companion package the script assembles itself. Nothing here
+exercises a published package, a registry install that selects the companion
+through `optionalDependencies`, or release signing and provenance. The script
+stops if the host platform's placeholder digest has been replaced.
+
 ## Installation
 
 **`npm install @opencoven/psyche` cannot currently succeed from a registry.**
