@@ -513,7 +513,7 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         self.assert_rejected(overrides={path: mutated})
 
     def test_reviewed_workflow_requires_read_only_contents_permission(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         permissions = "permissions:\n  contents: read\n"
         self.assertEqual(workflow.count(permissions), 1)
         self.checker.validate_ci_workflow(workflow)
