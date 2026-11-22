@@ -8,9 +8,8 @@ from pathlib import Path
 
 TEST = "concurrent_first_open_applies_migration_once"
 MIGRATIONS = Path("crates/psyche-store/tests/migrations.rs")
-CONNECTION = Path("crates/psyche-store/src/connection.rs")
-BASE = "ad22ada23473d120578985f26f27f23e1fde633c"
-TRIALS = 120
+BASE = "aa08cd789f78bbece91b5f702b8e81a3fe9b45e8"
+TRIALS = 160
 
 
 def output(*cmd):
@@ -23,41 +22,6 @@ def binary():
     return next(event["executable"] for line in build.splitlines()
                 if (event := json.loads(line)).get("executable")
                 and event["target"]["name"] == "migrations")
-
-
-def instrument_errors():
-    source = CONNECTION.read_text(encoding="utf-8")
-    lines = [line.replace("StoreError::file_operation", f"trace_file_error({number})")
-             for number, line in enumerate(source.splitlines(keepends=True), start=1)]
-    assert source.count("StoreError::file_operation") == 20
-    assert "fs::symlink_metadata(sidecar)" in lines[280]
-    lines[280] = lines[280].replace("symlink_metadata(sidecar)", "symlink_metadata(&sidecar)")
-    assert "trace_file_error(284)(error)" in lines[283]
-    lines[283] = lines[283].replace("trace_file_error(284)(error)", "observe_sidecar(&sidecar, error)")
-    lines.append("""
-fn observe_sidecar(path: &Path, error: std::io::Error) -> StoreError {
-    let role = ["-journal", "-wal", "-shm"].into_iter()
-        .find(|suffix| path.as_os_str().to_string_lossy().ends_with(suffix)).unwrap_or("unknown");
-    let first_code = error.raw_os_error();
-    for delay in [0, 2, 10] {
-        std::thread::sleep(std::time::Duration::from_millis(delay));
-        match std::fs::symlink_metadata(path) {
-            Ok(_) => eprintln!("sidecar={role} first={first_code:?} delay_ms={delay} next=present"),
-            Err(next) => eprintln!("sidecar={role} first={first_code:?} delay_ms={delay} next={:?}", next.raw_os_error()),
-        }
-    }
-    trace_file_error(284)(error)
-}
-""")
-    lines.append("""
-fn trace_file_error(line: u32) -> impl FnOnce(std::io::Error) -> StoreError {
-    move |error| {
-        eprintln!("file_operation line={line} kind={:?} code={:?}", error.kind(), error.raw_os_error());
-        StoreError::file_operation(error)
-    }
-}
-""")
-    CONNECTION.write_text("".join(lines), encoding="utf-8")
 
 
 def trials(label, *, suite=False):
@@ -84,13 +48,8 @@ assert output("git", "rev-parse", "HEAD") == BASE
 assert not output("git", "status", "--porcelain", "--untracked-files=all")
 digest = hashlib.sha256(MIGRATIONS.read_bytes()).hexdigest()
 print(f"source={BASE} windows={sys.getwindowsversion().build} migrations_sha256={digest}", flush=True)
-baseline = Counter({0: 0})
-instrument_errors()
-try:
-    diagnosed = trials("diagnostic") + trials("diagnostic-suite", suite=True)
-finally:
-    subprocess.run(["git", "restore", "--", str(CONNECTION)], check=True)
+results = trials("fixed") + trials("fixed-suite", suite=True)
 assert hashlib.sha256(MIGRATIONS.read_bytes()).hexdigest() == digest
 assert not output("git", "status", "--porcelain", "--untracked-files=all")
 print("trial batches complete; assertions preserved; checkout clean", flush=True)
-sys.exit(1 if set(baseline) != {0} or set(diagnosed) != {0} else 0)
+sys.exit(0 if set(results) == {0} else 1)
