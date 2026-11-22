@@ -1,0 +1,27 @@
+name: Change request
+description: Track a scoped change and its acceptance evidence
+body:
+  - type: markdown
+    attributes:
+      value: For security concerns, use the [private advisory intake](https://github.com/OpenCoven/coven/security/advisories/new) and name OpenCoven/psyche. Keep protected information out of public contributions.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome and owner
+      description: Name the intended result, non-goals, responsible owner, dependencies and related issue or contract.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and risk
+      description: Give the risk class (R0–R4 in AGENTS.md). Identify affected paths, public contracts, consumers, migration and rollback as applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Acceptance evidence
+      description: State the acceptance criteria and the observable result that meets them. Share only bounded summaries, public commit identifiers and public check links.
+    validations:
+      required: true

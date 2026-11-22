@@ -1,0 +1,19 @@
+name: Ordinary defect
+description: Report a reproducible non-security defect
+body:
+  - type: markdown
+    attributes:
+      value: For a suspected vulnerability, use the [private advisory intake](https://github.com/OpenCoven/coven/security/advisories/new) and name OpenCoven/psyche. Keep security details out of public issues.
+  - type: input
+    id: version
+    attributes:
+      label: Public version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+      description: Use a minimal synthetic example. Summarize the result and exit code. Omit logs, environment dumps, private paths, private repository contents, prompts, user data and credentials.
+    validations:
+      required: true
