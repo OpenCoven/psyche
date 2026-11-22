@@ -708,6 +708,25 @@ class G2EvidenceCheckerTests(unittest.TestCase):
                 with self.assertRaisesRegex(self.checker.EvidenceError, "ancestor"):
                     self.checker.verify_actions_source_relationship(ROOT, tested)
 
+    def test_shallow_actions_verifier_rejects_diverged_compare_that_changes_g2_inputs(self) -> None:
+        tested = "0123456789abcdef0123456789abcdef01234567"
+        event = json.dumps(self.pull_request_event())
+        compare = self.compare_response(
+            merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            files=[{"filename": "crates/psyche-core/src/lib.rs", "status": "modified"}],
+        )
+        compare["status"] = "diverged"
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
+        with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+            self.checker.pathlib.Path, "read_text", return_value=event
+        ), mock.patch.object(
+            self.checker,
+            "run_json",
+            side_effect=(compare, [{"filename": "scripts/check-g2-evidence.py"}]),
+        ):
+            with self.assertRaisesRegex(self.checker.EvidenceError, "changes G2 inputs"):
+                self.checker.verify_actions_source_relationship(ROOT, tested)
+
     def test_shallow_actions_verifier_rejects_malformed_event_payload(self) -> None:
         passed = self.passed_evidence()
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}

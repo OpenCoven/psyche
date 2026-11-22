@@ -826,6 +826,8 @@ def validate_evidence_only_compare(
     ) and not allow_unchanged_g2_inputs:
         fail("tested source is not the pull-request head's merge-base ancestor")
     if allow_unchanged_g2_inputs:
+        if not changes_preserve_g2_inputs(compare.get("files"), max_files=300):
+            fail("diverged GitHub compare changes G2 inputs")
         return
     files = compare.get("files")
     if (
@@ -911,15 +913,11 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> tuple
     return terminal, pull_number
 
 
-def pull_request_preserves_g2_inputs(root: pathlib.Path, pull_number: int) -> bool:
-    files = run_json(
-        ["gh", "api", f"repos/OpenCoven/psyche/pulls/{pull_number}/files?per_page=100"],
-        root,
-    )
+def changes_preserve_g2_inputs(files: object, *, max_files: int) -> bool:
     if (
         not isinstance(files, list)
         or not files
-        or len(files) >= 100
+        or len(files) >= max_files
         or any(not isinstance(file, dict) or not isinstance(file.get("filename"), str) for file in files)
     ):
         return False
@@ -952,6 +950,14 @@ def pull_request_preserves_g2_inputs(root: pathlib.Path, pull_number: int) -> bo
         ):
             return False
     return True
+
+
+def pull_request_preserves_g2_inputs(root: pathlib.Path, pull_number: int) -> bool:
+    files = run_json(
+        ["gh", "api", f"repos/OpenCoven/psyche/pulls/{pull_number}/files?per_page=100"],
+        root,
+    )
+    return changes_preserve_g2_inputs(files, max_files=100)
 
 
 def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
