@@ -456,4 +456,82 @@ mod journal {
             }
         }
     }
+
+    // Each reply comes from the bound peer for the bound request and fails
+    // `validate_for` in exactly one way.
+    fn invalid_bound_replies() -> Vec<Host> {
+        ["stale", "digest", "correlation", "token"]
+            .into_iter()
+            .map(|field| {
+                let mut host = Host::bound();
+                let Some(ReconciliationDisposition::Fenced {
+                    fence_token,
+                    correlation,
+                    ambiguity_digest,
+                    recorded_at,
+                    ..
+                }) = host.reply.as_mut()
+                else {
+                    unreachable!()
+                };
+                match field {
+                    "stale" => {
+                        *recorded_at =
+                            OffsetDateTime::parse("2000-01-01T00:00:00Z", &Rfc3339).unwrap();
+                    }
+                    "digest" => *ambiguity_digest = digest_of('e'),
+                    "correlation" => correlation.request_digest = digest_of('e'),
+                    _ => fence_token.clear(),
+                }
+                assert!(
+                    host.reply
+                        .as_ref()
+                        .unwrap()
+                        .validate_for(&host.request)
+                        .is_err(),
+                    "{field}"
+                );
+                host
+            })
+            .collect()
+    }
+
+    fn retained_disposition(path: &Path) -> Option<Vec<u8>> {
+        Connection::open(path)
+            .unwrap()
+            .query_row("SELECT value FROM dispositions", [], |row| row.get(0))
+            .optional()
+            .unwrap()
+    }
+
+    #[test]
+    fn invalid_reply_from_the_bound_host_never_records_or_replaces_a_disposition() {
+        for state in STARTS {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("consumer.db");
+            initialize(&path, state, true);
+            for reply in invalid_bound_replies() {
+                assert_eq!(
+                    reconcile(&path, ATTEMPT, &reply, ExitPoint::None),
+                    Observation::Blocked
+                );
+            }
+            assert_eq!(observe(&path), (state.to_owned(), 0, 1));
+            assert_eq!(retained_disposition(&path), None);
+            assert_eq!(
+                reconcile(&path, ATTEMPT, &Host::bound(), ExitPoint::None),
+                Observation::Recorded
+            );
+            let recorded = retained_disposition(&path);
+            assert!(recorded.is_some());
+            for reply in invalid_bound_replies() {
+                assert_eq!(
+                    reconcile(&path, ATTEMPT, &reply, ExitPoint::None),
+                    Observation::Blocked
+                );
+            }
+            assert_eq!(observe(&path), ("reconciled-fenced".to_owned(), 1, 1));
+            assert_eq!(retained_disposition(&path), recorded);
+        }
+    }
 }
