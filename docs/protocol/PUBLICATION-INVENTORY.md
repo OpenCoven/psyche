@@ -16,7 +16,7 @@ The pull requests below touch experimental profiles or vectors. State is as of 1
 | [#44](https://github.com/OpenCoven/psyche/pull/44) | open, draft | `profiles/adapter-lifecycle/**` | Carries #41's packaging onto main, with the packaging fetch and manifest updated to receipt source `bada1b6`, the parent of the signed #39 evidence head. |
 | [#50](https://github.com/OpenCoven/psyche/pull/50) | open, draft | `crates/psyche-core/tests/canonical_vectors.rs` and one vector file per kind | Byte-exact canonical JSON and SHA-256 vectors for all sixteen registered kinds, with a drift test. Unmerged, so main still has no such vector. |
 
-The #39 and #41 descriptions tie stable publication to recorded approvals, citing #12. #12 is open, and its proposed decision packet is draft [#29](https://github.com/OpenCoven/psyche/pull/29).
+The #39 description says stable publication and live Build activation require their recorded approvals, citing #12; the #41 description says stable promotion needs the applicable #10 and #12 decisions, citing #29. #12 is open, and its proposed decision packet is draft [#29](https://github.com/OpenCoven/psyche/pull/29).
 
 ## Records and prospective authority
 
