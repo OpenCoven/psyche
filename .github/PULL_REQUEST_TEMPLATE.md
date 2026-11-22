@@ -4,11 +4,11 @@ Link the owning issue. Name the objective, non-goals, risk class (R0–R4 in `AG
 
 ## Contract and consumer impact
 
-Identify the invariant preserved and the affected producers, consumers, schemas, persisted state and generated artifacts. Include the generator command or explain why it does not apply. State any security or privacy impact.
+Describe the current behavior and the invariant preserved, and identify the affected producers, consumers, schemas, persisted state and generated artifacts. Include the generator command or explain why it does not apply. State any security or privacy impact.
 
 ## Verification
 
-Record the exact head SHA, commands, results, and remaining proof gaps, including unavailable platform evidence. Link relevant CI, negative cases and downstream canaries. Include sanitized summaries only.
+Record the exact head SHA, commands, results, and remaining proof gaps, including unavailable platform evidence. Link relevant CI, downstream canaries, and negative, crash, restart, ambiguity and downgrade cases where relevant. Include sanitized summaries only.
 
 ## Migration and rollback
 

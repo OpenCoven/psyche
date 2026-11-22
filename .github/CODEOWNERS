@@ -1,5 +1,7 @@
 # Proposed recipients. The owner must accept review responsibility before landing.
 # @BunsDev is the only established owner: the repository has one administrator and no teams.
+# GitHub does not let an author approve their own pull request, so requiring code-owner review
+# in a ruleset would block every self-authored change until a second owner or a bypass exists.
 # The last matching pattern wins. A path no later rule names falls back to the first rule.
 * @BunsDev
 /crates/psyche-core/ @BunsDev

@@ -3,7 +3,7 @@ description: Track a scoped change and its acceptance evidence
 body:
   - type: markdown
     attributes:
-      value: For security concerns, use the [private advisory intake](https://github.com/OpenCoven/coven/security/advisories/new) and name OpenCoven/psyche. Keep protected information out of public contributions.
+      value: For security concerns, use the [private advisory intake](https://github.com/OpenCoven/coven/security/advisories/new) and name OpenCoven/psyche. Keep protected information, as listed in [SECURITY.md](https://github.com/OpenCoven/psyche/blob/main/SECURITY.md), out of public contributions.
   - type: textarea
     id: outcome
     attributes:
