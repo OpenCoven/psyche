@@ -1,7 +1,6 @@
 # Architecture
 
-Psyche keeps contracts and authority in Rust. Dependency arrows point from a
-dependency to its consumer:
+Psyche keeps contracts and authority in Rust. An arrow points from a consumer to its dependency. For example, `psyche-config` depends on `psyche-core`.
 
 ```text
 psyche-core <- psyche-config
