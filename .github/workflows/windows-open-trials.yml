@@ -1,0 +1,26 @@
+name: Windows concurrent first-open trials
+on:
+  push:
+    branches: [qualify/windows-open-ad22-trials]
+permissions:
+  contents: read
+jobs:
+  trials:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ad22ada23473d120578985f26f27f23e1fde633c
+          path: source
+          persist-credentials: false
+      - name: Run bounded migration trials
+        working-directory: source
+        run: |
+          rustc --version
+          cargo --version
+          python ../driver/scripts/windows-open-trials.py
