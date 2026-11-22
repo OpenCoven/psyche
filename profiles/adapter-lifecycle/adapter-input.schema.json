@@ -1,0 +1,14 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"urn:psyche:experimental:adapter-lifecycle:input:v1",
+  "type":"object","additionalProperties":false,
+  "required":["phase","profile","reader_version","request_id","request_hex"],
+  "properties":{
+    "phase":{"enum":["first","replay","rollback"]},"profile":{"type":"string","maxLength":80},
+    "reader_version":{"type":"integer","minimum":0},"request_id":{"type":"string","maxLength":80},
+    "request_hex":{"type":"string","pattern":"^(?:[a-f0-9]{2})+$","maxLength":8192},
+    "fault":{"enum":["agent_approval","cancel","lost_ack"]},
+    "task_id":{"type":"string","maxLength":128},"action_id":{"type":"string","maxLength":128}
+  },
+  "if":{"properties":{"phase":{"const":"rollback"}}},"then":{"required":["task_id","action_id"]}
+}
