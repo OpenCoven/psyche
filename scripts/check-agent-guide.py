@@ -364,8 +364,11 @@ def validate_codemap_kinds(root, text):
     require(
         lines[start : start + 1] == ["|---|---|---|---|---|"], f"{where} table not found"
     )
-    for line in lines[start + 1:]:
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
         if not line.strip():
+            end = index
             break
         row = re.fullmatch(r"\| `([^|`]+)` \| (.*) \|", line)
         require(row, f"{where} malformed row {line}")
@@ -375,6 +378,11 @@ def validate_codemap_kinds(root, text):
         require(len(cells) == 4, f"{where} {kind} row does not have five columns")
         rows[kind] = cells
     require(rows, f"{where} table not found")
+    for line in lines[end:]:
+        require(
+            not line.lstrip().startswith("|"),
+            f"{where} table row outside the table: {line.strip()}",
+        )
     expected, registry = record_kinds(root)
     missing = sorted(set(expected) - set(rows))
     extra = sorted(set(rows) - set(expected))
@@ -382,6 +390,10 @@ def validate_codemap_kinds(root, text):
     require(not extra, f"{where} extra {', '.join(extra)}")
     for kind, want in expected.items():
         prefix, schemas, types, tables = rows[kind]
+        require(
+            re.fullmatch(r"`[^`]+`", prefix),
+            f"{where} {kind} prefix {prefix} is not one code span",
+        )
         require(
             cell(prefix) == want["prefix"],
             f"{where} {kind} prefix is {cell(prefix)},"
@@ -643,6 +655,48 @@ def main():
                     row,
                     ghost.replace("Ghost", "retired_kind"),
                     CODEMAP + " record kinds: extra retired_kind",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "\n\n- Registry and decoder: ",
+                    "\n\n| `Ghost` | `gho_` | `psyche.ghost.v1` | none | none |\n- Registry and decoder: ",
+                    CODEMAP + " record kinds: table row outside the table: | `Ghost` | `gho_` | `psyche.ghost.v1` | none | none |",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "\n\n- Registry and decoder: ",
+                    "\n\n| `RecordKind` | Prefix | Schema string | Rust type | Table |\n|---|---|---|---|---|\n| `Ghost` | `gho_` | `psyche.ghost.v1` | none | none |\n\n- Registry and decoder: ",
+                    CODEMAP + " record kinds: table row outside the table: | `RecordKind` | Prefix | Schema string | Rust type | Table |",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    row,
+                    r"\g<0>| Ghost | `gho_` | `psyche.ghost.v1` | none | none |\n",
+                    CODEMAP + " record kinds: malformed row | Ghost | `gho_` | `psyche.ghost.v1` | none | none |",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "| `RecordKind` | Prefix | Schema string | Rust type | Table |\n|---|---|---|---|---|",
+                    "| `RecordKind` | Prefix | Schema string | Rust type | Table |\n|---|---|---|---|",
+                    CODEMAP + " record kinds: table not found",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "| `int_` | `psyche.intent.v1` |",
+                    "| `int_` | psyche.intent.v1 |",
+                    CODEMAP + " record kinds: Intent schema is psyche.intent.v1, the registry says psyche.intent.v1",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "| `int_` | `psyche.intent.v1` |",
+                    "| int_ | `psyche.intent.v1` |",
+                    CODEMAP + " record kinds: Intent prefix int_ is not one code span",
                     True,
                 ),
                 (
