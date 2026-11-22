@@ -575,8 +575,15 @@ def main():
                     "README.md",
                     HELP,
                     "cargo run -p psyche-cli -- --help",
-                    "operator binary",
-                    False,
+                    "missing explicit operator binary",
+                    True,
+                ),
+                (
+                    "README.md",
+                    'cargo run --locked -p psyche-cli --bin psyche -- --config "$scratch/psyche.toml" stop',
+                    'cargo run --locked -p psyche-cli -- --config "$scratch/psyche.toml" stop',
+                    "ambiguous operator binary",
+                    True,
                 ),
                 (
                     "AGENTS.md",
@@ -902,7 +909,7 @@ def main():
                     target.write_text(mutated, encoding="utf-8")
                 reject(
                     lambda: validate(fixture, members, pin, crates, edges),
-                    f"{path} mutation",
+                    f"{path} mutation [{expected}]",
                     expected,
                     exact,
                 )
