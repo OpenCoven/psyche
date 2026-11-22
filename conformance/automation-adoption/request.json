@@ -15,7 +15,8 @@
     "occurrenceFenceGeneration": 3,
     "runId": "run-001",
     "attemptId": "attempt-002",
-    "attemptAdoptionKey": "dispatch-002",
+    "attemptNumber": 2,
+    "adoptionKey": "dispatch-002",
     "dispatchGeneration": 2
   },
   "authority": {
