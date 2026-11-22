@@ -622,34 +622,28 @@ class G2EvidenceCheckerTests(unittest.TestCase):
             ],
         )
 
-    def test_shallow_actions_verifier_accepts_pr_with_unchanged_g2_inputs(self) -> None:
+    def test_shallow_actions_verifier_accepts_diverged_compare_with_unchanged_g2_inputs(self) -> None:
         tested = "0123456789abcdef0123456789abcdef01234567"
         event = json.dumps(self.pull_request_event())
         compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         compare["status"] = "diverged"
+        compare["files"] = [{"filename": "scripts/check-g2-evidence.py"}]
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
             self.checker.pathlib.Path, "read_text", return_value=event
-        ), mock.patch.object(
-            self.checker,
-            "run_json",
-            side_effect=(compare, [{"filename": "scripts/check-g2-evidence.py"}]),
-        ) as run_json:
+        ), mock.patch.object(self.checker, "run_json", return_value=compare) as run_json:
             self.checker.verify_actions_source_relationship(ROOT, tested)
         self.assertEqual(
             [call.args[0] for call in run_json.call_args_list],
-            [
-                [
-                    "gh", "api",
-                    "repos/OpenCoven/psyche/compare/"
-                    "0123456789abcdef0123456789abcdef01234567..."
-                    "fedcba9876543210fedcba9876543210fedcba98",
-                ],
-                ["gh", "api", "repos/OpenCoven/psyche/pulls/123/files?per_page=100"],
-            ],
+            [[
+                "gh", "api",
+                "repos/OpenCoven/psyche/compare/"
+                "0123456789abcdef0123456789abcdef01234567..."
+                "fedcba9876543210fedcba9876543210fedcba98",
+            ]],
         )
 
-    def test_shallow_actions_verifier_accepts_squash_merge_with_unchanged_g2_inputs(self) -> None:
+    def test_shallow_actions_verifier_accepts_diverged_squash_compare_with_unchanged_g2_inputs(self) -> None:
         tested = "0123456789abcdef0123456789abcdef01234567"
         event = json.dumps(self.squash_merge_push_event())
         tree = "cccccccccccccccccccccccccccccccccccccccc"
@@ -664,6 +658,7 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         }
         compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         compare["status"] = "diverged"
+        compare["files"] = [{"filename": "scripts/check-g2-evidence.py"}]
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
             self.checker.pathlib.Path, "read_text", return_value=event
@@ -675,57 +670,69 @@ class G2EvidenceCheckerTests(unittest.TestCase):
                 merge_commit,
                 terminal_commit,
                 compare,
-                [{"filename": "scripts/check-g2-evidence.py"}],
             ),
         ) as run_json:
             self.checker.verify_actions_source_relationship(ROOT, tested)
         self.assertEqual(
             run_json.call_args_list[-1].args[0],
-            ["gh", "api", "repos/OpenCoven/psyche/pulls/123/files?per_page=100"],
+            [
+                "gh", "api",
+                "repos/OpenCoven/psyche/compare/"
+                "0123456789abcdef0123456789abcdef01234567..."
+                "fedcba9876543210fedcba9876543210fedcba98",
+            ],
         )
 
-    def test_shallow_actions_verifier_rejects_diverged_prs_that_change_g2_inputs(self) -> None:
+    def test_shallow_actions_verifier_rejects_diverged_compares_that_change_g2_inputs(self) -> None:
         tested = "0123456789abcdef0123456789abcdef01234567"
         event = json.dumps(self.pull_request_event())
         compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         changes = (
             "crates/psyche-core/src/lib.rs",
+            "src/generated.rs",
             "Cargo.lock",
+            "crates/psyche-core/Cargo.toml",
             ".github/workflows/ci.yml",
+            ".cargo/config.toml",
             "scripts/g2-test-manifest.json",
+            "rust-toolchain.toml",
         )
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         for filename in changes:
+            compare["files"] = [{"filename": filename}]
             with self.subTest(filename=filename), mock.patch.dict(
                 os.environ, environment, clear=False
             ), mock.patch.object(
                 self.checker.pathlib.Path, "read_text", return_value=event
-            ), mock.patch.object(
-                self.checker,
-                "run_json",
-                side_effect=(compare, [{"filename": filename}]),
-            ):
-                with self.assertRaisesRegex(self.checker.EvidenceError, "ancestor"):
+            ), mock.patch.object(self.checker, "run_json", return_value=compare):
+                with self.assertRaisesRegex(self.checker.EvidenceError, "G2 inputs changed"):
                     self.checker.verify_actions_source_relationship(ROOT, tested)
 
-    def test_shallow_actions_verifier_rejects_diverged_compare_that_changes_g2_inputs(self) -> None:
+    def test_shallow_actions_verifier_rejects_incomplete_diverged_file_lists(self) -> None:
         tested = "0123456789abcdef0123456789abcdef01234567"
-        event = json.dumps(self.pull_request_event())
-        compare = self.compare_response(
-            merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            files=[{"filename": "crates/psyche-core/src/lib.rs", "status": "modified"}],
-        )
+        terminal = "fedcba9876543210fedcba9876543210fedcba98"
+        compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         compare["status"] = "diverged"
-        environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
-        with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
-            self.checker.pathlib.Path, "read_text", return_value=event
-        ), mock.patch.object(
-            self.checker,
-            "run_json",
-            side_effect=(compare, [{"filename": "scripts/check-g2-evidence.py"}]),
-        ):
-            with self.assertRaisesRegex(self.checker.EvidenceError, "changes G2 inputs"):
-                self.checker.verify_actions_source_relationship(ROOT, tested)
+        mutations = (None, [], [{}], [{"filename": "site/page.md"}] * 300)
+        for files in mutations:
+            with self.subTest(files_count=len(files) if isinstance(files, list) else files):
+                compare["files"] = files
+                with self.assertRaisesRegex(
+                    self.checker.EvidenceError, "G2 inputs changed"
+                ):
+                    self.checker.validate_evidence_only_compare(compare, tested, terminal)
+
+    def test_diverged_compare_rejects_renames_from_g2_inputs(self) -> None:
+        tested = "0123456789abcdef0123456789abcdef01234567"
+        terminal = "fedcba9876543210fedcba9876543210fedcba98"
+        compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        compare["status"] = "diverged"
+        compare["files"] = [{
+            "filename": "docs/runtime.rs",
+            "previous_filename": "crates/psyche-core/src/lib.rs",
+        }]
+        with self.assertRaisesRegex(self.checker.EvidenceError, "G2 inputs changed"):
+            self.checker.validate_evidence_only_compare(compare, tested, terminal)
 
     def test_shallow_actions_verifier_rejects_malformed_event_payload(self) -> None:
         passed = self.passed_evidence()
@@ -811,15 +818,13 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         passed = self.passed_evidence()
         event = json.dumps(self.pull_request_event())
         compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        compare["status"] = "diverged"
+        compare["files"] = [{"filename": "crates/psyche-core/src/lib.rs"}]
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
             self.checker.pathlib.Path, "read_text", return_value=event
-        ), mock.patch.object(
-            self.checker,
-            "run_json",
-            side_effect=(compare, [{"filename": "crates/psyche-core/src/lib.rs"}]),
-        ):
-            with self.assertRaisesRegex(self.checker.EvidenceError, "ancestor"):
+        ), mock.patch.object(self.checker, "run_json", return_value=compare):
+            with self.assertRaisesRegex(self.checker.EvidenceError, "G2 inputs changed"):
                 self.checker.verify_passed(ROOT, passed, self.checker.validate_evidence(passed)[1])
 
     def test_remote_verifier_rejects_wrong_workflow_or_event(self) -> None:

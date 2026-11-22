@@ -800,9 +800,40 @@ def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
         fail(f"passed source-to-HEAD diff is not evidence-only: {changed}")
 
 
-def validate_evidence_only_compare(
-    compare: object, tested: str, terminal: str, *, allow_unchanged_g2_inputs: bool = False
-) -> None:
+def compare_preserves_g2_inputs(compare: dict[str, object]) -> bool:
+    files = compare.get("files")
+    if not isinstance(files, list) or not files or len(files) >= 300:
+        return False
+    protected_paths = ("crates/", ".cargo/", ".github/workflows/")
+    protected_files = {
+        "Cargo.lock",
+        "Cargo.toml",
+        "clippy.toml",
+        "deny.toml",
+        "rust-toolchain",
+        "rust-toolchain.toml",
+        "scripts/g2-test-manifest.json",
+    }
+    for file in files:
+        if not isinstance(file, dict) or not isinstance(file.get("filename"), str):
+            return False
+        paths = [file["filename"]]
+        previous = file.get("previous_filename")
+        if previous is not None:
+            if not isinstance(previous, str):
+                return False
+            paths.append(previous)
+        if any(
+            path.startswith(protected_paths)
+            or path in protected_files
+            or path.endswith((".rs", "Cargo.toml"))
+            for path in paths
+        ):
+            return False
+    return True
+
+
+def validate_evidence_only_compare(compare: object, tested: str, terminal: str) -> None:
     if not isinstance(compare, dict):
         fail("GitHub compare response is invalid")
     base = compare.get("base_commit")
@@ -819,15 +850,14 @@ def validate_evidence_only_compare(
         fail("GitHub compare response does not end at the pull-request terminal commit")
     if compare.get("ahead_by") != len(commits) or compare.get("total_commits") != len(commits):
         fail("GitHub compare response commit counts are inconsistent")
-    if (
-        compare.get("status") != "ahead"
-        or not isinstance(merge_base, dict)
-        or merge_base.get("sha") != tested
-    ) and not allow_unchanged_g2_inputs:
-        fail("tested source is not the pull-request head's merge-base ancestor")
-    if allow_unchanged_g2_inputs:
-        if not changes_preserve_g2_inputs(compare.get("files"), max_files=300):
-            fail("diverged GitHub compare changes G2 inputs")
+    ancestry_matches = (
+        compare.get("status") == "ahead"
+        and isinstance(merge_base, dict)
+        and merge_base.get("sha") == tested
+    )
+    if not ancestry_matches:
+        if not compare_preserves_g2_inputs(compare):
+            fail("tested source is not the pull-request head's merge-base ancestor or G2 inputs changed")
         return
     files = compare.get("files")
     if (
@@ -840,7 +870,7 @@ def validate_evidence_only_compare(
         fail(f"passed source-to-pull-request diff is not one modified evidence file: {files}")
 
 
-def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> tuple[str, int]:
+def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> str:
     before = event.get("before")
     after = event.get("after")
     if (
@@ -867,7 +897,6 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> tuple
     base_repository = base.get("repo") if isinstance(base, dict) else None
     head_repository = head.get("repo") if isinstance(head, dict) else None
     terminal = head.get("sha") if isinstance(head, dict) else None
-    pull_number = pull.get("number")
     if (
         pull.get("state") != "closed"
         or not isinstance(pull.get("merged_at"), str)
@@ -881,8 +910,6 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> tuple
         or head_repository.get("full_name") != "OpenCoven/psyche"
         or not isinstance(terminal, str)
         or not re.fullmatch(r"[0-9a-f]{40}", terminal)
-        or type(pull_number) is not int
-        or pull_number <= 0
     ):
         fail("GitHub squash pull-request provenance is invalid")
 
@@ -910,54 +937,7 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> tuple
         or merge_tree.get("sha") != terminal_tree.get("sha")
     ):
         fail("GitHub squash commit tree does not match the reviewed pull-request tree")
-    return terminal, pull_number
-
-
-def changes_preserve_g2_inputs(files: object, *, max_files: int) -> bool:
-    if (
-        not isinstance(files, list)
-        or not files
-        or len(files) >= max_files
-        or any(not isinstance(file, dict) or not isinstance(file.get("filename"), str) for file in files)
-    ):
-        return False
-    protected_paths = (
-        "crates/",
-        ".cargo/",
-        ".github/workflows/",
-    )
-    protected_files = {
-        "Cargo.lock",
-        "Cargo.toml",
-        "clippy.toml",
-        "deny.toml",
-        "rust-toolchain",
-        "rust-toolchain.toml",
-        "scripts/g2-test-manifest.json",
-    }
-    for file in files:
-        paths = [file["filename"]]
-        previous = file.get("previous_filename")
-        if previous is not None:
-            if not isinstance(previous, str):
-                return False
-            paths.append(previous)
-        if any(
-            path.startswith(protected_paths)
-            or path in protected_files
-            or path.endswith(".rs")
-            for path in paths
-        ):
-            return False
-    return True
-
-
-def pull_request_preserves_g2_inputs(root: pathlib.Path, pull_number: int) -> bool:
-    files = run_json(
-        ["gh", "api", f"repos/OpenCoven/psyche/pulls/{pull_number}/files?per_page=100"],
-        root,
-    )
-    return changes_preserve_g2_inputs(files, max_files=100)
+    return terminal
 
 
 def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
@@ -980,7 +960,6 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
         head = pull_request.get("head")
         head_repository = head.get("repo") if isinstance(head, dict) else None
         terminal = head.get("sha") if isinstance(head, dict) else None
-        pull_number = pull_request.get("number")
         if (
             not isinstance(head_repository, dict)
             or head_repository.get("full_name") != "OpenCoven/psyche"
@@ -988,27 +967,14 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
             fail("GitHub Actions pull-request repository provenance is invalid")
         if not isinstance(terminal, str) or not re.fullmatch(r"[0-9a-f]{40}", terminal):
             fail("GitHub Actions pull-request head provenance is invalid")
-        if type(pull_number) is not int or pull_number <= 0:
-            fail("GitHub Actions pull-request number provenance is invalid")
     else:
-        terminal, pull_number = squash_merge_terminal(root, event)
+        terminal = squash_merge_terminal(root, event)
 
     compare = run_json(
         ["gh", "api", f"repos/OpenCoven/psyche/compare/{tested}...{terminal}"],
         root,
     )
-    allow_unchanged_g2_inputs = (
-        isinstance(compare, dict)
-        and (
-            compare.get("status") != "ahead"
-            or not isinstance(compare.get("merge_base_commit"), dict)
-            or compare["merge_base_commit"].get("sha") != tested
-        )
-        and pull_request_preserves_g2_inputs(root, pull_number)
-    )
-    validate_evidence_only_compare(
-        compare, tested, terminal, allow_unchanged_g2_inputs=allow_unchanged_g2_inputs
-    )
+    validate_evidence_only_compare(compare, tested, terminal)
 
 
 def verify_passed(root: pathlib.Path, markdown: str, source_rows: list[list[str]]) -> None:
