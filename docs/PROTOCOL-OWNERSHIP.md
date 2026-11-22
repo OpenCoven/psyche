@@ -121,3 +121,5 @@ The owning issue must approve:
 - release-order and emergency compatibility policy.
 
 Until approved, this document is a proposed boundary and must not be cited as shipped protocol support.
+
+For experimental adapter lifecycle v2, the Psyche qualification harness issues one durable fixture execution ID per synthetic handler invocation. Build owns its native task, action, approval and journal evidence and supplies a separate reader. These test IDs apply only within one qualification and grant no dispatch authority. Consumers can continue to use the v1 fixture. Stable adoption remains with #12. [Experimental owner agreement](https://github.com/OpenCoven/psyche/pull/41#issuecomment-7079261966)

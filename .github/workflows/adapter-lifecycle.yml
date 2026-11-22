@@ -22,3 +22,10 @@ jobs:
           name: experimental-adapter-lifecycle-${{ matrix.os }}
           path: ${{ runner.temp }}/adapter-lifecycle.pyz
           if-no-files-found: error
+      - name: Qualify the independent lifecycle v2 witness
+        run: bash profiles/adapter-lifecycle-v2/qualify.sh "$RUNNER_TEMP/adapter-lifecycle-v2.pyz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-adapter-lifecycle-v2-${{ matrix.os }}
+          path: ${{ runner.temp }}/adapter-lifecycle-v2.pyz
+          if-no-files-found: error
