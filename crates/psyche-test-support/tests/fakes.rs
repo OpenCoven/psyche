@@ -1320,13 +1320,12 @@ async fn changed_request_with_retained_digest_fails_before_adoption() {
         for mutated_input in mutations {
             if let Ok(input) =
                 serde_json::from_value::<ExecutionRequestInput>(mutated_input.clone())
+                && let Ok(rebuilt) = AdoptionRequest::new(input)
             {
-                if let Ok(rebuilt) = AdoptionRequest::new(input) {
-                    assert_ne!(
-                        serde_json::to_value(rebuilt.request_digest()).unwrap(),
-                        retained_digest
-                    );
-                }
+                assert_ne!(
+                    serde_json::to_value(rebuilt.request_digest()).unwrap(),
+                    retained_digest
+                );
             }
             let forged: AdoptionRequest = serde_json::from_value(serde_json::json!({
                 "input": mutated_input,
