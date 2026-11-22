@@ -1,0 +1,89 @@
+name: Contributor qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  helpers:
+    name: Contributor commands (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select full platform qualification
+        id: gate
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          # Emit an ordinary check on every PR. Repeat the costly full gate
+          # only for edits to the contributor contract and its build inputs.
+          run_full=true
+          if [[ "$EVENT" != workflow_dispatch && -n "$BASE" && ! "$BASE" =~ ^0+$ ]]; then
+            if git diff --quiet "$BASE...HEAD" -- '*.md' 'agent/**' 'scripts/**' '.github/workflows/**' 'Cargo.toml' 'Cargo.lock' 'rust-toolchain.toml' 'crates/*/Cargo.toml' 'packages/**' '.gitattributes' '.gitignore'; then
+              run_full=false
+            else
+              result=$?
+              [[ "$result" == 1 ]] || exit "$result"
+            fi
+          fi
+          echo "full=$run_full" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check guidance and helper regressions
+        run: |
+          python3 scripts/check-agent-guide.py
+          python3 scripts/test-agent-check.py
+      - uses: Swatinem/rust-cache@v2
+        if: steps.gate.outputs.full == 'true'
+        id: cargo-cache
+        with:
+          shared-key: contributor
+      - name: Run shipped helpers on the exact source
+        if: steps.gate.outputs.full == 'true'
+        env:
+          CACHE_HIT: ${{ steps.cargo-cache.outputs.cache-hit }}
+          OS: ${{ runner.os }}
+          ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          echo "head=$(git rev-parse HEAD) os=$OS arch=$ARCH bash=$BASH_VERSION restored-cargo-cache=$CACHE_HIT"
+          rustc --version && cargo --version && node --version && npm --version && python3 --version
+          state=$(git status --porcelain --untracked-files=all)
+          [[ -z "$state" ]] || { echo "starting Git status was dirty"; exit 1; }
+          echo "starting Git status: clean"
+          for command in bootstrap fast full; do
+            if [[ "$command" == bootstrap ]]; then
+              args=(./scripts/agent-bootstrap)
+            else
+              args=(./scripts/agent-check "$command")
+            fi
+            result=0
+            "${args[@]}" || result=$?
+            echo "$command exit=$result"
+            state=$(git status --porcelain --untracked-files=all)
+            if [[ -n "$state" ]]; then echo "ending Git status: dirty"; exit 1; fi
+            echo "ending Git status: clean"
+            [[ "$result" == 0 ]] || exit "$result"
+          done

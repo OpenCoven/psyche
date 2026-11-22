@@ -4,9 +4,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import pathlib
 import re
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -83,7 +88,7 @@ class G2AttestationScopeTests(unittest.TestCase):
         status, tested, run_url = self.checker._validate_scope_evidence(markdown)
         self.assertEqual((status, tested, run_url), ("candidate", None, None))
 
-    def test_passed_scope_evidence_requires_immutable_source_and_run(self):
+    def passed_evidence(self):
         markdown = self.candidate_evidence()
         passed = markdown.replace("**Status:** candidate", "**Status:** passed")
         passed = passed.replace(
@@ -94,10 +99,44 @@ class G2AttestationScopeTests(unittest.TestCase):
             "**CI attestation:** not recorded before remote review",
             "**CI attestation:** https://github.com/OpenCoven/psyche/actions/runs/123456",
         )
-        status, tested, run_url = self.checker._validate_scope_evidence(passed)
+        return passed
+
+    def test_passed_scope_evidence_requires_immutable_source_and_run(self):
+        status, tested, run_url = self.checker._validate_scope_evidence(self.passed_evidence())
         self.assertEqual(status, "passed")
         self.assertEqual(tested, "1" * 40)
         self.assertEqual(run_url, "https://github.com/OpenCoven/psyche/actions/runs/123456")
+
+    def test_repository_requires_immutable_passed_historic_evidence_in_both_scope_states(self):
+        historic_path = self.checker.HISTORIC_EVIDENCE_PATH
+        historic = (ROOT / historic_path).read_text(encoding="utf-8")
+        for scope in (self.candidate_evidence(), self.passed_evidence()):
+            for changed in (historic.replace("**Status:** passed", "**Status:** candidate"), historic + "\n"):
+                with self.subTest(scope=self.checker.field(scope, "Status")), self.assertRaisesRegex(
+                    self.checker.EvidenceError, "immutable passed attestation"
+                ):
+                    self.checker.validate_repository(
+                        ROOT,
+                        source_overrides={historic_path: changed, self.checker.SCOPE_EVIDENCE_PATH: scope},
+                    )
+
+    def test_attesting_jobs_check_out_the_source_revision(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        jobs = re.split(r"^  [\w-]+:\s*$", workflow.split("\njobs:\n", 1)[1], flags=re.MULTILINE)[1:]
+        self.assertEqual(len(jobs), 4)
+        for job in jobs:
+            self.assertIn(
+                "      - uses: actions/checkout@v4\n"
+                "        with:\n"
+                "          ref: ${{ github.event.pull_request.head.sha || github.sha }}\n",
+                job,
+            )
+
+    def test_allowed_modifications_preserve_mode_and_object_type(self):
+        for old in (self.exec_a, ("120000", "blob", "a" * 40), ("160000", "commit", "a" * 40)):
+            with self.subTest(old=old):
+                self.assert_rejected({"README.md": old}, {"README.md": self.blob_b})
+        self.assert_rejected({"scripts/agent-check": self.blob_a}, {"scripts/agent-check": self.exec_b})
 
     def test_scope_evidence_only_change_is_allowed(self):
         path = self.checker.SCOPE_EVIDENCE_PATH
@@ -286,6 +325,183 @@ class G2AttestationScopeTests(unittest.TestCase):
             with self.subTest(path=path):
                 with self.assertRaises(self.checker.EvidenceError):
                     self.checker._safe_repository_path(path)
+
+
+class ReadinessDeliveryTests(unittest.TestCase):
+    """Exercise the public relationship checks across a complete readiness delivery."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.checker = load_checker()
+        cls.scope = cls.checker._read_scope_manifest(ROOT)
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = pathlib.Path(temporary.name) / "checkout"
+        self.root.mkdir()
+        self.event_path = self.root.parent / "event.json"
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.name", "Scope fixture")
+        self.git("config", "user.email", "scope@example.invalid")
+        self.git("config", "commit.gpgsign", "false")
+        evidence = self.root / self.checker.SCOPE_EVIDENCE_PATH
+        evidence.parent.mkdir()
+        evidence.write_text("candidate\n", encoding="utf-8")
+        self.pinned = self.commit("Candidate without readiness files")
+        evidence.write_text("passed\n", encoding="utf-8")
+        self.commit("Attest candidate")
+
+    def git(self, *arguments):
+        return subprocess.check_output(
+            ["git", *arguments], cwd=self.root, encoding="utf-8", stderr=subprocess.PIPE
+        ).strip()
+
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-qm", message)
+        return self.git("rev-parse", "HEAD")
+
+    def api(self, command, root):
+        self.assertEqual(root, self.root)
+        endpoint = command[-1].removeprefix("repos/OpenCoven/psyche/")
+        if endpoint == f"compare/{self.pinned}...{self.terminal}":
+            commits = self.git("rev-list", "--reverse", f"{self.pinned}..{self.terminal}").splitlines()
+            changes = self.git("diff", "--name-status", "--no-renames", self.pinned, self.terminal)
+            statuses = {"A": "added", "M": "modified", "D": "removed"}
+            return {
+                "status": "ahead",
+                "ahead_by": len(commits),
+                "total_commits": len(commits),
+                "base_commit": {"sha": self.pinned},
+                "merge_base_commit": {"sha": self.pinned},
+                "commits": [{"sha": commit} for commit in commits],
+                "files": [
+                    {"filename": path, "status": statuses[status]}
+                    for status, path in (line.split("\t") for line in changes.splitlines())
+                ],
+            }
+        if endpoint == f"commits/{self.squash}/pulls":
+            return [dict(self.pull, state="closed", merged_at="2026-01-01T00:00:00Z",
+                         merge_commit_sha=self.squash)]
+        if endpoint.startswith("git/commits/"):
+            commit = endpoint.removeprefix("git/commits/")
+            tree, *parents = self.git("show", "-s", "--format=%T %P", commit).split()
+            return {"sha": commit, "tree": {"sha": tree}, "parents": [{"sha": p} for p in parents]}
+        self.fail(f"Unexpected GitHub request: {command}")
+
+    def assert_delivery(self, operation):
+        readme = self.root / "README.md"
+        if operation != "first addition":
+            readme.write_text(
+                "Install the pinned Rust toolchain.\n"
+                "Run the repository bootstrap script.\n"
+                "Check formatting before submitting.\n"
+                "Verify the retained source evidence.\n",
+                encoding="utf-8",
+            )
+            self.commit("Publish initial readiness guide")
+        delivery_base = self.git("rev-parse", "HEAD")
+        self.git("switch", "-qc", "readiness")
+        if operation in {"first addition", "edit"}:
+            readme.write_text("Updated guide\n", encoding="utf-8")
+            self.commit("Write guide")
+        elif operation == "delete":
+            readme.unlink()
+            self.commit("Remove guide")
+        elif operation in {"copy", "copy with edits"}:
+            contents = readme.read_bytes()
+            if operation == "copy with edits":
+                contents = contents.replace(b"Check formatting before submitting.",
+                                            b"Include the affected crate in the review.")
+            (self.root / "CONTRIBUTING.md").write_bytes(contents)
+            self.commit("Publish contributor guide")
+        # A second commit changes a different path from the operation under test.
+        (self.root / "AGENTS.md").write_text("Contributor guide\n", encoding="utf-8")
+        self.terminal = self.commit("Publish contributor notes")
+        # Check the Git classification independently of the verifier. The source
+        # exists only in the delivered baseline, never in the pinned source.
+        delivery_changes = self.git(
+            "diff", "--name-status", "--find-copies-harder", "--find-copies=50%",
+            "--find-renames=50%", delivery_base, self.terminal,
+        ).splitlines()
+        if operation == "copy":
+            self.assertIn("C100\tREADME.md\tCONTRIBUTING.md", delivery_changes)
+        elif operation == "copy with edits":
+            self.assertRegex("\n".join(delivery_changes),
+                             r"(?m)^C0[5-9][0-9]\tREADME\.md\tCONTRIBUTING\.md$")
+        elif operation == "first addition":
+            self.assertIn("A\tREADME.md", delivery_changes)
+        self.assertIn("A\tAGENTS.md", delivery_changes)
+        self.git("switch", "-q", "main")
+        (self.root / "LICENSE").write_text("License on a parallel main change\n", encoding="utf-8")
+        main_tip = self.commit("Main advanced after the topic branched")
+        self.git("update-ref", "refs/remotes/origin/main", main_tip)
+        self.git("switch", "-q", "readiness")
+        repository = {"full_name": "OpenCoven/psyche"}
+        self.pull = {
+            "base": {"ref": "main", "sha": main_tip, "repo": repository},
+            "head": {"sha": self.terminal, "repo": repository},
+        }
+        self.squash = self.git(
+            "commit-tree", self.git("rev-parse", f"{self.terminal}^{{tree}}"),
+            "-p", delivery_base, "-m", "Squash readiness PR",
+        )
+        # Only the retained state and the remote API are fixture data. The
+        # checkout, merge bases, trees and per-delivery changes use real Git.
+        with mock.patch.object(
+            self.checker, "_scope_relationship_for_actual_evidence",
+            return_value=(self.scope, "passed", self.pinned),
+        ), mock.patch.object(
+            self.checker, "_remote_tree_entries", side_effect=self.checker._local_tree_entries,
+        ), mock.patch.object(self.checker, "run_json", side_effect=self.api), mock.patch.dict(
+            os.environ, {"GITHUB_EVENT_PATH": str(self.event_path)},
+        ):
+            events = (
+                ("pull_request", {"repository": repository, "pull_request": self.pull}),
+                ("push", {"repository": repository, "ref": "refs/heads/main",
+                          "before": delivery_base, "after": self.squash}),
+            )
+            for event_name, event in events:
+                if event_name == "push":
+                    # Model a squash onto the actual previous main. The parallel
+                    # tip above is specific to the open-PR merge-base case.
+                    self.pull["base"] = {"ref": "main", "sha": delivery_base, "repo": repository}
+                    self.git("branch", "-f", "main", self.squash)
+                    self.git("switch", "-q", "main")
+                    self.git("update-ref", "refs/remotes/origin/main", self.squash)
+                self.event_path.write_text(json.dumps(event), encoding="utf-8")
+                for verify in (self.checker.verify_local_source_relationship,
+                               self.checker.verify_actions_source_relationship):
+                    with self.subTest(event=event_name, entrypoint=verify.__name__):
+                        denied_path = {
+                            "delete": r"README\.md",
+                            "copy": r"CONTRIBUTING\.md",
+                            "copy with edits": r"CONTRIBUTING\.md",
+                        }.get(operation)
+                        if denied_path:
+                            with self.assertRaisesRegex(self.checker.EvidenceError, denied_path):
+                                verify(self.root, self.pinned)
+                        else:
+                            verify(self.root, self.pinned)
+
+    def test_initial_readiness_addition(self):
+        self.assert_delivery("first addition")
+
+    def test_existing_readiness_content_edit(self):
+        self.assert_delivery("edit")
+
+    def test_existing_readiness_file_unchanged(self):
+        self.assert_delivery("unchanged")
+
+    def test_prior_readiness_file_removed_earlier_in_the_delivery(self):
+        self.assert_delivery("delete")
+
+    def test_unchanged_readiness_file_copied_to_another_allowed_path(self):
+        self.assert_delivery("copy")
+
+    def test_git_reports_edited_copy_from_unchanged_readiness_file(self):
+        self.assert_delivery("copy with edits")
 
 
 if __name__ == "__main__":

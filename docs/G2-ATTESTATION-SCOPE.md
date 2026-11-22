@@ -70,6 +70,10 @@ For the repository's actual historic G2 evidence:
 - explicitly unattested files may only use their declared operations and modes;
 - deletions, mode changes, symlinks, submodules, renames, copies, unknown paths, and protected changes fail closed.
 
+The checker also verifies the operations on the ten readiness paths against the change being proposed. A pull request uses the merge base of its event base SHA and head. A squash push to main uses the previous main commit and the verified delivered tree. This detects deletion of a readiness file added after the attested candidate. Both entry points also use Git’s 50% similarity threshold to reject a reported copy or rename into a readiness path, searching unchanged source files across the proposal base tree.
+
+For local verification, fetch `origin/main`, the branch history, and the recorded candidate before running `python3 scripts/check-g2-evidence.py`. A shallow checkout may need `git fetch --unshallow origin` and `git fetch origin <tested-source-sha>`. On a topic branch the checker uses its merge base with `origin/main`. When verifying a commit already present on main it checks the delivery against that commit’s first parent.
+
 The original evidence-only relationship behavior remains available for the legacy checker mutation suite and for synthetic evidence tests. It is not used to bless later protected-source changes.
 
 ## Updating the protected surface

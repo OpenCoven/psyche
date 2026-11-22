@@ -32,13 +32,14 @@ SCOPE_SCHEMA = "psyche.g2-attestation-scope/v1"
 SCOPE_MANIFEST_PATH = "scripts/g2-attestation-scope.json"
 SCOPE_EVIDENCE_PATH = "docs/G2-SCOPE-EVIDENCE.md"
 HISTORIC_EVIDENCE_PATH = "docs/G2-EVIDENCE.md"
+HISTORIC_EVIDENCE_SHA256 = "5005824cbd1935b802158696be6264021202c4420a9b0796772a4756d23d91e1"
 SCOPE_MANIFEST_SHA256 = "4e535973d4ab49de80e78cd35177bde658d5c31f6d0fd3a5d91edb579a118fa4"
 _SCOPE_TEST_COMMAND = "python3 scripts/check-g2-attestation-scope-test.py"
 
 if CI_COMMANDS[-1] != "python3 scripts/check-g2-evidence.py" or _SCOPE_TEST_COMMAND in CI_COMMANDS:
     fail("immutable G2 checker core has an unexpected CI command boundary")
 CI_COMMANDS = CI_COMMANDS[:-1] + (_SCOPE_TEST_COMMAND, CI_COMMANDS[-1])
-REVIEWED_WORKFLOW_SHA256 = "3c777aaef3e7da294819ea146d7ecd1941aa015c61df29b65d164cdcd6b7f612"
+REVIEWED_WORKFLOW_SHA256 = "d7bd1d76a31e446d038ce74d7ca7e8ed763920b584461d09faf6aeeedec119b6"
 
 EXPECTED_UNATTESTED_PATHS = {
     "AGENTS.md": {"operations": ("added", "modified"), "modes": ("100644",)},
@@ -312,6 +313,7 @@ def _validate_attested_changes(
             or new is None
             or new[1] != "blob"
             or new[0] not in rule["modes"]
+            or (old is not None and old[:2] != new[:2])
         ):
             rejected.append((path, status))
     if rejected:
@@ -423,6 +425,53 @@ def _scope_relationship_for_actual_evidence(root: pathlib.Path, tested: str) -> 
     return scope, status, scope_tested
 
 
+def _proposal_merge_base(root: pathlib.Path, base: str, terminal: str) -> str:
+    result = subprocess.run(
+        ["git", "merge-base", "--all", base, terminal], cwd=root, capture_output=True, text=True,
+    )
+    ancestor = result.stdout.strip()
+    if result.returncode or not re.fullmatch(r"[0-9a-f]{40}", ancestor):
+        fail(f"cannot establish a unique G2 proposal base for {base} and {terminal}; fetch main and the branch history")
+    return ancestor
+
+
+def _validate_readiness_operations(
+    root: pathlib.Path,
+    proposal_base: str,
+    prior: Mapping[str, tuple[str, str, str]],
+    terminal: Mapping[str, tuple[str, str, str]],
+    scope: Mapping[str, Mapping[str, tuple[str, ...]]],
+) -> None:
+    # The attested source can predate delivery of an allowed readiness file.
+    # Compare those paths against the proposed change's own baseline as well.
+    previous_entries = {path: prior[path] for path in scope if path in prior}
+    next_entries = {path: terminal[path] for path in scope if path in terminal}
+    _validate_attested_changes(previous_entries, next_entries, scope)
+
+    # A copy leaves its source entry unchanged. Let Git compare the whole
+    # proposal so an unchanged source outside the readiness set is visible too.
+    raw = subprocess.check_output(
+        [
+            "git", "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
+            "--find-renames=50%", "--find-copies=50%", "--find-copies-harder", "-l0",
+            "--diff-filter=CR", proposal_base, "HEAD", "--",
+        ],
+        cwd=root,
+    )
+    if not raw:
+        return
+    records = raw.split(b"\0")
+    if records.pop() != b"" or len(records) % 3:
+        fail("Git returned incomplete G2 copy or rename records")
+    for status, source, destination in zip(records[::3], records[1::3], records[2::3]):
+        if not re.fullmatch(rb"[CR][0-9]{1,3}", status):
+            fail("Git returned an invalid G2 copy or rename status")
+        old_path = _safe_repository_path(os.fsdecode(source))
+        new_path = _safe_repository_path(os.fsdecode(destination))
+        if new_path in scope or (status.startswith(b"R") and old_path in scope):
+            fail(f"readiness policy rejects a proposed copy or rename: {old_path} to {new_path}")
+
+
 def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
     state = _scope_relationship_for_actual_evidence(root, tested)
     if state is None:
@@ -435,9 +484,15 @@ def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
     before = _local_tree_entries(root, scope_tested)
     after = _local_tree_entries(root, "HEAD")
     _validate_attested_changes(before, after, scope)
+    baseline = _proposal_merge_base(root, "refs/remotes/origin/main", "HEAD")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    # On an already delivered main revision, check the change from its first parent.
+    if baseline == head:
+        baseline = "HEAD^1"
+    _validate_readiness_operations(root, baseline, _local_tree_entries(root, baseline), after, scope)
 
 
-def _actions_terminal(root: pathlib.Path) -> str:
+def _actions_proposal(root: pathlib.Path) -> tuple[str, str]:
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if not event_path:
         fail("GitHub Actions event payload path is absent")
@@ -468,8 +523,12 @@ def _actions_terminal(root: pathlib.Path) -> str:
             fail("GitHub Actions pull-request repository/base provenance is invalid")
         if not isinstance(terminal, str) or not re.fullmatch(r"[0-9a-f]{40}", terminal):
             fail("GitHub Actions pull-request head provenance is invalid")
-        return terminal
-    return squash_merge_terminal(root, event)
+        base_sha = base.get("sha")
+        if not isinstance(base_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+            fail("GitHub Actions pull-request base commit is invalid")
+        return _proposal_merge_base(root, base_sha, terminal), terminal
+    terminal = squash_merge_terminal(root, event)
+    return event["before"], terminal
 
 
 def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
@@ -481,7 +540,7 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
     if status == "candidate":
         return
     assert scope_tested is not None
-    terminal = _actions_terminal(root)
+    proposal_base, terminal = _actions_proposal(root)
     compare = run_json(
         ["gh", "api", f"repos/OpenCoven/psyche/compare/{scope_tested}...{terminal}"],
         root,
@@ -489,6 +548,7 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
     before = _remote_tree_entries(root, scope_tested)
     after = _remote_tree_entries(root, terminal)
     _validate_scope_relationship(compare, scope_tested, terminal, scope, before, after)
+    _validate_readiness_operations(root, proposal_base, _remote_tree_entries(root, proposal_base), after, scope)
 
 
 def _verify_scope_ci_attestation(root: pathlib.Path, tested: str, run_url: str) -> None:
@@ -567,11 +627,16 @@ def validate_repository(
     source_overrides: Mapping[str, str] | None = None,
     verify_remote: bool = True,
 ) -> None:
-    _load_scope_state(root.resolve(), source_overrides or {})
+    root = root.resolve()
+    overrides = source_overrides or {}
+    _load_scope_state(root, overrides)
+    historic = read_text(root, HISTORIC_EVIDENCE_PATH, overrides) if evidence is None else evidence
+    if hashlib.sha256(historic.encode("utf-8")).hexdigest() != HISTORIC_EVIDENCE_SHA256:
+        fail("historic G2 evidence must match the immutable passed attestation")
     _LEGACY_VALIDATE_REPOSITORY(
         root,
         manifest=manifest,
-        evidence=evidence,
+        evidence=historic,
         listed_tests=listed_tests,
         source_overrides=source_overrides,
         verify_remote=verify_remote,

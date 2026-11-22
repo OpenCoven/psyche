@@ -23,6 +23,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       # `rust-toolchain.toml` controls the cargo/rustc version used in this
       # checkout. The action pin avoids a redundant download; keep both pins
       # aligned with the workspace MSRV.
@@ -69,6 +72,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       # cargo-deny is tooling, not a shipped dependency. The action and the
       # explicit `+stable` install select its toolchain independently of the
       # workspace pin. No components are needed here.
@@ -89,6 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       # The gitleaks CLI, not `gitleaks/gitleaks-action`. The action is
       # separately licensed: its entrypoint looks up the repository owner and,
@@ -141,6 +147,8 @@ jobs:
         node: ['20', '22']
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}

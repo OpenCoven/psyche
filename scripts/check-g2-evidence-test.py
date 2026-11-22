@@ -48,7 +48,12 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         listed=None,
         overrides=None,
     ) -> None:
-        self.checker.validate_repository(
+        # Synthetic historic documents exercise the original v1 schema validator.
+        # The repository entry point accepts only the recorded historic document.
+        validate = self.checker.validate_repository
+        if evidence is not None:
+            validate = self.checker._LEGACY_VALIDATE_REPOSITORY
+        validate(
             ROOT,
             manifest=manifest or self.manifest,
             evidence=evidence or self.evidence,

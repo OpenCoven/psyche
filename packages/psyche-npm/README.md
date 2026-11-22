@@ -132,6 +132,15 @@ licence claim with no licence text.
 
 Run `python3 scripts/smoke-installed-npm.py` from a clean repository checkout with the pinned Rust toolchain, Node.js and npm. The command builds the host CLI in release mode, packs temporary companion and wrapper tarballs, and installs them offline in disposable directories. It exercises the installed launcher, checks both digest rejections and emits the source revision, measured platform and artifact hashes. CI sets `PSYCHE_EXPECTED_NPM_PLATFORM` for each of the five supported platforms so runner architecture drift fails the check.
 
+This is a rehearsal, not release verification. The wrapper packed from this
+directory is only shown to refuse the freshly built binary, because its digests
+are still placeholders. The launch that succeeds uses a temporary wrapper copy
+whose digest for the host platform is replaced with the one measured from that
+local build, and a companion package the script assembles itself. Nothing here
+exercises a published package, a registry install that selects the companion
+through `optionalDependencies`, or release signing and provenance. The script
+stops if the host platform's placeholder digest has been replaced.
+
 ## Installation
 
 **`npm install @opencoven/psyche` cannot currently succeed from a registry.**
