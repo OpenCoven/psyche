@@ -138,4 +138,4 @@ Do not post credentials, private keys, raw prompts, unrestricted terminal output
 
 ## License
 
-The [Cargo workspace manifest](Cargo.toml) declares MIT. The root license file is tracked in [the onboarding issue](https://github.com/OpenCoven/psyche/issues/10).
+Psyche is licensed under the [MIT License](LICENSE).
