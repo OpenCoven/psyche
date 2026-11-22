@@ -72,10 +72,105 @@ boundary adapter.
 
 ## Proposed process-attempt fencing consumer profile
 
-The producer and consumer are reviewing the following obligations under [Psyche #19](https://github.com/OpenCoven/psyche/issues/19) and [Coven #804](https://github.com/OpenCoven/coven/issues/804). A runtime eligible for this profile needs a named issuer, an authenticated replay route and independent evidence for every resource that can still act. Authority selection remains open under [#12](https://github.com/OpenCoven/psyche/issues/12).
+**This section is a proposal. It is not a contract.** It is a draft for
+producer review under
+[Psyche #19](https://github.com/OpenCoven/psyche/issues/19) and
+[#12](https://github.com/OpenCoven/psyche/issues/12), written for the
+`coven-agents` consumer in
+[Coven #804](https://github.com/OpenCoven/coven/issues/804). No producer has
+approved it. Who issues and enforces a fence disposition is not decided, and
+neither is the host binding. Until a profile is approved, a consumer keeps
+every abandoned-running, termination-unknown and recovery-required invocation
+non-dispatchable. Nothing here changes a G2 schema or permits a consumer to
+act.
 
-The proposed graph-owning host supplies the immutable reconciliation request. The consumer stores its source alongside the local invocation, attempt and process instance. Each lookup uses that original binding. An authenticated response must validate against the entire request. Checking the disposition shape alone cannot identify its issuer. Only the host can establish that the prior process, delegated descendants and already dispatched tools have all lost the ability to act.
+### What the existing validator checks
 
-The consumer records one complete validated `Fenced` disposition for the bound attempt in an atomic transition. Exact replay after reopening confirms that record. A different disposition for the same request conflicts and preserves the original. If the host is unavailable, returns `Unresolved` or cannot reproduce its disposition, the consumer keeps the retained history and blocks dispatch. Reconciliation never creates an attempt. A new attempt requires a separate recovery decision from the graph-owning authority.
+`ReconciliationDisposition::validate_for` checks a `Returned` or `Fenced` value
+against one request. The disposition id and the session id or fence token must
+be non-empty and at most 255 bytes. The correlation and the ambiguity digest
+must equal the request's. The recorded time must be UTC and not earlier than
+the correlation's creation time. `Unresolved` passes without any check.
 
-`fencing_profile.rs` checks the existing Rust value validator and exercises a file-backed consumer journal with modeled host channels. Its subprocess exits on either side of commit. The parent reopens the database, requests replay and checks the one retained transition. `psyche-test-support` cases C-S6/C-S11 cover before-disposition faults, lost committed replies, exact replay and changed-request conflicts against retained in-memory fake state. C-S6 observes `EligibleAfterFence` without dispatch. Real host authentication, loss of effect capability for the old process and every child/tool, and replay across an actual host restart require producer and consumer qualification.
+It does not read the request's `reason_code`, does not call the request's own
+`validate`, does not compare the recorded time with `valid_until`, and cannot
+tell who issued the value. A passing result alone never permits recovery.
+
+### Proposed consumer obligations
+
+If a producer approves this proposal, a consumer would:
+
+- Take the immutable reconciliation request from the graph-owning host and
+  store it unchanged. It must not mint graph, node, attempt or familiar
+  identities to satisfy the correlation shape.
+- Use its local invocation, attempt and process-instance identifiers only to
+  look up that request. A process identifier never keys a retained disposition.
+  A request has one local binding, and a second binding is refused.
+- Never mint, parse, order or infer a fence token. Never infer fencing from
+  process death, a dropped future or an absent live-attempt entry.
+- Validate the stored request and ask the bound host to replay the disposition
+  for that exact request on every lookup, including after its journal is
+  reopened.
+- Retain one `Fenced` disposition per request, with its id, token, correlation,
+  ambiguity digest and recorded time, in the same atomic step as the
+  transition.
+- Append to its history and never rewrite it.
+
+The one transition the proposal would permit is from `abandoned-running`,
+`termination-unknown` or `recovery-required` to `reconciled-fenced`, exactly
+once per request. From any other state a valid `Fenced` value changes nothing
+and is not retained. An exact replay of the retained value changes nothing. A
+different value for the same request is a conflict: the original stays, and the
+conflict is appended to the history.
+
+The invocation stays blocked in every other case:
+
+- the host is unavailable or cannot reproduce its disposition;
+- the host returns `Unresolved` or `Returned`;
+- the value fails the validator, including a stale one recorded before the
+  correlation was created;
+- the reply comes from a peer other than the bound one, or there is no binding;
+- the stored request no longer decodes or validates;
+- the outcome is anything the consumer does not recognise. Unknown stays
+  blocked.
+
+Reconciliation would never create an attempt or make one dispatchable. A new
+attempt would need a separate recovery decision from the graph-owning
+authority.
+
+### Not decided
+
+- The issuer and enforcer of a `Fenced` disposition, and how a consumer
+  authenticates that issuer
+  ([#12](https://github.com/OpenCoven/psyche/issues/12)).
+- The issuer the suites exercise. C-S6 and C-S11 call `CovenPort::reconcile`,
+  where the scripted Coven port issues the disposition. This proposal has the
+  graph-owning host issue it.
+- Redispatch after a fence. The conformance suite asserts
+  `RedispatchDecision::RedispatchEligible` and
+  `RedispatchEligibility::EligibleAfterFence` for a `Fenced` disposition, and
+  `docs/TESTING.md` says a fence makes a new dispatch eligible. This proposal
+  says a new attempt needs a separate recovery decision. Reconciling the two is
+  a producer decision.
+- The evidence that the old process, every delegated descendant and every
+  already dispatched tool can no longer act. Only the host could establish it,
+  and no fixture here does.
+- Durable replay of a disposition after the issuing host restarts.
+
+### Evidence and its limits
+
+`crates/psyche-coven/tests/fencing_profile.rs` calls the real Psyche API for
+`AdoptionRequest::new`, `correlation()`, `ReconciliationRequest::validate`,
+`validate_for` and the `ExecutionCorrelation` serde round-trip. Everything else
+in that file is a consumer model written inside the test: the binding, the peer
+check, replay, duplicate and conflict handling, the transition, the append-only
+history, the dispatch spy and the crash handling. Its "wrong issuer" case
+compares two strings and is not issuer authentication. No `coven-agents` code
+runs.
+
+In that model a subprocess exits on either side of commit. The parent reopens
+the SQLite file, asks for replay and checks the one retained disposition and
+the one appended transition. `psyche-test-support` cases C-S6 and C-S11 cover
+faults before a disposition, a lost reply after a committed one, exact replay
+after restart and changed-request conflicts, all against retained in-memory
+fake state.
