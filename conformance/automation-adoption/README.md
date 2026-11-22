@@ -42,7 +42,7 @@ The other proposed operations are `status` for authorized snapshots, `subscribe`
 - **Authority member names.** `verify_packages.py` compares the `source` members with the pinned Coven schemas. No runner compares the `authority` members with the Coven, Familiar Contract or Threads schemas.
 - **Refusal records.** A refusal is not written to either journal.
 - **Producer artifacts.** The two Coven artifacts expire on 2027-02-18. `source-pins.json` records the producer run and artifact IDs. No gate runs `verify_packages.py`, because it needs those downloads.
-- **Platforms.** The runners were executed on macOS arm64 with Python 3.9.6 and 3.15.1. Linux and Windows were not run locally. The contributor workflow runs `./scripts/agent-check full`, and so both runners, on Linux, macOS and Windows.
+- **Platforms.** The runners were executed on macOS arm64 with Python 3.9.6 and 3.15.1. Linux and Windows were not run locally. The contributor workflow runs `./scripts/agent-check full`, and so both runners, on Linux, macOS and Windows when a change touches a path that its selector names. The selector names `scripts/**` and `*.md`. It does not name `conformance/**`, so a change to only the runners or the JSON vectors skips the three-platform run.
 
 ## Run against the packaged Coven profiles
 
