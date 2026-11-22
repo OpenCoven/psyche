@@ -118,6 +118,10 @@ The owning issue must approve:
 - Coven and runtime version-negotiation boundary;
 - Cave/iOS approval and reconnect flow;
 - SDK mutation profiles;
-- release-order and emergency compatibility policy.
+- release-order and emergency compatibility policy;
+- the trusted issuer and enforcer of a process-attempt fence, and the evidence that every surviving resource is covered ([#19](https://github.com/OpenCoven/psyche/issues/19));
+- how a Psyche Build receipt binds to Psyche records ([#13](https://github.com/OpenCoven/psyche/issues/13)).
+
+A proposed decision packet for #12 is in review as [draft #29](https://github.com/OpenCoven/psyche/pull/29). It is a proposal and approves nothing.
 
 Until approved, this document is a proposed boundary and must not be cited as shipped protocol support.
