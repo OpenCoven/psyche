@@ -38,10 +38,17 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 
-/// Setting this to exactly `1` rewrites every vector file from [`construct`]
-/// before the assertions run. Unset, no test in this file writes anything.
+/// Setting this to exactly `1` regenerates every vector file from
+/// [`construct`] before the assertions run. A file whose bytes already match
+/// is not written; if any file is created or changed, every test in this file
+/// fails, naming those files, so a run never verifies bytes it wrote itself.
+/// Unset, no test in this file writes anything.
 const REGENERATE_ENV: &str = "PSYCHE_REGENERATE_VECTORS";
 const README: &str = "README.md";
+/// Operating-system metadata files that can appear in a checkout without
+/// being tracked. The directory test skips exactly these names; any other
+/// unclaimed entry still fails it.
+const IGNORED_OS_METADATA: &[&str] = &[".DS_Store", "Thumbs.db"];
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 /// `SchemaKind::ALL` is private to `psyche-core`, so the registry is restated
@@ -89,7 +96,7 @@ fn pinned_digest(kind: SchemaKind) -> &'static str {
             "sha256:8ef6700f6d72a7666b57cc051342bc04491c47782f73950cc60fb2666071f5ed"
         }
         SchemaKind::SurfaceEvent => {
-            "sha256:245f5eadf55cb5dc53f4acdc61b887db665fdd3c360eacbe2ba53f2b4ec8ceb2"
+            "sha256:c458776df557249dbfba1e3d9e876e5f22f1353a0a1d2488bd822777d77761d2"
         }
         SchemaKind::Graph => {
             "sha256:fd10742cb0633589ed8e150a8b865bebcf7115ac96502ca097a5a39e28a54e93"
@@ -194,33 +201,68 @@ fn regenerate_requested() -> bool {
 
 /// The documented generator: typed construction -> validation -> the crate's
 /// RFC 8785 encoder -> file. Reached only when [`REGENERATE_ENV`] is `1`.
-fn regenerate() {
+/// Each file is compared with the encoder output before anything is written,
+/// and only a missing or different file is written. Returns one line per file
+/// created or changed, saying whether its digest literal is now stale.
+fn regenerate() -> Vec<String> {
     std::fs::create_dir_all(vector_dir()).unwrap();
-    println!("regenerated canonical vectors (file, bytes, digest):");
-    for kind in SCHEMA_KINDS {
-        let document = construct(*kind);
+    let mut written = Vec::new();
+    println!("regenerated canonical vectors (file, bytes, digest, action):");
+    for kind in SCHEMA_KINDS.iter().copied() {
+        let document = construct(kind);
         document.validate().unwrap();
         let bytes = canonical_bytes(&document).unwrap();
-        let file = vector_file_name(*kind);
-        std::fs::write(vector_dir().join(&file), &bytes).unwrap();
-        println!("{file} {} {}", bytes.len(), digest(&document).unwrap());
+        let pin = digest(&document).unwrap();
+        let file = vector_file_name(kind);
+        let path = vector_dir().join(&file);
+        let action = match std::fs::read(&path) {
+            Ok(existing) if existing == bytes => "unchanged",
+            Ok(_) => "changed",
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => "created",
+            Err(error) => panic!("cannot read {file} before regenerating it: {error}"),
+        };
+        if action != "unchanged" {
+            std::fs::write(&path, &bytes).unwrap();
+            let literal = if pin.as_str() == pinned_digest(kind) {
+                "matches"
+            } else {
+                "is stale"
+            };
+            written.push(format!("{action} {file} (pinned_digest literal {literal})"));
+        }
+        println!("{file} {} {pin} {action}", bytes.len());
     }
     println!("pinned_digest arms:");
     for kind in SCHEMA_KINDS {
         let pin = digest(&construct(*kind)).unwrap();
         println!("        SchemaKind::{kind:?} => \"{pin}\",");
     }
+    written
 }
 
 /// Every read goes through here so a requested regeneration happens exactly
 /// once, before any assertion, whichever test the harness schedules first.
+/// A regeneration that created or changed a file fails every caller: the
+/// rewritten bytes are reviewed and re-run, never passed by the run that
+/// wrote them. One that changed nothing wrote nothing, so the assertions run
+/// over the committed bytes exactly as in a run without the variable.
 fn vector(kind: SchemaKind) -> Vec<u8> {
-    static PREPARED: OnceLock<()> = OnceLock::new();
-    PREPARED.get_or_init(|| {
+    static WRITTEN: OnceLock<Vec<String>> = OnceLock::new();
+    let written = WRITTEN.get_or_init(|| {
         if regenerate_requested() {
-            regenerate();
+            regenerate()
+        } else {
+            Vec::new()
         }
     });
+    assert!(
+        written.is_empty(),
+        "{REGENERATE_ENV}=1 created or changed {} vector file(s); this run fails on purpose. \
+         Review the diff, re-pin any stale pinned_digest literal under R4 review, and re-run \
+         without the variable:\n  {}",
+        written.len(),
+        written.join("\n  ")
+    );
     let file = vector_file_name(kind);
     std::fs::read(vector_dir().join(&file))
         .unwrap_or_else(|error| panic!("no vector file {file} for {kind:?}: {error}"))
@@ -228,6 +270,33 @@ fn vector(kind: SchemaKind) -> Vec<u8> {
 
 fn text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("vector bytes are UTF-8")
+}
+
+/// Asserts that two UTF-8 JSON texts are the same bytes. A mismatch reports
+/// both lengths, the first differing offset and a short window from each side
+/// instead of both documents in full.
+fn assert_same_bytes(actual: &[u8], expected: &[u8], context: impl std::fmt::Display) {
+    let _ = (text(actual), text(expected));
+    if actual == expected {
+        return;
+    }
+    let offset = actual
+        .iter()
+        .zip(expected)
+        .position(|(left, right)| left != right)
+        .unwrap_or_else(|| actual.len().min(expected.len()));
+    let window = |bytes: &[u8]| {
+        let end = (offset + 24).min(bytes.len());
+        String::from_utf8_lossy(&bytes[offset.saturating_sub(24)..end]).into_owned()
+    };
+    panic!(
+        "{context}: bytes differ at offset {offset} (actual {} bytes, expected {} bytes)\n  \
+         actual near offset:   {:?}\n  expected near offset: {:?}",
+        actual.len(),
+        expected.len(),
+        window(actual),
+        window(expected),
+    );
 }
 
 /// SHA-256 over raw bytes with the workspace's one SHA-256 implementation,
@@ -266,6 +335,7 @@ fn request_id(n: u8) -> RequestId {
     RequestId::parse(&format!("{}{}", RequestId::PREFIX, ulid(n))).unwrap()
 }
 
+/// A placeholder digest: 64 copies of one hex nibble. It binds no content.
 fn hex_digest(nibble: char) -> Sha256Digest {
     Sha256Digest::parse(&format!("sha256:{}", nibble.to_string().repeat(64))).unwrap()
 }
@@ -328,13 +398,19 @@ fn construct(kind: SchemaKind) -> CanonicalDocument {
             adapter_event_digest: hex_digest('2'),
             received_at: timestamp("2026-08-01T00:00:00Z"),
             // Free-form adapter content is where RFC 8785 string, number and
-            // key-ordering rules are observable: escapes, non-ASCII text, a
-            // fraction, an exponent, and two keys whose UTF-16 code-unit
-            // order (U+1F600 before U+FFE6) differs from code-point order.
+            // key-ordering rules are observable: the two-character escapes
+            // `\b \f \n \r \t`, `\u00XX` control escapes, non-ASCII text, a
+            // fraction, a negative number, an exponent, `0.000001` (decimal
+            // in RFC 8785, `1e-6` in plain serde_json), and two keys whose
+            // UTF-16 code-unit order (U+1F600 before U+FFE6) differs from
+            // code-point order.
             content: json!({
                 "type": "text",
                 "text": "Synthetic line one\nline two \"quoted\" \\ \u{20ac} \u{1F600}",
                 "control": "\u{1}\u{1f}",
+                "short_escapes": "\u{8}\u{c}\r\t",
+                "micro": 0.000001,
+                "negative": -1.5,
                 "entities": [
                     {"kind": "bold", "offset": 0, "length": 9},
                     {"kind": "italic", "offset": 10, "length": 4}
@@ -569,8 +645,20 @@ fn construct(kind: SchemaKind) -> CanonicalDocument {
 
 /// A deliberately non-canonical spelling of the same JSON data: object keys in
 /// descending order, insignificant whitespace, non-ASCII characters written
-/// as `\uXXXX` escapes, and a trailing newline.
+/// as `\uXXXX` escapes, and a trailing newline. Numbers keep their spelling.
 fn respell(value: &Value) -> Vec<u8> {
+    respell_spelling(value, None).0
+}
+
+/// [`respell`], and every number inside the top-level member `member`
+/// rewritten by [`respell_number`]. Typed integer fields cannot carry a
+/// fraction or exponent, so only a free-form member is eligible. Returns the
+/// bytes and each `(original, respelling)` number pair in output order.
+fn respell_numbers_in(value: &Value, member: &str) -> (Vec<u8>, Vec<(String, String)>) {
+    respell_spelling(value, Some(member))
+}
+
+fn respell_spelling(value: &Value, numbers_in: Option<&str>) -> (Vec<u8>, Vec<(String, String)>) {
     fn string(value: &str, out: &mut String) {
         for character in serde_json::to_string(value).unwrap().chars() {
             if character.is_ascii() {
@@ -583,7 +671,13 @@ fn respell(value: &Value) -> Vec<u8> {
         }
     }
 
-    fn walk(value: &Value, out: &mut String) {
+    fn walk(
+        value: &Value,
+        out: &mut String,
+        numbers_in: Option<&str>,
+        respell_numbers: bool,
+        numbers: &mut Vec<(String, String)>,
+    ) {
         match value {
             Value::Object(members) => {
                 let mut members: Vec<_> = members.iter().collect();
@@ -596,7 +690,8 @@ fn respell(value: &Value) -> Vec<u8> {
                     out.push_str("  ");
                     string(key, out);
                     out.push_str(" : ");
-                    walk(member, out);
+                    let nested = respell_numbers || numbers_in == Some(key.as_str());
+                    walk(member, out, None, nested, numbers);
                 }
                 out.push_str("\n}");
             }
@@ -606,11 +701,17 @@ fn respell(value: &Value) -> Vec<u8> {
                     if index > 0 {
                         out.push_str(" , ");
                     }
-                    walk(item, out);
+                    walk(item, out, None, respell_numbers, numbers);
                 }
                 out.push_str(" ]");
             }
             Value::String(value) => string(value, out),
+            Value::Number(number) if respell_numbers => {
+                let original = number.to_string();
+                let respelling = respell_number(&original, numbers.len());
+                out.push_str(&respelling);
+                numbers.push((original, respelling));
+            }
             Value::Null | Value::Bool(_) | Value::Number(_) => {
                 out.push_str(&serde_json::to_string(value).unwrap());
             }
@@ -618,9 +719,65 @@ fn respell(value: &Value) -> Vec<u8> {
     }
 
     let mut out = String::new();
-    walk(value, &mut out);
+    let mut numbers = Vec::new();
+    walk(value, &mut out, numbers_in, false, &mut numbers);
     out.push('\n');
-    out.into_bytes()
+    (out.into_bytes(), numbers)
+}
+
+/// Another spelling of the same JSON number value. Even `variant`s give a
+/// plain decimal with one superfluous trailing zero (`9` -> `9.0`, `0.25` ->
+/// `0.250`, `1e-7` -> `0.00000010`); odd ones give scientific notation with
+/// one leading digit (`0.25` -> `2.5e-1`, `0.000001` -> `1.0e-6`, `9` ->
+/// `9.0E+0`). Both parse to the same value as `text`.
+fn respell_number(text: &str, variant: usize) -> String {
+    let (sign, unsigned) = match text.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", text),
+    };
+    let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
+        Some(at) => (&unsigned[..at], unsigned[at + 1..].parse::<i64>().unwrap()),
+        None => (unsigned, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    // The value is `digits * 10^scale`, with `digits` free of leading and
+    // trailing zeros (or exactly `0`).
+    let mut digits = format!("{whole}{fraction}")
+        .trim_start_matches('0')
+        .to_owned();
+    let mut scale = exponent - i64::try_from(fraction.len()).unwrap();
+    if digits.is_empty() {
+        digits.push('0');
+        scale = 0;
+    }
+    while digits.len() > 1 && digits.ends_with('0') {
+        digits.pop();
+        scale += 1;
+    }
+
+    if variant % 2 == 0 {
+        let plain = if scale >= 0 {
+            format!("{digits}{}.0", "0".repeat(usize::try_from(scale).unwrap()))
+        } else {
+            let places = usize::try_from(-scale).unwrap();
+            if digits.len() > places {
+                let (integral, fractional) = digits.split_at(digits.len() - places);
+                format!("{integral}.{fractional}0")
+            } else {
+                format!("0.{}{digits}0", "0".repeat(places - digits.len()))
+            }
+        };
+        format!("{sign}{plain}")
+    } else {
+        let (lead, rest) = digits.split_at(1);
+        let rest = if rest.is_empty() { "0" } else { rest };
+        let power = scale + i64::try_from(digits.len()).unwrap() - 1;
+        if power < 0 {
+            format!("{sign}{lead}.{rest}e{power}")
+        } else {
+            format!("{sign}{lead}.{rest}E+{power}")
+        }
+    }
 }
 
 #[test]
@@ -649,24 +806,24 @@ fn every_registered_kind_has_a_pinned_canonical_vector() {
         // The file is exactly what the encoder produces for the decoded
         // document, for the same data read untyped, and for the typed
         // construction the generator uses.
-        assert_eq!(
-            text(&canonical_bytes(&document).unwrap()),
-            text(&file),
-            "{kind:?}"
+        assert_same_bytes(
+            &canonical_bytes(&document).unwrap(),
+            &file,
+            format!("{kind:?} decoded"),
         );
         let untyped: Value = serde_json::from_slice(&file).unwrap();
-        assert_eq!(
-            text(&canonical_bytes(&untyped).unwrap()),
-            text(&file),
-            "{kind:?}"
+        assert_same_bytes(
+            &canonical_bytes(&untyped).unwrap(),
+            &file,
+            format!("{kind:?} untyped"),
         );
         let constructed = construct(kind);
         constructed.validate().unwrap();
         assert_eq!(constructed, document, "{kind:?}");
-        assert_eq!(
-            text(&canonical_bytes(&constructed).unwrap()),
-            text(&file),
-            "{kind:?}"
+        assert_same_bytes(
+            &canonical_bytes(&constructed).unwrap(),
+            &file,
+            format!("{kind:?} constructed"),
         );
 
         assert_eq!(digest(&document).unwrap().as_str(), pin, "{kind:?}");
@@ -713,12 +870,19 @@ fn vector_directory_holds_exactly_one_file_per_registered_kind() {
     for entry in std::fs::read_dir(vector_dir()).unwrap() {
         let entry = entry.unwrap();
         let name = entry.file_name().into_string().unwrap();
+        if IGNORED_OS_METADATA.contains(&name.as_str()) {
+            continue;
+        }
         assert!(entry.file_type().unwrap().is_file(), "{name} is not a file");
         found.insert(name);
     }
     assert_eq!(found, expected, "missing or unclaimed vector file");
 }
 
+// An acceptance control. That the decoder accepts insignificant whitespace,
+// including the respelling's trailing newline, pins observed decoder
+// behaviour, not a contract: a stricter decoder would fail this test and
+// need a decision, not a weaker assertion.
 #[test]
 fn non_canonical_spellings_canonicalize_to_the_pinned_bytes_and_digest() {
     for kind in SCHEMA_KINDS.iter().copied() {
@@ -732,13 +896,54 @@ fn non_canonical_spellings_canonicalize_to_the_pinned_bytes_and_digest() {
         let document = decode_document(&respelled)
             .unwrap_or_else(|error| panic!("{kind:?} respelling does not decode: {error:?}"));
         assert_eq!(document, decode_document(&file).unwrap(), "{kind:?}");
-        assert_eq!(
-            text(&canonical_bytes(&document).unwrap()),
-            text(&file),
-            "{kind:?}"
+        assert_same_bytes(
+            &canonical_bytes(&document).unwrap(),
+            &file,
+            format!("{kind:?} respelled"),
         );
         assert_eq!(digest(&document).unwrap().as_str(), pin, "{kind:?}");
     }
+
+    // Number spellings, confined to surface_event's free-form `content`: the
+    // one vector whose free-form data holds integers, fractions, a negative
+    // number and exponents, and where a typed integer field cannot be hit.
+    let kind = SchemaKind::SurfaceEvent;
+    let file = vector(kind);
+    let pin = pinned_digest(kind);
+    let (respelled, numbers) =
+        respell_numbers_in(&serde_json::from_slice(&file).unwrap(), "content");
+    // Every number in `content`, in the respelling's descending key order,
+    // with the spelling it was given.
+    let expected = [
+        ("1e-7", "0.00000010"),
+        ("0.25", "2.5e-1"),
+        ("-1.5", "-1.50"),
+        ("0.000001", "1.0e-6"),
+        ("0", "0.0"),
+        ("9", "9.0E+0"),
+        ("10", "10.0"),
+        ("4", "4.0E+0"),
+    ]
+    .map(|(original, respelling)| (original.to_owned(), respelling.to_owned()));
+    assert_eq!(numbers, expected);
+    assert_ne!(
+        text(&respelled),
+        text(&respell(&serde_json::from_slice(&file).unwrap()))
+    );
+    assert_ne!(raw_sha256(&respelled), pin);
+
+    // The decoder reads a number with a fraction or exponent as a float, so
+    // `9.0E+0` decodes to a value unequal to the integer `9`. The control is
+    // therefore on the re-encoded bytes and digest, not on decoded values.
+    let document = decode_document(&respelled)
+        .unwrap_or_else(|error| panic!("number respelling does not decode: {error:?}"));
+    assert_eq!(document.schema_version(), schema(kind));
+    assert_same_bytes(
+        &canonical_bytes(&document).unwrap(),
+        &file,
+        "SurfaceEvent number respelling",
+    );
+    assert_eq!(digest(&document).unwrap().as_str(), pin);
 }
 
 #[test]
@@ -760,10 +965,10 @@ fn changing_one_value_byte_changes_the_digest() {
         let document = decode_document(&changed)
             .unwrap_or_else(|error| panic!("{kind:?} mutation does not decode: {error:?}"));
         assert_eq!(document.schema_version(), schema(kind), "{kind:?}");
-        assert_eq!(
-            text(&canonical_bytes(&document).unwrap()),
-            text(&changed),
-            "{kind:?}"
+        assert_same_bytes(
+            &canonical_bytes(&document).unwrap(),
+            &changed,
+            format!("{kind:?} mutated"),
         );
         assert_ne!(document, decode_document(&file).unwrap(), "{kind:?}");
         assert_ne!(digest(&document).unwrap().as_str(), pin, "{kind:?}");
@@ -851,13 +1056,14 @@ fn a_trailing_newline_decodes_but_is_not_the_canonical_spelling() {
 
         // The decoder accepts insignificant trailing whitespace; only the
         // re-encoded bytes, not the received ones, carry the pinned digest.
+        // That acceptance pins observed decoder behaviour, not a contract.
         let document = decode_document(&with_newline)
             .unwrap_or_else(|error| panic!("{kind:?} with newline: {error:?}"));
         assert_eq!(document, decode_document(&file).unwrap(), "{kind:?}");
-        assert_eq!(
-            text(&canonical_bytes(&document).unwrap()),
-            text(&file),
-            "{kind:?}"
+        assert_same_bytes(
+            &canonical_bytes(&document).unwrap(),
+            &file,
+            format!("{kind:?} with newline"),
         );
         assert_eq!(digest(&document).unwrap().as_str(), pin, "{kind:?}");
     }
