@@ -38,8 +38,9 @@ The pin is the digest literal per kind in `pinned_digest` in the same test
 file, not this directory. The test fails if a file, a typed construction, the
 encoder or a literal changes without the others, if a kind has no file, or if
 this directory holds a file no kind claims. Besides the vectors and this
-README, the directory test ignores exactly two untracked operating-system
-names, `.DS_Store` and `Thumbs.db`; any other entry fails it.
+README, the directory test ignores exactly two operating-system metadata
+file names, `.DS_Store` and `Thumbs.db`, when they are regular files; any other
+entry, including a directory or link with either name, fails it.
 
 ## Regenerating
 

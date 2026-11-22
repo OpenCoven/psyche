@@ -870,10 +870,10 @@ fn vector_directory_holds_exactly_one_file_per_registered_kind() {
     for entry in std::fs::read_dir(vector_dir()).unwrap() {
         let entry = entry.unwrap();
         let name = entry.file_name().into_string().unwrap();
+        assert!(entry.file_type().unwrap().is_file(), "{name} is not a file");
         if IGNORED_OS_METADATA.contains(&name.as_str()) {
             continue;
         }
-        assert!(entry.file_type().unwrap().is_file(), "{name} is not a file");
         found.insert(name);
     }
     assert_eq!(found, expected, "missing or unclaimed vector file");
@@ -932,8 +932,9 @@ fn non_canonical_spellings_canonicalize_to_the_pinned_bytes_and_digest() {
     );
     assert_ne!(raw_sha256(&respelled), pin);
 
-    // The decoder reads a number with a fraction or exponent as a float, so
-    // `9.0E+0` decodes to a value unequal to the integer `9`. The control is
+    // Decoded values keep each number's source spelling (the workspace enables
+    // serde_json's `arbitrary_precision`), so `2.5e-1` and `0.25` decode
+    // unequal even though they canonicalize identically. The control is
     // therefore on the re-encoded bytes and digest, not on decoded values.
     let document = decode_document(&respelled)
         .unwrap_or_else(|error| panic!("number respelling does not decode: {error:?}"));

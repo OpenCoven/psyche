@@ -68,8 +68,8 @@ trailing newline, and its SHA-256 is a literal in the test. The suite fails
 when a file, a typed construction, the encoder, or a literal drifts, when a
 kind has no file, and when the directory holds a file no kind claims. Beyond
 the drift checks it has three acceptance controls and four denials. The
-acceptance controls show that a non-canonical spelling (including respelled
-numbers) and a trailing newline decode and re-encode to the pinned bytes and
+acceptance controls show that a non-canonical spelling (for surface_event's
+free-form content, also respelled numbers) and a trailing newline decode and re-encode to the pinned bytes and
 digest, and that a one-byte value change still decodes but no longer carries
 the pinned digest. The denials cover an unknown field, an unknown major, an
 unknown schema name, and a duplicate key. The vectors are experimental inputs
