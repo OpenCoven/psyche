@@ -225,6 +225,7 @@ def store_tables(root):
     require(
         diverted
         and named == diverted
+        and len(re.findall(r"\b(?:if|match)\b", found[1])) == len(diverted)
         and "INSERT INTO canonical_records" in records
         and "INSERT INTO execution_binding_revisions" in read(root, BINDINGS),
         f"{RECORDS}: cannot parse the table routing in insert_with_status",
@@ -356,9 +357,19 @@ def validate_codemap_kinds(root, text):
     section = re.search(r"^## Record kinds\n(.*?)(?=^## |\Z)", text, re.S | re.M)
     require(section, f"{where} section not found")
     rows = {}
-    for kind, rest in re.findall(
-        r"^\| `([A-Z][A-Za-z0-9]*)` \| (`.*) \|$", section[1], re.M
-    ):
+    header = "| `RecordKind` | Prefix | Schema string | Rust type | Table |"
+    lines = section[1].splitlines()
+    require(header in lines, f"{where} table not found")
+    start = lines.index(header) + 1
+    require(
+        lines[start : start + 1] == ["|---|---|---|---|---|"], f"{where} table not found"
+    )
+    for line in lines[start + 1:]:
+        if not line.strip():
+            break
+        row = re.fullmatch(r"\| `([^|`]+)` \| (.*) \|", line)
+        require(row, f"{where} malformed row {line}")
+        kind, rest = row.groups()
         require(kind not in rows, f"{where} duplicate row {kind}")
         cells = rest.split(" | ")
         require(len(cells) == 4, f"{where} {kind} row does not have five columns")
@@ -376,10 +387,11 @@ def validate_codemap_kinds(root, text):
             f"{where} {kind} prefix is {cell(prefix)},"
             f" RecordKind::prefix says {want['prefix']}",
         )
-        schemas = sorted(re.findall(r"`([^`]*)`", schemas))
+        schema_names = sorted(cell(value) for value in schemas.split(", "))
         require(
-            schemas == want["schemas"],
-            f"{where} {kind} schema is {', '.join(schemas)},"
+            re.fullmatch(r"`[^`]+`(?:, `[^`]+`)*", schemas)
+            and schema_names == want["schemas"],
+            f"{where} {kind} schema is {', '.join(schema_names)},"
             f" the registry says {', '.join(want['schemas'])}",
         )
         require(
@@ -626,6 +638,29 @@ def main():
                 ),
                 (CODEMAP, row, "", CODEMAP + " record kinds: missing Addon", True),
                 (CODEMAP, row, ghost, CODEMAP + " record kinds: extra Ghost", True),
+                (
+                    CODEMAP,
+                    row,
+                    ghost.replace("Ghost", "retired_kind"),
+                    CODEMAP + " record kinds: extra retired_kind",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "`psyche.intent.v1` |",
+                    "`psyche.intent.v1` or psyche.obsolete.v1 |",
+                    CODEMAP + " record kinds: Intent schema is `psyche.intent.v1` or psyche.obsolete.v1,"
+                    + " the registry says psyche.intent.v1",
+                    True,
+                ),
+                (
+                    RECORDS,
+                    "if let CanonicalDocument::ExecutionBinding(binding) = document {",
+                    "if kind == SchemaKind::Intent { return Err(StoreError::DatabaseOperation); }\n"
+                    + "        if let CanonicalDocument::ExecutionBinding(binding) = document {",
+                    RECORDS + ": cannot parse the table routing in insert_with_status",
+                    True,
+                ),
                 (
                     CODEMAP,
                     row,
