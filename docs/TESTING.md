@@ -23,6 +23,20 @@ and pinned SHA-256. `scripts/g2-test-manifest.json` maps each allowlisted atomic
 matrix command to an exact test name. The checker lists every Cargo target and
 rejects zero tests, missing names, substring filters, or unused entries.
 
+The canonical vector suite, `crates/psyche-core/tests/canonical_vectors.rs`,
+pins one document for each of the sixteen registered schema kinds under
+`crates/psyche-core/tests/fixtures/vectors/`: the fifteen durable record kinds
+and the error envelope. Each `psyche.<kind>.v1.json` file is byte-for-byte the
+RFC 8785 output of `canonical_bytes` for a typed synthetic document, with no
+trailing newline, and its SHA-256 is a literal in the test. The suite fails
+when a file, a typed construction, the encoder, or a literal drifts, when a
+kind has no file, and when the directory holds a file no kind claims. Its
+negative controls cover a non-canonical spelling, a one-byte value change, an
+unknown field, major, and schema name, a duplicate key, and a trailing newline.
+The vectors are experimental inputs to #11, not a published artifact, and the
+suite is not a G2 matrix row. The directory README gives the one regeneration
+command; a default test run never writes a file.
+
 O5 tests reject raw statuses `created`, `running`, `idle`, `completed`,
 `failed`, `killed`, and `orphaned` as cancellation acknowledgement. Immutable Coven
 blob URLs and SHA-256 values bind the evidence to the reviewed sources.
