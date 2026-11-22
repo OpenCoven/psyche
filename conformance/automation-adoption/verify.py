@@ -465,7 +465,7 @@ class Vectors(unittest.TestCase):
     def test_malformed_timestamps_are_denied(self):
         for value in ("2026-11-20T08:05:00+00:00", "2026-11-20T08:05:00.000Z", "2026-11-20t08:05:00z",
                       "2026-11-20 08:05:00Z", "2026-11-20T8:05:00Z", "2026-13-20T08:05:00Z",
-                      "2026-11-20T08:05:60Z", "2026-11-20T08:05:00", "٢026-11-20T08:05:00Z", ""):
+                      "2026-11-20T08:05:60Z", "2026-11-20T08:05:00", "\u0662026-11-20T08:05:00Z", ""):
             with self.subTest(value=value):
                 self.refused(Denied, "malformed-timestamp", "request.deadline", self.adoption,
                              self.changed(lambda data: data.update(deadline=value)))

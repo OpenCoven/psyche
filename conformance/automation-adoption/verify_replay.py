@@ -343,7 +343,7 @@ class ReplayVectors(unittest.TestCase):
             ("duplicate-key", "state", text[:-1] + ', "state": "adopted"}'),
             ("non-finite-number", "NaN", text[:-1] + ', "extra": NaN}'),
             ("malformed-json", "", text[:-1]),
-            ("byte-order-mark", "", "﻿" + text),
+            ("byte-order-mark", "", "\ufeff" + text),
         ]
         for code, detail, stored in vectors:
             with self.subTest(code=code, detail=detail):
