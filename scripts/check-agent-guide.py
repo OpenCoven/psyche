@@ -378,7 +378,7 @@ def validate_codemap_kinds(root, text):
         require(len(cells) == 4, f"{where} {kind} row does not have five columns")
         rows[kind] = cells
     require(rows, f"{where} table not found")
-    for line in lines[end:]:
+    for line in lines[: start - 1] + lines[end:]:
         require(
             not line.lstrip().startswith("|"),
             f"{where} table row outside the table: {line.strip()}",
@@ -669,6 +669,27 @@ def main():
                     "\n\n- Registry and decoder: ",
                     "\n\n| `RecordKind` | Prefix | Schema string | Rust type | Table |\n|---|---|---|---|---|\n| `Ghost` | `gho_` | `psyche.ghost.v1` | none | none |\n\n- Registry and decoder: ",
                     CODEMAP + " record kinds: table row outside the table: | `RecordKind` | Prefix | Schema string | Rust type | Table |",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "## Record kinds\n\n",
+                    "## Record kinds\n\n| `Ghost` | `gho_` | `psyche.ghost.v1` | none | none |\n\n",
+                    CODEMAP + " record kinds: table row outside the table: | `Ghost` | `gho_` | `psyche.ghost.v1` | none | none |",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "## Record kinds\n\n",
+                    "## Record kinds\n\n| Kind | Prefix | Schema | Type | Table |\n|---|---|---|---|---|\n| `Ghost` | `gho_` | `psyche.ghost.v1` | none | none |\n\n",
+                    CODEMAP + " record kinds: table row outside the table: | Kind | Prefix | Schema | Type | Table |",
+                    True,
+                ),
+                (
+                    CODEMAP,
+                    "\n\n- Registry and decoder: ",
+                    "\n\n  | `Ghost` | `gho_` | `psyche.ghost.v1` | none | none |\n- Registry and decoder: ",
+                    CODEMAP + " record kinds: table row outside the table: | `Ghost` | `gho_` | `psyche.ghost.v1` | none | none |",
                     True,
                 ),
                 (
