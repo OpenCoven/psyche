@@ -1,0 +1,21 @@
+name: Experimental lifecycle kit
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Fetch immutable receipt profile source
+        run: git fetch --no-tags origin 18d84903a28aa1d8fcc055864f245561c436ded5
+      - name: Compare independent builds and member hashes
+        run: bash profiles/adapter-lifecycle/qualify.sh "$RUNNER_TEMP/adapter-lifecycle.pyz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-adapter-lifecycle
+          path: ${{ runner.temp }}/adapter-lifecycle.pyz
+          if-no-files-found: error

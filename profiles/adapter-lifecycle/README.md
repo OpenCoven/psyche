@@ -1,0 +1,21 @@
+# Experimental external adapter lifecycle v1
+
+The kit drives a consumer-supplied executable through a synthetic launch, approval, loss of acknowledgment, process restart and rollback. The adapter owns the fixture effects and uses its native task, action, approval and receipt APIs. The golden request binds the request and attempt. Its historical timestamps are fixture data. Running the kit grants no production authority.
+
+## Build and consume
+
+Fetch the immutable receipt-profile commit named in `qualify.sh`. From a clean producer checkout, run `bash profiles/adapter-lifecycle/qualify.sh /tmp/adapter-lifecycle.pyz`. It builds from two independent exports and compares the entire archive and every member. Its manifest pins the embedded replay comparator, launch golden, schemas and vectors. Obtain the outer SHA-256 from the reviewed consumer pin and verify it before executing Python.
+
+From an empty offline directory, run `python3 -I /absolute/path/adapter-lifecycle.pyz --sha256 "$PIN" -- /absolute/path/to/adapter`. Arguments following the executable are passed literally. The caller enforces network isolation. Each phase is a fresh process in the same temporary scenario directory. Standard input and output each carry one JSON object. A successful run prints a bounded transcript, including fixture denials and a receipt digest for each observation. Errors produce a nonzero exit and a bounded reason.
+
+## Consumer obligations
+
+Implement the shipped input/output schemas. On first submission, bind the request ID and SHA-256 of its canonical bytes to the native task and original action. Read the actual approval binding, durable receipt bytes and independently witnessed effect count. On replay, submit the original command to the reopened native runtime and report the binding read from disk. For rollback, reopen using only the original native IDs and report the native observation without protocol correlation fields. The runner compares both observations and invokes the pinned replay comparator. A lost acknowledgment must remain unknown and must never trigger another effect.
+
+Unknown versions, stale correlation and an incompatible reader must refuse before writes. Cancellation revokes the pending authority before resolution. The authority vector attempts resolution as the agent. The driver checks exact dispositions and counts and hashes the persisted workspace around read-only denials.
+
+## Ownership and promotion
+
+The inventory in PR #28 reports 16 v1 kinds and 15 durable prefixes. The existing launch golden supplies request, node, graph and attempt identity. Build retains its task, action, approval binding and terminal receipt. The experimental observation keeps these opaque native identifiers separate from the protocol approval record. Task, lane, action, receipt and lease have no separately released prefixes in the current registry. This profile adds no registry kind and authorizes no historical identity conversion. [Inventory](https://github.com/OpenCoven/psyche/pull/28) · [Build compatibility map](https://github.com/OpenCoven/psyche-build/pull/262)
+
+The bounded Telegram planning decision assigns identity to Familiar, protected verdicts to Threads and execution to Coven. The Coven O4 design decision applies within its recorded scope. The Psyche and cross-repository owners on #12 still need to choose the historical identity disposition, supply verifiable provenance for specification revision `9b07c500ad10a8d509d451d64b9739a1bdc4dc0f` or approve a traced correction, and designate the process-attempt fence issuer and evidence that all surviving resources are covered. Receipt issuance, verification and handling of missing or ambiguous receipts also need a decision. This fixture retains an ambiguous result across replay and rollback. Stable publication requires the applicable #10 foundation and approved #12 rows. [Ownership matrix](https://github.com/OpenCoven/psyche/pull/29) · [Decision record](https://github.com/OpenCoven/psyche/issues/12)
