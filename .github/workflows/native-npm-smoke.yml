@@ -11,6 +11,10 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

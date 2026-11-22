@@ -5,13 +5,18 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / "packages" / "psyche-npm"
+WORKFLOW = ROOT / ".github" / "workflows" / "native-npm-smoke.yml"
+COMPANION_PREFIX = "@opencoven/psyche-"
+PLATFORM_ENV = "PSYCHE_EXPECTED_NPM_PLATFORM"
 
 
 def require(condition, message):
@@ -43,6 +48,64 @@ def check_clean(env):
     require(not state, "The native npm smoke test requires a clean source checkout.")
 
 
+def workflow_platforms():
+    """Read the matrix platform keys without a YAML dependency. An unexpected layout is refused."""
+    lines = []
+    for line in WORKFLOW.read_text(encoding="utf-8").splitlines():
+        text = line.split(" #", 1)[0].rstrip()
+        lines.append("" if text.lstrip().startswith("#") else text)
+    starts = [index for index, text in enumerate(lines) if text.strip() == "include:"]
+    require(len(starts) == 1, f"{WORKFLOW.name} must hold exactly one block-style matrix include list")
+    indent = len(lines[starts[0]]) - len(lines[starts[0]].lstrip())
+    entries = []
+    for text in lines[starts[0] + 1:]:
+        if not text:
+            continue
+        if len(text) - len(text.lstrip()) <= indent:
+            break
+        item = text.strip()
+        if item.startswith("- "):
+            entries.append([])
+            item = item[2:].strip()
+        require(entries, f"{WORKFLOW.name} matrix include list does not start with an entry")
+        name, _, value = item.partition(":")
+        if name.strip() == "platform":
+            entries[-1].append(value.strip().strip("'\""))
+    keys = [entry[0] for entry in entries if len(entry) == 1 and entry[0]]
+    require(entries and len(keys) == len(entries) and len(set(keys)) == len(keys),
+            f"every {WORKFLOW.name} matrix entry must name one distinct platform key")
+    binding = f"{PLATFORM_ENV}: ${{{{ matrix.platform }}}}"
+    require([text.strip() for text in lines].count(binding) == 1,
+            f"{WORKFLOW.name} must pass matrix.platform to this script as {PLATFORM_ENV}")
+    return set(keys)
+
+
+def check_platform_coverage(manifest, env):
+    companions = {name[len(COMPANION_PREFIX):] for name in manifest["optionalDependencies"]
+                  if name.startswith(COMPANION_PREFIX)}
+    checksums = set(manifest["psyche"]["checksums"])
+    launcher = set(json.loads(run(
+        ["node", "-p", "JSON.stringify([...require('./scripts/verify-checksum.js').SUPPORTED])"], WRAPPER, env).stdout))
+    require(companions == checksums == launcher,
+            "the wrapper disagrees with itself about its platform keys: "
+            f"companions {sorted(companions)}, checksums {sorted(checksums)}, launcher {sorted(launcher)}")
+    listed = workflow_platforms()
+    require(listed == checksums,
+            f"{WORKFLOW.name} matrix differs from the wrapper's platform keys: "
+            f"missing from the matrix {sorted(checksums - listed)}, unknown to the wrapper {sorted(listed - checksums)}")
+
+
+def pinned_toolchain(env):
+    pin = re.search(r'^channel = "([^"]+)"', (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"), re.M)
+    require(pin, "rust-toolchain.toml does not pin a channel")
+    versions = {tool: run([tool, "--version"], ROOT, env).stdout.strip() for tool in ("rustc", "cargo")}
+    for tool, version in versions.items():
+        require(version.split()[1:2] == [pin[1]],
+                f"{tool} reports {version!r} but rust-toolchain.toml pins {pin[1]}; "
+                "put the rustup proxies first on PATH")
+    return versions["rustc"]
+
+
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
@@ -72,15 +135,21 @@ def expect_checksum_failure(consumer, launcher, expected_hash, found_hash, env):
 def exercise(work, env):
     platform, arch = json.loads(run(["node", "-p", "JSON.stringify([process.platform,process.arch])"], ROOT, env).stdout)
     key = f"{platform}-{arch}"
-    expected_key = env.get("PSYCHE_EXPECTED_NPM_PLATFORM", key)
+    expected_key = env.get(PLATFORM_ENV, key)
     require(key == expected_key, f"expected npm platform {expected_key}, measured {key}")
     npm = "npm.cmd" if os.name == "nt" else "npm"
     source = run(["git", "rev-parse", "HEAD"], ROOT, env).stdout.strip()
     manifest = json.loads((WRAPPER / "package.json").read_text(encoding="utf-8"))
-    package = f"@opencoven/psyche-{key}"
+    package = f"{COMPANION_PREFIX}{key}"
+    require(package in manifest["optionalDependencies"],
+            f"unsupported npm platform {key}: the wrapper declares no {package} companion")
+    require(key in manifest["psyche"]["checksums"],
+            f"the wrapper's checksum table has no entry for npm platform {key}")
+    check_platform_coverage(manifest, env)
     companion_version = manifest["optionalDependencies"][package]
     stock_digest = manifest["psyche"]["checksums"][key]
     require(stock_digest == "0" * 64, "rehearsal expects the pre-release wrapper's zero checksum")
+    rustc = pinned_toolchain(env)
 
     target = work / "target"
     run(["cargo", "build", "--locked", "--release", "-p", "psyche-cli", "--bin", "psyche",
@@ -143,7 +212,7 @@ def exercise(work, env):
         "source": source, "platform": key, "expected_platform": expected_key,
         "node": run(["node", "--version"], ROOT, env).stdout.strip(),
         "npm": run([npm, "--version"], ROOT, env).stdout.strip(),
-        "rustc": run(["rustc", "--version"], ROOT, env).stdout.strip(),
+        "rustc": rustc,
         "binary_sha256": measured, "companion_sha256": sha256(companion_tar),
         "stock_wrapper_sha256": sha256(stock_tar), "measured_wrapper_sha256": sha256(measured_tar),
         "exit_codes": {"zero_digest": 1, "help": 0, "doctor": 0, "status": 0, "stop": 4, "changed_binary": 1},
@@ -164,4 +233,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as error:
+        # A refusal is one message on stderr and exit 1. Other exceptions keep their traceback.
+        sys.exit(f"smoke-installed-npm: {error}")
