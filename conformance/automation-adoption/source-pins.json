@@ -1,0 +1,18 @@
+{
+  "coven": "8670045061f210f639fc3be3568ed6b360befe7e",
+  "familiarContract": "13d150a32a817da19bb4e5053f2205b15db0bb0a",
+  "threads": "c3bd46bcadb6396db8436c47411a4d0eac17192b",
+  "bundles": {
+    "coven.automations.v1": "445c1db2fbf7d86ba2e9ce76d9d1a92ee7c6a67295a617d37daf96a023ff4e98",
+    "coven.automations.authority.v1": "494f4ca68b76b1362aa84bdc5c715b2d3bc7976ed68c5b4c6a533420d03fff52"
+  },
+  "producerRun": {
+    "repository": "OpenCoven/coven",
+    "runId": 44711462505,
+    "artifactIds": {
+      "coven.automations.v1": 14617741651,
+      "coven.automations.authority.v1": 14617701283
+    },
+    "artifactsExpire": "2027-02-18T09:31:36Z"
+  }
+}

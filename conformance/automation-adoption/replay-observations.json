@@ -1,0 +1,36 @@
+[
+  {
+    "profile": "draft.psyche.automation-event.fixture.1",
+    "execution": {
+      "producer": "coven:fixture",
+      "invocationKey": "psyche-adoption-001",
+      "executionId": "fixture-execution-1"
+    },
+    "sequence": 2,
+    "kind": "lane-observed",
+    "data": {
+      "taskId": "task-fixture-1",
+      "laneId": "lane-fixture-1",
+      "leaseId": "lease-fixture-1",
+      "workerAttemptRef": "fixture-host/worker-attempt-7",
+      "observedState": "active"
+    }
+  },
+  {
+    "profile": "draft.psyche.automation-event.fixture.1",
+    "execution": {
+      "producer": "coven:fixture",
+      "invocationKey": "psyche-adoption-001",
+      "executionId": "fixture-execution-1"
+    },
+    "sequence": 3,
+    "kind": "lane-observed",
+    "data": {
+      "taskId": "task-fixture-1",
+      "laneId": "lane-fixture-1",
+      "leaseId": "lease-fixture-1",
+      "workerAttemptRef": "fixture-host/worker-attempt-7",
+      "observedState": "returned"
+    }
+  }
+]

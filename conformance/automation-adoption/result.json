@@ -1,0 +1,11 @@
+{
+  "profile": "draft.psyche.automation-adoption.fixture.1",
+  "invocationKey": "psyche-adoption-001",
+  "executionId": "fixture-execution-1",
+  "occurrenceId": "occ-001",
+  "runId": "run-001",
+  "attemptId": "attempt-002",
+  "requestSha256": "5e24dd01a9248d6b1e11c5cdc27ba9679d58028115588b523d8af3411ab2f7d5",
+  "state": "adopted",
+  "producer": "coven:fixture"
+}

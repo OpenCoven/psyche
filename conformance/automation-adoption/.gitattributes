@@ -1,0 +1,3 @@
+# request.json is adopted and hashed as exact bytes. Keep every JSON vector
+# byte-identical on checkouts that enable end-of-line conversion.
+*.json -text

@@ -35,6 +35,8 @@ run_full() {
 
   python3 scripts/check-g2-evidence-test.py
   python3 scripts/check-g2-attestation-scope-test.py
+  python3 conformance/automation-adoption/verify.py
+  python3 conformance/automation-adoption/verify_replay.py
   npm --prefix packages/psyche-npm test
   npm pack ./packages/psyche-npm --dry-run >/dev/null
 
