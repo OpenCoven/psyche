@@ -1,0 +1,24 @@
+name: Offline receipt replay
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  replay:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Build twice and qualify offline
+        id: qualify
+        run: bash profiles/receipt-replay/qualify.sh "$RUNNER_TEMP/receipt-replay.pyz"
+      - name: Retain the qualified preview archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: receipt-replay-${{ matrix.os }}-${{ steps.qualify.outputs.digest }}
+          path: ${{ runner.temp }}/receipt-replay.pyz
+          if-no-files-found: error
