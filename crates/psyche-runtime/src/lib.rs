@@ -337,10 +337,10 @@ impl Runtime {
         // first would miss a `Stopped` that was published before this caller
         // subscribed, and wait for a transition that can never come.
         loop {
-            if *receiver.borrow_and_update() == LifecycleState::Stopped {
-                if let Some(outcome) = self.lifecycle().terminal_outcome.clone() {
-                    return outcome;
-                }
+            if *receiver.borrow_and_update() == LifecycleState::Stopped
+                && let Some(outcome) = self.lifecycle().terminal_outcome.clone()
+            {
+                return outcome;
             }
             if receiver.changed().await.is_err() {
                 // Unreachable: the sender lives in `self`, which this call
@@ -429,6 +429,7 @@ const _: fn() = || {
         assert_send(&Runtime::start(config));
         assert_send(&runtime.shutdown());
     }
+    let _ = futures_are_send;
 };
 
 #[cfg(test)]
