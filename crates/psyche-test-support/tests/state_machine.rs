@@ -794,18 +794,18 @@ fn store_snapshot(harness: &FoundationStore) -> FoundationSnapshot {
         if !history.is_empty() {
             transitions.insert(slot, history);
         }
-        if let Some(id) = harness.quarantine_ids.get(&slot) {
-            if let Some(record) = harness.store.quarantine_record(id).unwrap() {
-                quarantines.insert(
-                    slot,
-                    QuarantineObservation {
-                        payload_digest: record.payload_digest,
-                        reason: record.reason,
-                        resolution_code: record.resolution_code,
-                        resolved_at: record.resolved_at,
-                    },
-                );
-            }
+        if let Some(id) = harness.quarantine_ids.get(&slot)
+            && let Some(record) = harness.store.quarantine_record(id).unwrap()
+        {
+            quarantines.insert(
+                slot,
+                QuarantineObservation {
+                    payload_digest: record.payload_digest,
+                    reason: record.reason,
+                    resolution_code: record.resolution_code,
+                    resolved_at: record.resolved_at,
+                },
+            );
         }
     }
     let audit_events = harness

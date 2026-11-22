@@ -4,3 +4,4 @@
 .DS_Store
 .env*
 *.tgz
+__pycache__/
