@@ -14,15 +14,17 @@ Psyche Build is the first planned reference client; it is not the protocol owner
 2. Read `docs/ROADMAP.md` and confirm the work has an owning issue.
 3. Read `docs/PROTOCOL-OWNERSHIP.md` before changing a cross-repository boundary.
 4. Read the scoped architecture/testing documents relevant to the change.
-5. Run `./scripts/agent-bootstrap`.
-6. Run `./scripts/agent-check fast` before editing and after each bounded slice.
-7. Run `./scripts/agent-check full` before requesting review.
+5. Look up the type, table or test in `docs/CODEMAP.md` before searching the tree.
+6. Run `./scripts/agent-bootstrap`.
+7. Run `./scripts/agent-check fast` before editing and after each bounded slice.
+8. Run `./scripts/agent-check full` before requesting review.
 
 ## Canonical documents
 
 - Architecture and dependency direction: `docs/ARCHITECTURE.md`
 - Protocol/schema inventory: `docs/SCHEMAS.md`
 - Deterministic evidence model: `docs/TESTING.md`
+- Code map, where each record, digest, lifecycle rule and its tests live: `docs/CODEMAP.md`
 - Historic G2 evidence: `docs/G2-EVIDENCE.md`
 - Current G2 scope policy and attestation status: `scripts/g2-attestation-scope.json`, `docs/G2-SCOPE-EVIDENCE.md`
 - CLI boundary: `docs/CLI.md`
