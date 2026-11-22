@@ -44,6 +44,8 @@ def network_disabled():
 def qualify(pin):
     network_disabled()
     require(hashlib.sha256(ARCHIVE.read_bytes()).hexdigest() == pin, "wrong archive pin")
+    witness_controls = runpy.run_path(str(Path(__file__).with_name("check_witness.py")))
+    witness_controls["run_controls"]()
     recovery = runpy.run_path(str(Path(__file__).with_name("recovery.py")))
     receipt, effects, restart_delta = recovery["exercise_recovery"]()
     args = ["request.json", "first.json", "replay.json"]

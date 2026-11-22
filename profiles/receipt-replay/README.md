@@ -1,6 +1,6 @@
 # Experimental receipt replay profile v1
 
-A downstream consumer can use this profile to check a synthetic launch across a process restart. It binds the same Psyche execution request to the exact bytes of a consumer-owned terminal receipt and checks that the effect ran once. The case follows Build’s durable exact-outcome sidecar replay. Build’s task, action, approval, and receipt representations remain under owner review. [Stage 0 map](https://github.com/OpenCoven/psyche-build/pull/262) · [Build replay case](https://github.com/OpenCoven/psyche-build/blob/4ed92de5903ac0d7e6442d72eb7143098045f26a/__tests__/controlRuntime.test.ts#L315) · [Ownership decision](https://github.com/OpenCoven/psyche/issues/12)
+A downstream consumer can use this profile to check a synthetic launch across a process restart. The standalone archive compares two consumer-supplied observations. It checks that both report the same execution request, exact terminal receipt bytes and an execution count of one. A consumer claiming that one real effect occurred needs independent evidence for that count. The case follows Build’s durable exact-outcome sidecar replay. Build’s task, action, approval, and receipt representations remain under owner review. [Stage 0 map](https://github.com/OpenCoven/psyche-build/pull/262) · [Build replay case](https://github.com/OpenCoven/psyche-build/blob/4ed92de5903ac0d7e6442d72eb7143098045f26a/__tests__/controlRuntime.test.ts#L315) · [Ownership decision](https://github.com/OpenCoven/psyche/issues/12)
 
 ## Run offline
 
@@ -12,7 +12,7 @@ Submit the synthetic request to your test consumer, save its observation as `fir
 python3 -I receipt-replay.pyz request.json first.json replay.json
 ```
 
-Exit 0 emits the request ID, request and receipt digests, total executions and additional executions after restart. A denial exits 1 and prints a JSON code. The runner checks the observations the consumer supplies. The qualification harness independently witnesses each synthetic effect outside the consumer database and measures the change across a real process restart. A missing store, an effect without its receipt, and a process death between effect and receipt each have a recovery control. Use distinct observations from the two processes. Each input must be a regular JSON file of at most 65,536 bytes. The profile grants no authority to launch or repeat an actual operation.
+Exit 0 emits the request ID, request and receipt digests, total executions and additional executions after restart. A denial exits 1 and prints a JSON code. The runner checks the observations the consumer supplies. In the producer’s qualification fixture, the parent harness keeps an in-memory record of each synthetic effect while the consumer process restarts. The parent issues the execution nonce once, checks the durable receipt against it and measures the difference in effect count. This witness runs in the producer self-test. A downstream user of the standalone archive supplies and verifies their own observations. A missing store, an effect without its receipt, and a process death between effect and receipt each have a recovery control. Use distinct observations from the two processes. Each input must be a regular JSON file of at most 65,536 bytes. The profile grants no authority to launch or repeat an actual operation.
 
 ## Wire files and scope
 
