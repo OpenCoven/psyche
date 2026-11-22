@@ -16,7 +16,7 @@ Exit 0 emits the request ID, request and receipt digests, total executions and a
 
 ## Wire files and scope
 
-`launch.schema.json` describes the supported synthetic launch. Its fixed fields come from the canonical Rust request golden, whose SHA-256 is `75d651c5eb7f6e3ccd65631fce08afdcb8ac2a800bc0d8db55eaf9cf43519d04`. Consumers may supply their own request ID, principal and fixture paths within the schema. Use canonical JSON bytes without a trailing newline. This fixture exercises historical launch data offline. Its timestamps confer no current authorization.
+`launch.schema.json` describes the supported synthetic launch. Its fixed fields come from the canonical Rust request golden, whose SHA-256 is `75d651c5eb7f6e3ccd65631fce08afdcb8ac2a800bc0d8db55eaf9cf43519d04`. Consumers may supply their own request ID, principal and fixture paths within the schema. The working directory must equal the project root or fall below it at a complete path-component boundary. Use canonical JSON bytes without a trailing newline. This fixture exercises historical launch data offline. Its timestamps confer no current authorization.
 
 `observation.schema.json` defines the two observations. The runner compares raw receipt bytes, enforces each observation’s binding to the request and requires the effect count to equal one both times. Unknown versions, unsupported launch shapes, digest mismatches, missing files and replay discrepancies have distinct failures. The manifest pins every other archive member. Its own integrity and the executable entry point are covered by the external archive pin.
 

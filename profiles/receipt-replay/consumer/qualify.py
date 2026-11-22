@@ -61,9 +61,19 @@ def qualify(pin):
         ({"request_digest": "sha256:" + "0" * 64}, "request_digest_mismatch"),
         ({"request_id": "req_01J00000000000000000000043"}, "request_identity_mismatch"),
         ({"receipt_hex": "00"}, "receipt_mismatch"), ({"executions": 2}, "execution_count_mismatch"),
+        ({"executions": True}, "invalid_observation"), ({"executions": 1.5}, "invalid_observation"),
     ]:
         Path("changed.json").write_text(json.dumps({**replay, **change}))
         command(denial, *args[:2], "changed.json")
+    Path("integral.json").write_text(json.dumps({**replay, "executions": 1.0}))
+    command("passed", *args[:2], "integral.json")
+    request = json.loads(Path("request.json").read_bytes())
+    for cwd, expected in [("/fixture/sub", "passed"), ("/fixture-other", "cwd_outside_project_root")]:
+        raw = json.dumps({**request, "cwd": cwd}, sort_keys=True, separators=(",", ":")).encode()
+        Path("path-request.json").write_bytes(raw)
+        bound = {**replay, "request_digest": "sha256:" + hashlib.sha256(raw).hexdigest()}
+        Path("path-observation.json").write_text(json.dumps(bound))
+        command(expected, "path-request.json", "path-observation.json", "path-observation.json")
     command("missing_file", *args[:2], "absent.json")
     with ZipFile(ARCHIVE) as original:
         Path("golden-request.json").write_bytes(original.read("golden/request.json"))

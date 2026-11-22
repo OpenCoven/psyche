@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import zipfile
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 VERSION = "psyche.experimental.receipt-replay.v1"
@@ -23,10 +24,17 @@ def unique_object(pairs):
     return obj
 
 
-def document(data):
+def invalid_number(_):
+    raise Denial("invalid_json")
+
+
+def document(data, *, exact_numbers=False):
     try:
-        obj = json.loads(data.decode("utf-8"), object_pairs_hook=unique_object)
-    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        obj = json.loads(data.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=invalid_number,
+                         parse_float=Decimal if exact_numbers else float)
+    except Denial:
+        raise
+    except (ValueError, RecursionError, InvalidOperation):
         raise Denial("invalid_json") from None
     if not isinstance(obj, dict):
         raise Denial("invalid_document")
@@ -64,7 +72,7 @@ def read_input(path):
 
 
 def observation(data, schema):
-    obj = document(data)
+    obj = document(data, exact_numbers=True)
     if obj.get("schema_version") != VERSION:
         raise Denial("unsupported_version")
     if set(obj) != set(schema["required"]):
@@ -76,7 +84,10 @@ def observation(data, schema):
             raise Denial("invalid_observation")
         if not re.fullmatch(rule["pattern"], value):
             raise Denial("invalid_observation")
-    if type(obj["executions"]) is not int or obj["executions"] < 0:
+    executions = obj["executions"]
+    if type(executions) not in (int, Decimal) or executions < 0:
+        raise Denial("invalid_observation")
+    if isinstance(executions, Decimal) and executions != executions.to_integral_value():
         raise Denial("invalid_observation")
     return obj
 
@@ -95,6 +106,9 @@ def compare(request_bytes, first, replay, launch_schema):
                 raise Denial("unsupported_request_shape")
         elif not isinstance(value, str) or re.fullmatch(rule["pattern"], value) is None:
             raise Denial("unsupported_request_shape")
+    root, cwd = request["project_root"], request["cwd"]
+    if cwd != root and not cwd.startswith(root + "/"):
+        raise Denial("cwd_outside_project_root")
     if json.dumps(request, sort_keys=True, separators=(",", ":")).encode("ascii") != request_bytes:
         raise Denial("noncanonical_request")
     request_digest = "sha256:" + digest(request_bytes)
