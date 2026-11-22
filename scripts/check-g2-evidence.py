@@ -104,7 +104,7 @@ NON_RUST_CI_COMMAND_JOBS = {
 # Pins the complete reviewed workflow, including setup/actions and every writer
 # that could poison GITHUB_ENV or GITHUB_PATH. Newlines are normalized first so
 # the same reviewed content verifies on Windows checkouts.
-REVIEWED_WORKFLOW_SHA256 = "1f908303c1a8940ce5ec8c81182ddaf5d82e5c6bddd5ece7fb33e1baf9a087f1"
+REVIEWED_WORKFLOW_SHA256 = "5aa95e0aa2ec3fe60518dba3cf80d203964e9cc8233c3690918991d73f294e99"
 CI_WORKFLOW_ID = 326408880
 
 
