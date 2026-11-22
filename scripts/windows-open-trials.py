@@ -8,8 +8,8 @@ from pathlib import Path
 
 TEST = "concurrent_first_open_applies_migration_once"
 MIGRATIONS = Path("crates/psyche-store/tests/migrations.rs")
-BASE = "aa08cd789f78bbece91b5f702b8e81a3fe9b45e8"
-TRIALS = 160
+BASE = "c2bad7a8ffe506fe20027bd1820d3a7ea68ea5bc"
+TRIALS = 200
 
 
 def output(*cmd):

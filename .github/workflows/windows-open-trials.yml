@@ -15,7 +15,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: aa08cd789f78bbece91b5f702b8e81a3fe9b45e8
+          ref: c2bad7a8ffe506fe20027bd1820d3a7ea68ea5bc
           path: source
           persist-credentials: false
       - name: Run bounded migration trials
@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: aa08cd789f78bbece91b5f702b8e81a3fe9b45e8
+          ref: c2bad7a8ffe506fe20027bd1820d3a7ea68ea5bc
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = aa08cd789f78bbece91b5f702b8e81a3fe9b45e8
+          test "$(git rev-parse HEAD)" = c2bad7a8ffe506fe20027bd1820d3a7ea68ea5bc
           for mode in bootstrap fast full; do
             test -z "$(git status --porcelain --untracked-files=all)"
             case "$mode" in
