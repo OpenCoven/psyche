@@ -19,8 +19,7 @@ members = [
 
 [workspace.package]
 version = "0.0.0"
-# Edition 2024 predates this workspace compiler floor. Rust 1.89 is required by
-# the patched `rusqlite` release used by the audited dependency graph.
+# The bundled SQLite wrapper requires Rust 1.89.
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
@@ -38,7 +37,7 @@ psyche-coven = { path = "crates/psyche-coven" }
 psyche-surfaces = { path = "crates/psyche-surfaces" }
 psyche-test-support = { path = "crates/psyche-test-support" }
 async-trait = "0.1"
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde_json_canonicalizer = "0.3"
 sha2 = "0.10"
 time = { version = "0.3.47", features = ["formatting", "parsing", "serde"] }

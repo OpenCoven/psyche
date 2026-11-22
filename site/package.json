@@ -1,0 +1,14 @@
+{
+  "name": "@opencoven/psyche-docs-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Psyche documentation in the Coven Docs visual style.",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  },
+  "dependencies": {
+    "markdown-it": "14.3.3"
+  }
+}

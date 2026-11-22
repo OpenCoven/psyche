@@ -1,0 +1,1321 @@
+/* Psyche Docs
+ *
+ * A hand-built static rendering of the Coven Docs visual canon. Token values
+ * and the `coven-docs-*` component rules are carried over from
+ * OpenCoven/coven-docs (app/globals.css, app/docs-facelift.css,
+ * app/docs-sidebar.css) at b7500de; the neutral surface values are the ones
+ * that site resolves in production. If Coven Docs changes, change this to
+ * match: this file follows that canon and does not define its own.
+ */
+
+/* ── Type: Inter for reading, EB Garamond for display, JetBrains Mono for code ── */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('fonts/inter-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('fonts/inter-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'EB Garamond';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('fonts/eb-garamond-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'EB Garamond';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('fonts/eb-garamond-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'EB Garamond';
+  font-style: italic;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('fonts/eb-garamond-italic-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'EB Garamond';
+  font-style: italic;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('fonts/eb-garamond-italic-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('fonts/jetbrains-mono-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('fonts/jetbrains-mono-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── Tokens ── */
+:root {
+  color-scheme: light;
+
+  --coven-violet: #9a8ecd;
+  --coven-violet-light: #b4aaeb;
+  --coven-violet-dark: #7a6fb3;
+
+  /* Neutral surfaces, as Coven Docs resolves them. */
+  --bg: #f5f5f5;
+  --fg: #0a0a0a;
+  --card: #f1f1f1;
+  --popover: #fafafa;
+  --muted-fg: #737373;
+  --border: #cccccc80;
+
+  --coven-docs-panel-soft: rgba(108, 90, 200, 0.045);
+  --coven-docs-rule: rgba(108, 90, 200, 0.18);
+  --coven-docs-rule-strong: rgba(108, 90, 200, 0.42);
+  --coven-docs-ink: #171329;
+  --coven-docs-muted: #665e79;
+  --coven-docs-violet: #6558ac;
+
+  --code-bg: #ececec;
+  --inline-code-bg: rgba(108, 90, 200, 0.08);
+  --inline-code-fg: #55489c;
+  --inline-code-rule: rgba(108, 90, 200, 0.2);
+
+  --oc-font-body: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --oc-font-display: 'EB Garamond', 'Iowan Old Style', Georgia, 'Times New Roman', serif;
+  --oc-font-mono: 'JetBrains Mono', 'SF Mono', SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas, monospace;
+  --oc-tracking-display: -0.005em;
+  --oc-tracking-label: 0.14em;
+  --oc-line-heading: 1.2;
+  --coven-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --sidebar-width: 272px;
+  --toc-width: 268px;
+  --topbar-height: 3.5rem;
+
+  --coven-sidebar-rule: color-mix(in oklab, var(--fg) 9%, transparent);
+  --coven-sidebar-hover: color-mix(in oklab, var(--fg) 5%, transparent);
+  --coven-sidebar-active: color-mix(in oklab, var(--coven-docs-violet) 13%, transparent);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --bg: #121212;
+  --fg: #ebebeb;
+  --card: #191919;
+  --popover: #1e1e1e;
+  --muted-fg: #b3b3b3cc;
+  --border: #6663;
+
+  --coven-docs-panel-soft: rgba(154, 142, 205, 0.055);
+  --coven-docs-rule: rgba(154, 142, 205, 0.16);
+  --coven-docs-rule-strong: rgba(180, 170, 235, 0.42);
+  --coven-docs-ink: #f2f0fa;
+  --coven-docs-muted: #a8a2b8;
+  --coven-docs-violet: #b4aaeb;
+
+  --code-bg: #0a0a0a;
+  --inline-code-bg: rgba(154, 142, 205, 0.1);
+  --inline-code-fg: var(--coven-violet-light);
+  --inline-code-rule: rgba(154, 142, 205, 0.15);
+}
+
+/* ── Base ── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 1.5rem;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--oc-font-body);
+  font-feature-settings: 'rlig' 1, 'calt' 1;
+  font-size: 1rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--coven-docs-violet);
+  outline-offset: 2px;
+}
+
+.ct-skip {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 60;
+  border-radius: var(--radius-sm);
+  background: var(--popover);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  translate: 0 -200%;
+}
+
+.ct-skip:focus {
+  translate: 0 0;
+}
+
+/* ── Layout: sidebar flush left, contents flush right, page fills the middle ── */
+#ct-layout {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--toc-width);
+  min-height: 100vh;
+}
+
+main {
+  min-width: 0;
+}
+
+#nd-page {
+  max-width: 100%;
+  padding: 2rem 3rem 4rem;
+}
+
+/* ── Brand lockup ── */
+.coven-docs-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--coven-docs-ink);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* The approved OpenCoven logo. 24px is the brand minimum; the square stays
+ * black in both themes. */
+.coven-docs-brand-logo {
+  display: block;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  border-radius: 5px;
+}
+
+.dark .coven-docs-brand-logo {
+  box-shadow: 0 0 0 1px var(--coven-docs-rule);
+}
+
+.coven-docs-brand-product {
+  line-height: 1;
+}
+
+.coven-docs-brand-label {
+  border-left: 1px solid var(--coven-docs-rule);
+  padding-left: 0.55rem;
+  color: var(--coven-docs-violet);
+  font-family: var(--oc-font-mono);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* ── Sidebar: a quiet list, one violet tint on the current page ── */
+#ct-sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: flex;
+  height: 100vh;
+  flex-direction: column;
+  border-right: 1px solid var(--coven-sidebar-rule);
+  background: var(--bg);
+  font-size: 0.875rem;
+}
+
+.ct-sidebar-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  padding: 1rem 1rem 0.5rem;
+}
+
+.ct-sidebar-head .coven-docs-brand {
+  padding: 0.125rem 0.125rem 0;
+}
+
+.ct-search-toggle {
+  display: flex;
+  width: 100%;
+  height: 2.25rem;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--coven-sidebar-rule);
+  border-radius: 8px;
+  background: transparent;
+  padding-inline: 0.625rem 0.4375rem;
+  color: var(--muted-fg);
+  font-size: 0.8125rem;
+  text-align: left;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.ct-search-toggle:hover {
+  background: var(--coven-sidebar-hover);
+  color: var(--fg);
+}
+
+.ct-search-toggle > span:first-of-type {
+  flex: 1;
+}
+
+.ct-kbd {
+  display: inline-flex;
+  gap: 0.1875rem;
+}
+
+kbd {
+  display: inline-grid;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  place-items: center;
+  border-radius: 4px;
+  background: var(--coven-sidebar-hover);
+  padding: 0 0.25rem;
+  color: var(--muted-fg);
+  font-family: var(--oc-font-mono);
+  font-size: 0.6875rem;
+}
+
+.ct-tree {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  padding: 0.5rem 1rem 1rem;
+  overscroll-behavior: contain;
+}
+
+/* Group headings, set as OpenCoven labels. */
+.ct-tree p {
+  margin: 1.25rem 0 0.25rem;
+  padding-inline: 0.5rem;
+  color: var(--muted-fg);
+  font-family: var(--oc-font-mono);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: var(--oc-tracking-label);
+  text-transform: uppercase;
+}
+
+.ct-tree p:first-child {
+  margin-top: 0.25rem;
+}
+
+.ct-tree a {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 6px;
+  padding: 0.375rem 0.5rem;
+  color: var(--muted-fg);
+  line-height: 1.35;
+  text-decoration: none;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+/* Instant on the way in, eased on the way out. */
+.ct-tree a:hover {
+  background: var(--coven-sidebar-hover);
+  color: var(--fg);
+  transition-duration: 0ms;
+}
+
+.ct-tree a[data-active='true'] {
+  background: var(--coven-sidebar-active);
+  color: var(--coven-docs-violet);
+  font-weight: 500;
+}
+
+.ct-tree a:focus-visible {
+  outline-offset: -2px;
+}
+
+.ct-out {
+  display: inline-grid;
+  opacity: 0.6;
+}
+
+.ct-sidebar-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  border-top: 1px solid var(--coven-sidebar-rule);
+  padding: 0.75rem 1rem;
+}
+
+.ct-sidebar-foot > a {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--muted-fg);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.ct-sidebar-foot > a:hover {
+  background: var(--coven-sidebar-hover);
+  color: var(--fg);
+}
+
+/* Theme toggle: a hairline pill holding both states. */
+.ct-theme {
+  display: inline-flex;
+  gap: 0.125rem;
+  margin-left: auto;
+  border: 1px solid var(--coven-sidebar-rule);
+  border-radius: 999px;
+  background: transparent;
+  padding: 0.125rem;
+}
+
+.ct-theme span {
+  display: grid;
+  width: 1.625rem;
+  height: 1.625rem;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--muted-fg);
+}
+
+:root:not(.dark) .ct-theme [data-theme-icon='light'],
+.dark .ct-theme [data-theme-icon='dark'] {
+  background: var(--coven-sidebar-hover);
+  color: var(--fg);
+}
+
+/* ── Contents column ── */
+#ct-toc {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 3rem 1rem 2rem 0.5rem;
+  font-size: 0.875rem;
+}
+
+.ct-toc-title {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0 0 0.5rem;
+  color: var(--muted-fg);
+}
+
+#ct-toc nav {
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+}
+
+#ct-toc a {
+  margin-left: -1px;
+  border-left: 1px solid transparent;
+  padding: 0.375rem 0 0.375rem 0.875rem;
+  color: var(--muted-fg);
+  line-height: 1.35;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+#ct-toc a[data-level='3'] {
+  padding-left: 1.625rem;
+}
+
+#ct-toc a:hover {
+  color: var(--fg);
+}
+
+#ct-toc a[data-active='true'] {
+  border-left-color: var(--coven-docs-violet);
+  color: var(--coven-docs-violet);
+}
+
+/* Inline code in the contents reads as monospace text, not a boxed chip. */
+#ct-toc code {
+  font-family: var(--oc-font-mono);
+  font-size: 0.92em;
+}
+
+/* ── Breadcrumb ── */
+.ct-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 1.5rem;
+  color: var(--muted-fg);
+  font-size: 0.875rem;
+}
+
+.ct-breadcrumb [aria-current] {
+  color: var(--coven-docs-violet);
+  font-weight: 500;
+}
+
+/* ── Page hero ──
+   No card: a hallmark row with the page actions, the title in the display
+   face, the lead, and a seal rule that closes the hero. */
+.coven-docs-page-header {
+  margin: 0.25rem 0 2.25rem;
+}
+
+.coven-docs-page-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+}
+
+.coven-docs-page-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.coven-docs-page-toolbar a {
+  display: inline-flex;
+  height: 1.875rem;
+  align-items: center;
+  gap: 0.375rem;
+  border: 1px solid var(--coven-docs-rule);
+  border-radius: 5px;
+  background: transparent;
+  padding-inline: 0.625rem;
+  color: var(--coven-docs-muted);
+  font-family: var(--oc-font-mono);
+  font-size: 0.65625rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  text-transform: uppercase;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+
+.coven-docs-page-toolbar a:hover {
+  border-color: var(--coven-docs-rule-strong);
+  background: var(--coven-docs-panel-soft);
+  color: var(--coven-docs-ink);
+}
+
+.coven-docs-page-header h1 {
+  max-width: 24ch;
+  margin: 2rem 0 0;
+  color: var(--coven-docs-ink);
+  font-family: var(--oc-font-display);
+  font-size: clamp(2.5rem, 1.6rem + 2.7vw, 3.875rem);
+  font-weight: 600;
+  letter-spacing: var(--oc-tracking-display);
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+.coven-docs-page-header h1 + p {
+  max-width: 62ch;
+  margin: 1.125rem 0 0;
+  color: var(--coven-docs-muted);
+  font-size: clamp(1.0625rem, 1rem + 0.3vw, 1.1875rem);
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.coven-docs-page-header h1 + p strong {
+  color: var(--coven-docs-ink);
+  font-weight: 600;
+}
+
+/* The seal rule: the brand diamond, then a hairline that draws itself out. */
+.coven-docs-seal-rule {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin-top: 2.25rem;
+}
+
+.coven-docs-seal {
+  display: grid;
+  width: 0.5625rem;
+  height: 0.5625rem;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--coven-docs-violet);
+  rotate: 45deg;
+  animation: coven-seal-set 500ms var(--coven-ease-out) both;
+}
+
+.coven-docs-seal::before {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--coven-docs-violet);
+  content: '';
+}
+
+.coven-docs-seal-line {
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--coven-docs-violet) 70%, transparent),
+    var(--coven-docs-rule) 40%,
+    transparent
+  );
+  transform-origin: left center;
+  animation: coven-seal-draw 900ms 80ms var(--coven-ease-out) both;
+}
+
+.coven-docs-reading-time {
+  flex: none;
+  margin: 0;
+  color: var(--coven-docs-muted);
+  font-family: var(--oc-font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+@keyframes coven-seal-set {
+  from {
+    opacity: 0;
+    rotate: 0deg;
+    scale: 0.5;
+  }
+}
+
+@keyframes coven-seal-draw {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+}
+
+/* ── Hallmarks ── */
+.coven-docs-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.875rem;
+  color: var(--coven-docs-muted);
+  font-size: 0.75rem;
+}
+
+/* Dashed, as Coven Docs marks anything that is not a stable contract: these
+ * pages describe the contracts and never amend them. */
+.coven-docs-status-badge {
+  display: inline-flex;
+  height: 1.375rem;
+  align-items: center;
+  gap: 0.375rem;
+  border: 1px dashed color-mix(in oklab, var(--coven-docs-violet) 45%, transparent);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--coven-docs-violet) 8%, transparent);
+  padding: 0 0.4375rem;
+  color: var(--coven-docs-violet);
+  font-family: var(--oc-font-mono);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: var(--oc-tracking-label);
+  text-transform: uppercase;
+}
+
+.coven-docs-status-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-left: 1px solid var(--coven-docs-rule);
+  padding-left: 0.875rem;
+  color: var(--coven-docs-muted);
+  font-family: var(--oc-font-mono);
+  font-size: 0.6875rem;
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+
+.coven-docs-status-label {
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  opacity: 0.8;
+  text-transform: uppercase;
+}
+
+.coven-docs-status-source:hover {
+  color: var(--coven-docs-violet);
+}
+
+/* ── Body ── */
+.prose {
+  color: var(--coven-docs-ink);
+  font-size: 1rem;
+  line-height: 1.8;
+  overflow-wrap: break-word;
+}
+
+/* Running text keeps a readable measure; tables, code and diagrams take the
+ * full column. */
+.prose > :is(p, ul, ol, blockquote) {
+  max-width: 80ch;
+}
+
+.prose p {
+  margin: 1.25em 0;
+}
+
+.prose :is(ul, ol) {
+  margin: 1.25em 0;
+  padding-left: 1.625em;
+}
+
+.prose li {
+  margin: 0.5em 0;
+  padding-left: 0.375em;
+}
+
+.prose li::marker {
+  color: var(--muted-fg);
+}
+
+.prose li > :is(ul, ol) {
+  margin: 0.5em 0;
+}
+
+.prose li > p {
+  margin: 0.5em 0;
+}
+
+.prose strong {
+  font-weight: 600;
+}
+
+.prose a {
+  color: var(--coven-docs-ink);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--coven-docs-violet) 60%, transparent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3.5px;
+  transition:
+    color 150ms ease,
+    text-decoration-color 150ms ease;
+}
+
+.prose a:hover {
+  color: var(--coven-docs-violet);
+  text-decoration-color: var(--coven-docs-violet);
+}
+
+/* Section headings use the display face; EB Garamond's small x-height reads a
+ * step smaller than Inter, so the sizes sit one step up. */
+.prose :is(h2, h3, h4) {
+  color: var(--coven-docs-ink);
+  scroll-margin-top: 1.5rem;
+}
+
+.prose :is(h2, h3) {
+  font-family: var(--oc-font-display);
+  font-weight: 600;
+  letter-spacing: var(--oc-tracking-display);
+  line-height: var(--oc-line-heading);
+  text-wrap: balance;
+}
+
+.prose h2 {
+  margin: 2em 0 0.75em;
+  font-size: 1.875rem;
+}
+
+.prose h3 {
+  margin: 1.6em 0 0.6em;
+  font-size: 1.5rem;
+}
+
+.prose h4 {
+  margin: 1.5em 0 0.5em;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.prose .ct-anchor {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
+}
+
+.prose .ct-anchor::after {
+  margin-left: 0.4em;
+  color: var(--coven-docs-violet);
+  font-family: var(--oc-font-mono);
+  font-size: 0.6em;
+  font-weight: 400;
+  content: '#';
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.prose .ct-anchor:is(:hover, :focus-visible)::after {
+  opacity: 0.8;
+}
+
+.prose blockquote {
+  margin: 1.5em 0;
+  border-left: 3px solid var(--coven-docs-violet);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--coven-docs-panel-soft);
+  padding: 0.9rem 1.1rem;
+  color: var(--coven-docs-muted);
+}
+
+.prose blockquote > :first-child {
+  margin-top: 0;
+}
+
+.prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.prose blockquote strong {
+  color: var(--coven-docs-ink);
+}
+
+.prose hr {
+  height: 1px;
+  margin: 2.5em 0;
+  border: 0;
+  background: var(--coven-docs-rule);
+}
+
+/* Inline code: the violet chip. */
+.prose :not(pre) > code,
+.coven-docs-page-header code,
+.ct-colophon code {
+  border: 1px solid var(--inline-code-rule);
+  border-radius: 4px;
+  background: var(--inline-code-bg);
+  padding: 0.15em 0.35em;
+  color: var(--inline-code-fg);
+  font-family: var(--oc-font-mono);
+  font-size: 0.875em;
+  font-weight: 400;
+}
+
+/* A link that is only inline code reads as its chip, not as underlined text. */
+.prose a:has(> code:only-child) {
+  text-decoration: none;
+}
+
+.prose a:has(> code:only-child) > code {
+  transition: border-color 150ms ease;
+}
+
+.prose a:has(> code:only-child):is(:hover, :focus-visible) > code {
+  border-color: var(--coven-docs-violet);
+}
+
+/* Code blocks: one near-black terminal panel, the violet hairline carrying
+ * the boundary. */
+.ct-code {
+  position: relative;
+  margin: 1.5em 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--coven-violet) 22%, transparent);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg);
+}
+
+.dark .ct-code {
+  border-color: rgba(154, 142, 205, 0.1);
+}
+
+.ct-code pre {
+  margin: 0;
+  overflow-x: auto;
+  padding: 1rem 1.125rem;
+  font-family: var(--oc-font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  tab-size: 2;
+}
+
+.ct-code[data-lang]::after {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.75rem;
+  color: var(--muted-fg);
+  font-family: var(--oc-font-mono);
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: var(--oc-tracking-label);
+  text-transform: uppercase;
+  content: attr(data-lang);
+}
+
+/* Tables sit inside a scroll wrapper, so narrow screens scroll the table and
+ * not the page. */
+.ct-table {
+  margin: 1.5em 0;
+  overflow-x: auto;
+  border: 1px solid var(--coven-docs-rule);
+  border-radius: 8px;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.prose th {
+  background: var(--coven-docs-panel-soft);
+  color: var(--coven-docs-ink);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.prose :is(th, td) {
+  border-bottom: 1px solid var(--coven-docs-rule);
+  padding: 0.625rem 0.875rem;
+  vertical-align: top;
+}
+
+.prose :is(th, td) + :is(th, td) {
+  border-left: 1px solid var(--coven-docs-rule);
+}
+
+.prose tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.prose td {
+  min-width: 9rem;
+}
+
+.prose table td:first-child > code,
+.prose table td:first-child > a > code {
+  white-space: nowrap;
+}
+
+/* Diagrams keep their own dark ground in both themes; the frame sets them
+ * into the page. */
+.ct-figure {
+  display: block;
+  max-width: 62rem;
+  margin: 1.75em 0;
+  overflow: hidden;
+  border: 1px solid var(--coven-docs-rule);
+  border-radius: var(--radius-md);
+  background: #1b1622;
+  transition: border-color 150ms ease;
+}
+
+.ct-figure:hover {
+  border-color: var(--coven-docs-rule-strong);
+}
+
+.ct-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* ── Previous / next ── */
+.ct-pager {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 3.5rem;
+}
+
+.ct-pager-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  text-decoration: none;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+
+.ct-pager-card:hover {
+  border-color: color-mix(in oklab, var(--coven-docs-violet) 40%, transparent);
+  background: var(--coven-docs-panel-soft);
+}
+
+.ct-pager-card.is-next {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.ct-pager-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--muted-fg);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.is-next .ct-pager-label {
+  flex-direction: row-reverse;
+}
+
+.ct-pager-name {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--fg);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Colophon: where these words came from ── */
+.ct-colophon {
+  margin-top: 2rem;
+  border-top: 1px solid var(--coven-sidebar-rule);
+  padding-top: 1.25rem;
+  color: var(--muted-fg);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+}
+
+.ct-colophon p {
+  max-width: 80ch;
+  margin: 0;
+}
+
+.ct-colophon a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.ct-colophon a:hover code {
+  border-color: var(--coven-docs-violet);
+}
+
+/* ── Search ── */
+#ct-search {
+  width: min(40rem, calc(100vw - 2rem));
+  max-height: min(34rem, calc(100vh - 6rem));
+  margin-top: 12vh;
+  overflow: hidden;
+  border: 1px solid var(--coven-docs-rule);
+  border-radius: var(--radius-lg);
+  background: var(--popover);
+  padding: 0;
+  color: var(--fg);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.35);
+}
+
+#ct-search[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#ct-search::backdrop {
+  background: rgb(0 0 0 / 0.55);
+}
+
+.ct-search-field {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  border-bottom: 1px solid var(--coven-sidebar-rule);
+  padding: 0.75rem 1rem;
+  color: var(--muted-fg);
+}
+
+.ct-search-field input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+}
+
+.ct-search-field input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.ct-search-results {
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+
+.ct-search-results:empty {
+  display: none;
+}
+
+.ct-search-results a {
+  display: block;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  text-decoration: none;
+}
+
+.ct-search-results a[aria-selected='true'] {
+  background: var(--coven-sidebar-active);
+}
+
+.ct-search-hit-meta {
+  display: block;
+  color: var(--muted-fg);
+  font-family: var(--oc-font-mono);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: var(--oc-tracking-label);
+  text-transform: uppercase;
+}
+
+.ct-search-hit-title {
+  display: block;
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+a[aria-selected='true'] .ct-search-hit-title {
+  color: var(--coven-docs-violet);
+}
+
+.ct-search-hit-text {
+  display: block;
+  overflow: hidden;
+  color: var(--muted-fg);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-search-hit-text mark {
+  background: transparent;
+  color: var(--coven-docs-violet);
+  font-weight: 600;
+}
+
+.ct-search-empty {
+  margin: 0;
+  padding: 1.25rem 0.75rem;
+  color: var(--muted-fg);
+  font-size: 0.875rem;
+}
+
+/* ── Small screens: top bar and drawer ── */
+.ct-topbar,
+.ct-scrim {
+  display: none;
+}
+
+@media (max-width: 1279px) {
+  #ct-layout {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  }
+
+  #ct-toc {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  #nd-page {
+    padding: 1.5rem 1.25rem 3rem;
+  }
+}
+
+@media (max-width: 767px) {
+  html {
+    scroll-padding-top: calc(var(--topbar-height) + 1rem);
+  }
+
+  .prose :is(h2, h3, h4) {
+    scroll-margin-top: calc(var(--topbar-height) + 1rem);
+  }
+
+  #ct-layout {
+    display: block;
+  }
+
+  .ct-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    height: var(--topbar-height);
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--coven-sidebar-rule);
+    background: color-mix(in oklab, var(--bg) 92%, transparent);
+    padding-inline: 1rem 0.5rem;
+    backdrop-filter: blur(12px);
+  }
+
+  .ct-topbar-actions {
+    display: flex;
+  }
+
+  .ct-topbar button {
+    display: grid;
+    width: 2.75rem;
+    height: 2.75rem;
+    place-items: center;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted-fg);
+  }
+
+  #ct-sidebar {
+    position: fixed;
+    z-index: 50;
+    inset: 0 auto 0 0;
+    width: min(20rem, 86vw);
+    height: 100dvh;
+    translate: -100% 0;
+    visibility: hidden;
+    transition:
+      translate 250ms cubic-bezier(0.4, 0, 0.2, 1),
+      visibility 0s 250ms;
+  }
+
+  [data-menu='open'] #ct-sidebar {
+    translate: 0 0;
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  [data-menu='open'] .ct-scrim {
+    position: fixed;
+    z-index: 40;
+    inset: 0;
+    display: block;
+    background: rgb(0 0 0 / 0.55);
+  }
+
+  .ct-tree a {
+    padding-block: 0.625rem;
+  }
+
+  .ct-pager {
+    grid-template-columns: 1fr;
+  }
+
+  .ct-pager-card.is-next {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .is-next .ct-pager-label {
+    flex-direction: row;
+  }
+}
+
+@media (max-width: 640px) {
+  .coven-docs-page-header h1 {
+    margin-top: 1.5rem;
+  }
+
+  .coven-docs-status-source {
+    flex-basis: 100%;
+    border-left: 0;
+    padding-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media print {
+  #ct-layout {
+    display: block;
+  }
+
+  #ct-sidebar,
+  #ct-toc,
+  .ct-topbar,
+  .ct-pager,
+  .coven-docs-page-toolbar,
+  .coven-docs-status-source,
+  .coven-docs-seal-rule {
+    display: none !important;
+  }
+}
