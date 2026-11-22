@@ -801,7 +801,7 @@ def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
 
 
 def validate_evidence_only_compare(
-    compare: object, tested: str, terminal: str, *, allow_site_only_pr: bool = False
+    compare: object, tested: str, terminal: str, *, allow_unchanged_g2_inputs: bool = False
 ) -> None:
     if not isinstance(compare, dict):
         fail("GitHub compare response is invalid")
@@ -823,9 +823,9 @@ def validate_evidence_only_compare(
         compare.get("status") != "ahead"
         or not isinstance(merge_base, dict)
         or merge_base.get("sha") != tested
-    ) and not allow_site_only_pr:
+    ) and not allow_unchanged_g2_inputs:
         fail("tested source is not the pull-request head's merge-base ancestor")
-    if allow_site_only_pr:
+    if allow_unchanged_g2_inputs:
         return
     files = compare.get("files")
     if (
@@ -911,7 +911,7 @@ def squash_merge_terminal(root: pathlib.Path, event: dict[str, object]) -> tuple
     return terminal, pull_number
 
 
-def is_site_only_pull_request(root: pathlib.Path, pull_number: int) -> bool:
+def pull_request_preserves_g2_inputs(root: pathlib.Path, pull_number: int) -> bool:
     files = run_json(
         ["gh", "api", f"repos/OpenCoven/psyche/pulls/{pull_number}/files?per_page=100"],
         root,
@@ -923,7 +923,35 @@ def is_site_only_pull_request(root: pathlib.Path, pull_number: int) -> bool:
         or any(not isinstance(file, dict) or not isinstance(file.get("filename"), str) for file in files)
     ):
         return False
-    return all(file["filename"].startswith("site/") for file in files)
+    protected_paths = (
+        "crates/",
+        ".cargo/",
+        ".github/workflows/",
+    )
+    protected_files = {
+        "Cargo.lock",
+        "Cargo.toml",
+        "clippy.toml",
+        "deny.toml",
+        "rust-toolchain",
+        "rust-toolchain.toml",
+        "scripts/g2-test-manifest.json",
+    }
+    for file in files:
+        paths = [file["filename"]]
+        previous = file.get("previous_filename")
+        if previous is not None:
+            if not isinstance(previous, str):
+                return False
+            paths.append(previous)
+        if any(
+            path.startswith(protected_paths)
+            or path in protected_files
+            or path.endswith(".rs")
+            for path in paths
+        ):
+            return False
+    return True
 
 
 def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
@@ -963,17 +991,17 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
         ["gh", "api", f"repos/OpenCoven/psyche/compare/{tested}...{terminal}"],
         root,
     )
-    allow_site_only_pr = (
+    allow_unchanged_g2_inputs = (
         isinstance(compare, dict)
         and (
             compare.get("status") != "ahead"
             or not isinstance(compare.get("merge_base_commit"), dict)
             or compare["merge_base_commit"].get("sha") != tested
         )
-        and is_site_only_pull_request(root, pull_number)
+        and pull_request_preserves_g2_inputs(root, pull_number)
     )
     validate_evidence_only_compare(
-        compare, tested, terminal, allow_site_only_pr=allow_site_only_pr
+        compare, tested, terminal, allow_unchanged_g2_inputs=allow_unchanged_g2_inputs
     )
 
 

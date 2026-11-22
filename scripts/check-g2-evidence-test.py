@@ -622,7 +622,7 @@ class G2EvidenceCheckerTests(unittest.TestCase):
             ],
         )
 
-    def test_shallow_actions_verifier_accepts_site_only_pull_request(self) -> None:
+    def test_shallow_actions_verifier_accepts_pr_with_unchanged_g2_inputs(self) -> None:
         tested = "0123456789abcdef0123456789abcdef01234567"
         event = json.dumps(self.pull_request_event())
         compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -633,7 +633,7 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         ), mock.patch.object(
             self.checker,
             "run_json",
-            side_effect=(compare, [{"filename": "site/overview.md"}]),
+            side_effect=(compare, [{"filename": "scripts/check-g2-evidence.py"}]),
         ) as run_json:
             self.checker.verify_actions_source_relationship(ROOT, tested)
         self.assertEqual(
@@ -649,7 +649,7 @@ class G2EvidenceCheckerTests(unittest.TestCase):
             ],
         )
 
-    def test_shallow_actions_verifier_accepts_site_only_squash_merge_push(self) -> None:
+    def test_shallow_actions_verifier_accepts_squash_merge_with_unchanged_g2_inputs(self) -> None:
         tested = "0123456789abcdef0123456789abcdef01234567"
         event = json.dumps(self.squash_merge_push_event())
         tree = "cccccccccccccccccccccccccccccccccccccccc"
@@ -675,7 +675,7 @@ class G2EvidenceCheckerTests(unittest.TestCase):
                 merge_commit,
                 terminal_commit,
                 compare,
-                [{"filename": "site/overview.md"}],
+                [{"filename": "scripts/check-g2-evidence.py"}],
             ),
         ) as run_json:
             self.checker.verify_actions_source_relationship(ROOT, tested)
@@ -683,6 +683,30 @@ class G2EvidenceCheckerTests(unittest.TestCase):
             run_json.call_args_list[-1].args[0],
             ["gh", "api", "repos/OpenCoven/psyche/pulls/123/files?per_page=100"],
         )
+
+    def test_shallow_actions_verifier_rejects_diverged_prs_that_change_g2_inputs(self) -> None:
+        tested = "0123456789abcdef0123456789abcdef01234567"
+        event = json.dumps(self.pull_request_event())
+        compare = self.compare_response(merge_base="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        changes = (
+            "crates/psyche-core/src/lib.rs",
+            "Cargo.lock",
+            ".github/workflows/ci.yml",
+            "scripts/g2-test-manifest.json",
+        )
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": "/tmp/event.json"}
+        for filename in changes:
+            with self.subTest(filename=filename), mock.patch.dict(
+                os.environ, environment, clear=False
+            ), mock.patch.object(
+                self.checker.pathlib.Path, "read_text", return_value=event
+            ), mock.patch.object(
+                self.checker,
+                "run_json",
+                side_effect=(compare, [{"filename": filename}]),
+            ):
+                with self.assertRaisesRegex(self.checker.EvidenceError, "ancestor"):
+                    self.checker.verify_actions_source_relationship(ROOT, tested)
 
     def test_shallow_actions_verifier_rejects_malformed_event_payload(self) -> None:
         passed = self.passed_evidence()
