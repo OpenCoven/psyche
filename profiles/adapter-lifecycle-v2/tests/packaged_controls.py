@@ -1,5 +1,6 @@
 """Exercise the verifier in the pinned zipapp using controlled positive and negative evidence."""
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -49,11 +50,11 @@ def run_controls(archive, pin):
         native = dict(binding=vars(bind), request_hex=raw.hex(), state="succeeded", receipt_hex=receipt.hex())
         reply = dict(**vars(bind), state="succeeded", receipt_hex=receipt.hex(), executions=1)
 
-        def terminal(native_record, reported, **extra):
+        def terminal(native_record, reported, scenario=target, **extra):
             # Only the transport is replayed. The archived runner reads the real fixture sink.
             with patch.dict(driver["Scenario"].terminal.__globals__, invoke=lambda cmd, wd, msg, sink=None:
                             native_record if sink is None else reported):
-                return target.terminal("first", "succeeded", **extra)
+                return scenario.terminal("first", "succeeded", **extra)
 
         eid = target.sink.invoke(bind)
         assert terminal(native, reply)[0] == eid
@@ -70,7 +71,6 @@ def run_controls(archive, pin):
                      lambda: terminal(native, reply, original=("other", bind, receipt)))
         expect_error(6, "unknown_promoted", "terminal_state_mismatch",
                      lambda: terminal(dict(native, state="unknown"), reply))
-        from dataclasses import replace
         second = replace(bind, task_id="task-B", action_id="action-B")
         other = driver["Scenario"](root, "other-records", [], [], raw, [])
         for action, count, source in [(bind, 2, target), (second, 3, other)]:
@@ -78,8 +78,14 @@ def run_controls(archive, pin):
                 source.sink.invoke(action)
         observed = target.sink.observe() + other.sink.observe()
         assert len({row.execution_id for row in observed}) == 6
-        expect_error(1, "six_observed_two_reported", "effect_count_mismatch", lambda: terminal(native, reply))
-        print(json.dumps(dict(independent_invocations=len(observed), reported_per_action=[1, 1],
+        reported_counts = []
+        for scenario, binding in ((target, bind), (other, second)):
+            recorded = dict(native, binding=vars(binding))
+            reported = dict(reply, **vars(binding))
+            reported_counts.append(reported["executions"])
+            expect_error(1, "extra_invocations_" + binding.action_id, "effect_count_mismatch",
+                         lambda: terminal(recorded, reported, scenario))
+        print(json.dumps(dict(independent_invocations=len(observed), reported_per_action=reported_counts,
                               execution_ids=[row.execution_id for row in observed])))
 
         empty = driver["Scenario"](root, "refusals", [], [], raw, [])
