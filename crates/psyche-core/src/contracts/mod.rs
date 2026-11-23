@@ -20,10 +20,11 @@ use crate::serde_json_number;
 
 macro_rules! validated_struct {
     (
-        pub struct $name:ident, $wire:ident {
+        $(#[$struct_meta:meta])* pub struct $name:ident, $wire:ident {
             $($(#[$field_meta:meta])* pub $field:ident: $ty:ty),+ $(,)?
         }
     ) => {
+        $(#[$struct_meta])*
         #[derive(Debug, Clone, PartialEq, serde::Serialize)]
         pub struct $name {
             $($(#[$field_meta])* pub $field: $ty),+
@@ -162,6 +163,7 @@ pub(crate) mod strict_string_map {
     }
 }
 
+pub mod build_receipt;
 pub mod error;
 pub mod execution;
 pub mod foundation;

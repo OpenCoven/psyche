@@ -1,8 +1,8 @@
 # OpenCoven protocol ownership
 
-**Status:** proposed baseline pending [OpenCoven/psyche#12](https://github.com/OpenCoven/psyche/issues/12)
+**Status:** ADR 4 is approved for the first Build profile. The remainder of the proposed baseline is tracked on [OpenCoven/psyche#12](https://github.com/OpenCoven/psyche/issues/12)
 
-**Last reconciled:** 2026-11-20
+**Last reconciled:** 2026-11-23
 
 This document prevents implementation order from becoming accidental canonical ownership.
 
@@ -15,6 +15,10 @@ Transport location, process identity, filesystem paths, tmux panes, worktrees, b
 ## Recorded Telegram boundary
 
 The separate Rust Telegram adapter belongs in Psyche. Familiar Contract owns familiar/person identity, Threads owns protected-surface authorization, Psyche composes local admission and orchestration, and Coven owns execution, adoption and fencing. The recorded scope permits interface and denial-vector planning. Actual integration depends on G4/Coven #1230, production child dispatch on G6, and cutover on applicable G10. The cross-repository profile, old-to-current rebind obligations and spec provenance remain open in #12. [Decision and gates](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462) · [Product placement](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303108240)
+
+## Approved first-profile Build receipt binding
+
+Psyche owns the versioned binding from its execution request ID and canonical request digest to the digest of Build’s exact native receipt bytes. Build owns its journal and supplies opaque task and action or idempotency references from the authoritative native path. The pinned Psyche verifier checks issuer provenance, reference correlation and both digests. Missing evidence requires recovery, ambiguity remains unknown pending reconciliation, and conflict preserves the original and quarantines the conflicting evidence. These results confer no dispatch authority. Effect-count claims require an independent witness. Stable publication and live adoption have separate approvals. [Owner decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117194956) · [Wire format and verification](../profiles/build-receipt-binding/README.md)
 
 ## Proposed ownership matrix
 
@@ -120,4 +124,4 @@ The owning issue must approve:
 - SDK mutation profiles;
 - release-order and emergency compatibility policy.
 
-Until approved, this document is a proposed boundary and must not be cited as shipped protocol support.
+The remaining boundaries require decisions on the owning issue. The approved ADR 4 records first-profile ownership. Shipped support requires a published profile and downstream evidence.

@@ -69,3 +69,7 @@ surface-specific presentation, artifact blob transport, and automated
 quarantine adjudication to their later named authority owners. The schemas
 freeze interoperability; they do not silently assign those decisions to a
 boundary adapter.
+
+## First Build profile
+
+The separately negotiated `psyche.build_receipt_binding.v1` wire record binds an execution request to exact native receipt bytes under the Psyche issuer’s signature. Use the first-profile verifier at the Build interchange boundary. Existing G2 journal readers retain their closed storage registry and compatibility behavior. [Schema, golden bytes and verifier](../profiles/build-receipt-binding/README.md) · [Approved ownership](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117194956)
