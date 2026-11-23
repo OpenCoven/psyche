@@ -93,3 +93,5 @@ Follow `SECURITY.md`. Public issues, PRs, fixtures, and evidence must not contai
 R2–R4 changes require review from the owner of the affected surface. Resolve every current review finding and rerun required checks on the exact final head.
 
 Keep changes reversible until compatibility and runtime evidence is complete.
+
+Use GitHub’s **Squash and merge** when delivering a pull request to `main`. The G2 push verifier checks that the delivered commit has exactly one parent (the previous tip of `main`) and that its tree matches the reviewed PR head. Before merging, compare the proposed merge tree with the qualified head. If they differ, update the branch and rerun its checks. After merging, confirm the G2 evidence step passes in the Linux, macOS and Windows jobs on the delivered commit.
