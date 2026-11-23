@@ -33,4 +33,5 @@ profile="$work/a/producer/profiles/adapter-lifecycle-v2"
 (cd "$profile" && python3 -B -m unittest discover -s tests -v)
 python3 -I "$profile/tests/packaged_controls.py" "$work/a/kit.pyz" "$(cat "$profile/archive.sha256")"
 python3 -I "$profile/tests/comparator_result.py" "$work/a/kit.pyz" "$(cat "$profile/archive.sha256")"
+python3 -I "$profile/tests/record_controls.py" "$work/a/kit.pyz" "$(cat "$profile/archive.sha256")"
 cp "$work/a/kit.pyz" "$output"
