@@ -512,6 +512,19 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         mutated = workflow.replace("    branches: [main]\n", "    branches: [develop]\n", 1)
         self.assert_rejected(overrides={path: mutated})
 
+    def test_reviewed_workflow_requires_read_only_contents_permission(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        permissions = "permissions:\n  contents: read\n"
+        self.assertEqual(workflow.count(permissions), 1)
+        self.checker.validate_ci_workflow(workflow)
+        self.checker.validate_ci_workflow(workflow.replace("\n", "\r\n"))
+        for replacement in ("", "permissions:\n  contents: write\n", permissions + "  issues: write\n"):
+            with self.subTest(replacement=replacement):
+                with self.assertRaisesRegex(self.checker.EvidenceError, "complete reviewed workflow"):
+                    self.checker.validate_ci_workflow(workflow.replace(permissions, replacement))
+                with self.assertRaises(self.checker.EvidenceError):
+                    self.checker.validate_ci_structure(workflow.replace(permissions, replacement))
+
     def test_workflow_hash_rejects_setup_action_drift(self) -> None:
         path = ".github/workflows/ci.yml"
         workflow = (ROOT / path).read_text()
@@ -524,18 +537,6 @@ class G2EvidenceCheckerTests(unittest.TestCase):
         anchor = "      - name: Format\n"
         poison = "      - name: Poison PATH\n        run: echo /tmp/poison >> $GITHUB_PATH\n"
         self.assert_rejected(hash_only=True, overrides={path: workflow.replace(anchor, poison + anchor, 1)})
-
-    def test_workflow_requires_exact_read_only_contents_permission(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        self.checker.validate_ci_structure(workflow)
-        mutations = (
-            workflow.replace("  contents: read\n", "  contents: write\n", 1),
-            workflow.replace("  contents: read\n", "  contents: read\n  issues: write\n", 1),
-            workflow.replace("permissions:\n  contents: read\n\n", "", 1),
-        )
-        for index, mutated in enumerate(mutations):
-            with self.subTest(index=index):
-                self.assert_structure_rejected(mutated)
 
     def test_passed_remote_verifier_accepts_exact_ci_attestation(self) -> None:
         passed = self.passed_evidence()
