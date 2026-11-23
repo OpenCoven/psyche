@@ -1,8 +1,8 @@
 //! Offline first-profile reference verifier for the ADR 4 receipt binding.
 
 use std::env;
-use std::fs::File;
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -13,7 +13,7 @@ use psyche_core::digest::{Sha256Digest, canonical_bytes};
 use psyche_coven::{AdoptionRequest, ExecutionRequestInput};
 use serde::Deserialize;
 use serde_json::json;
-use tempfile::NamedTempFile;
+use tempfile::Builder;
 
 const LIMIT: u64 = 65_536;
 
@@ -92,34 +92,41 @@ fn input(path: &Path, invalid: &'static str) -> Result<Vec<u8>, Refusal> {
     Ok(bytes)
 }
 
-// Snapshot the bounded signature and policy that the caller supplied. The
-// verifier process receives private regular files rather than reopening inputs.
-fn snapshot(bytes: &[u8]) -> io::Result<NamedTempFile> {
-    let mut temp = NamedTempFile::new()?;
-    temp.write_all(bytes)?;
-    temp.flush()?;
-    Ok(temp)
-}
-
+// Copy the three bounded inputs into an owner-controlled directory.
+// Relative filenames and closed writers let native and MSYS OpenSSH reopen
+// the same snapshots on Windows. Feed the message from a regular file.
 fn authenticated(policy: &[u8], signature: &[u8], message: &[u8]) -> io::Result<bool> {
-    let policy = snapshot(policy)?;
-    let signature = snapshot(signature)?;
-    let mut child = Command::new("ssh-keygen")
-        .args(["-Y", "verify", "-f"])
-        .arg(policy.path())
-        .args(["-I", ISSUER, "-n", SIGNATURE_NAMESPACE, "-s"])
-        .arg(signature.path())
-        .stdin(Stdio::piped())
+    let mut builder = Builder::new();
+    builder.prefix("psyche-binding-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let directory = builder.tempdir()?;
+    let root = directory.path();
+    fs::write(root.join("policy"), policy)?;
+    fs::write(root.join("signature"), signature)?;
+    fs::write(root.join("message"), message)?;
+    let status = Command::new("ssh-keygen")
+        .current_dir(root)
+        .args([
+            "-Y",
+            "verify",
+            "-f",
+            "policy",
+            "-I",
+            ISSUER,
+            "-n",
+            SIGNATURE_NAMESPACE,
+            "-s",
+            "signature",
+        ])
+        .stdin(File::open(root.join("message"))?)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
-    let sent = child
-        .stdin
-        .take()
-        .ok_or(io::Error::other("missing verifier stdin"))?
-        .write_all(message);
-    let status = child.wait()?;
-    Ok(sent.is_ok() && status.success())
+        .status()?;
+    Ok(status.success())
 }
 
 fn verify(args: &[PathBuf]) -> Result<(), Refusal> {
