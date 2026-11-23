@@ -27,6 +27,7 @@ _LEGACY_VALIDATE_EVIDENCE_ONLY_COMPARE = validate_evidence_only_compare
 _LEGACY_VERIFY_ACTIONS_SOURCE_RELATIONSHIP = verify_actions_source_relationship
 _LEGACY_VERIFY_PASSED = verify_passed
 _LEGACY_VALIDATE_REPOSITORY = validate_repository
+_LEGACY_VALIDATE_WORKFLOW_SCOPE = validate_workflow_scope
 
 SCOPE_SCHEMA = "psyche.g2-attestation-scope/v1"
 SCOPE_MANIFEST_PATH = "scripts/g2-attestation-scope.json"
@@ -42,7 +43,18 @@ _SCOPE_TEST_COMMAND = "python3 scripts/check-g2-attestation-scope-test.py"
 if CI_COMMANDS[-1] != "python3 scripts/check-g2-evidence.py" or _SCOPE_TEST_COMMAND in CI_COMMANDS:
     fail("immutable G2 checker core has an unexpected CI command boundary")
 CI_COMMANDS = CI_COMMANDS[:-1] + (_SCOPE_TEST_COMMAND, CI_COMMANDS[-1])
-REVIEWED_WORKFLOW_SHA256 = "d7bd1d76a31e446d038ce74d7ca7e8ed763920b584461d09faf6aeeedec119b6"
+REVIEWED_WORKFLOW_SHA256 = "686897d1b936c86187fc64b6ed8bdb25206922e30ce51383fbb3afa5184f2620"
+
+def validate_workflow_scope(workflow: str) -> None:
+    # Validate the new root mapping here. The retained checker still validates
+    # every other root key, trigger and environment entry.
+    lines = workflow.splitlines()
+    permissions = nested_mapping_lines(lines, 0, "permissions")
+    if [line for line in permissions if line.strip()] != ["  contents: read"]:
+        fail("workflow permissions must grant only contents: read")
+    start = lines.index("permissions:")
+    _LEGACY_VALIDATE_WORKFLOW_SCOPE("\n".join(lines[:start] + lines[start + 1 + len(permissions):]))
+
 
 EXPECTED_UNATTESTED_PATHS = {
     "AGENTS.md": {"operations": ("added", "modified"), "modes": ("100644",)},
