@@ -3,6 +3,9 @@
 //! A binding correlates evidence. Decoding it does not establish the issuer or
 //! authenticate the separately obtained execution request or native receipt.
 
+use std::{fmt, marker::PhantomData};
+
+use serde::de::{MapAccess, Visitor, value::MapAccessDeserializer};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::digest::Sha256Digest;
@@ -54,10 +57,35 @@ impl BuildReference {
     }
 }
 
+/// Decode a named-field profile object, retaining duplicate fields so the
+/// target's derived deserializer can reject them.
+pub fn deserialize_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    // Serde's ordinary struct visitor also accepts positional arrays.
+    struct ObjectVisitor<T>(PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a named-field profile object")
+        }
+
+        fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<T, M::Error> {
+            T::deserialize(MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_map(ObjectVisitor(PhantomData))
+}
+
 validated_struct! {
     /// Closed v1 wire fields. Deserialization validates the profile shape.
     /// Authenticating the issuer and correlating external evidence are separate steps.
-    pub struct BuildReceiptBinding, BuildReceiptBindingWire {
+    pub struct BuildReceiptBinding, BuildReceiptBindingWire using deserialize_object {
         /// Exact negotiated schema version.
         pub schema_version: String,
         /// Issuer principal authenticated using independently provisioned trust.

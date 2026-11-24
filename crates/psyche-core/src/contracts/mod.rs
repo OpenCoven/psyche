@@ -19,8 +19,10 @@ use crate::id::RecordId;
 use crate::serde_json_number;
 
 macro_rules! validated_struct {
+    (@decode $deserializer:ident) => { serde::Deserialize::deserialize($deserializer) };
+    (@decode $deserializer:ident, $read:path) => { $read($deserializer) };
     (
-        $(#[$struct_meta:meta])* pub struct $name:ident, $wire:ident {
+        $(#[$struct_meta:meta])* pub struct $name:ident, $wire:ident $(using $read:path)? {
             $($(#[$field_meta:meta])* pub $field:ident: $ty:ty),+ $(,)?
         }
     ) => {
@@ -40,7 +42,7 @@ macro_rules! validated_struct {
             fn deserialize<D: serde::Deserializer<'de>>(
                 deserializer: D,
             ) -> Result<Self, D::Error> {
-                let wire = <$wire as serde::Deserialize>::deserialize(deserializer)?;
+                let wire: $wire = validated_struct!(@decode deserializer $(, $read)?)?;
                 let value = Self {
                     $($field: wire.$field),+
                 };

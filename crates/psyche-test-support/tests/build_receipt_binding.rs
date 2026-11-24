@@ -91,8 +91,13 @@ impl Fixture {
     }
 
     fn verify(&self, result: &str, code: &str) {
+        self.verify_with_env(result, code, &[]);
+    }
+
+    fn verify_with_env(&self, result: &str, code: &str, env: &[(&str, &Path)]) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_verify-build-binding"))
             .args(FILES)
+            .envs(env.iter().copied())
             .current_dir(self.dir())
             .env_remove("SSH_AUTH_SOCK")
             .stdout(Stdio::piped())
@@ -152,6 +157,54 @@ fn core_decoder_enforces_required_references_issuer_and_version() {
     ] {
         assert!(serde_json::from_slice::<BuildReceiptBinding>(&bytes).is_err());
     }
+}
+
+#[test]
+fn binding_and_context_require_named_fields_even_if_array_values_match() {
+    let fixture = Fixture::new();
+    let binding = object(BINDING);
+    let positional = json!([
+        binding["schema_version"],
+        binding["issuer"],
+        binding["request_id"],
+        binding["request_digest"],
+        binding["task_id"],
+        binding["action_id"],
+        binding["idempotency_key"],
+        binding["receipt_digest"],
+        binding["outcome"]
+    ]);
+    let bytes = canonical_bytes(&positional).unwrap();
+    assert!(serde_json::from_slice::<BuildReceiptBinding>(&bytes).is_err());
+    fixture.sign(&bytes, NAMESPACE);
+    fixture.verify("denied", "invalid_binding");
+
+    let context = object(CONTEXT);
+    let positional = json!([
+        context["task_id"],
+        context["action_id"],
+        context["idempotency_key"],
+        context["outcome"]
+    ]);
+    fixture.sign(BINDING, NAMESPACE);
+    fixture.write("context", &canonical_bytes(&positional).unwrap());
+    fixture.verify("denied", "invalid_context");
+}
+
+#[test]
+fn valid_signature_reports_verifier_unavailable_when_local_verification_cannot_run() {
+    let fixture = Fixture::new();
+    let file = fixture.dir().join("receipt");
+    fixture.verify_with_env(
+        "denied",
+        "verifier_unavailable",
+        &[("TMPDIR", &file), ("TMP", &file), ("TEMP", &file)],
+    );
+
+    let empty_bin = fixture.dir().join("empty-bin");
+    fs::create_dir(&empty_bin).unwrap();
+    fixture.verify_with_env("denied", "verifier_unavailable", &[("PATH", &empty_bin)]);
+    fixture.verify("verified", "binding_verified");
 }
 
 #[cfg(unix)]
@@ -217,6 +270,8 @@ fn only_the_configured_issuer_key_principal_and_signature_namespace_verify() {
     fixture.verify("denied", "untrusted_issuer");
     fixture.sign(BINDING, NAMESPACE);
     fs::remove_file(fixture.dir().join("binding.sig")).unwrap();
+    fixture.verify("unknown", "recovery_required");
+    fixture.write("binding.sig", b"malformed signature");
     fixture.verify("denied", "untrusted_issuer");
     fixture.sign(BINDING, NAMESPACE);
     fs::remove_file(fixture.dir().join("allowed_signers")).unwrap();

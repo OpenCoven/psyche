@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use psyche_core::contracts::build_receipt::{
-    BuildReceiptBinding, BuildReference, ISSUER, NativeOutcome, SCHEMA_VERSION, SIGNATURE_NAMESPACE,
+    BuildReceiptBinding, BuildReference, ISSUER, NativeOutcome, SCHEMA_VERSION,
+    SIGNATURE_NAMESPACE, deserialize_object,
 };
 use psyche_core::digest::{Sha256Digest, canonical_bytes};
 use psyche_coven::{AdoptionRequest, ExecutionRequestInput};
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::json;
 use tempfile::Builder;
 
@@ -126,7 +127,17 @@ fn authenticated(policy: &[u8], signature: &[u8], message: &[u8]) -> io::Result<
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
-    Ok(status.success())
+    match status.code() {
+        Some(code) => Ok(code == 0),
+        None => Err(io::Error::other("verification process terminated")),
+    }
+}
+
+fn profile_object<T: DeserializeOwned>(bytes: &[u8]) -> serde_json::Result<T> {
+    let mut parser = serde_json::Deserializer::from_slice(bytes);
+    let object = deserialize_object(&mut parser)?;
+    parser.end()?;
+    Ok(object)
 }
 
 fn verify(args: &[PathBuf]) -> Result<(), Refusal> {
@@ -141,7 +152,7 @@ fn verify(args: &[PathBuf]) -> Result<(), Refusal> {
     else {
         return Err(Refusal::Denied("invalid_arguments"));
     };
-    let context: Context = serde_json::from_slice(&input(context_path, "invalid_context")?)
+    let context: Context = profile_object(&input(context_path, "invalid_context")?)
         .map_err(|_| Refusal::Denied("invalid_context"))?;
     if context.action_id.is_none() && context.idempotency_key.is_none() {
         return Err(Refusal::Denied("invalid_context"));
@@ -157,8 +168,7 @@ fn verify(args: &[PathBuf]) -> Result<(), Refusal> {
         #[serde(default)]
         issuer: serde_json::Value,
     }
-    let header: Header =
-        serde_json::from_slice(&bytes).map_err(|_| Refusal::Denied("invalid_binding"))?;
+    let header: Header = profile_object(&bytes).map_err(|_| Refusal::Denied("invalid_binding"))?;
     if header.schema_version != SCHEMA_VERSION {
         return Err(Refusal::Denied("unsupported_version"));
     }
@@ -171,9 +181,11 @@ fn verify(args: &[PathBuf]) -> Result<(), Refusal> {
     if canonical_bytes(&binding).map_err(|_| Refusal::Denied("invalid_binding"))? != bytes {
         return Err(Refusal::Denied("invalid_binding"));
     }
+    let signature = input(sig_path, "untrusted_issuer")?;
     let policy = input(policy_path, "untrusted_issuer").map_err(|_| untrusted)?;
-    let signature = input(sig_path, "untrusted_issuer").map_err(|_| untrusted)?;
-    if !authenticated(&policy, &signature, &bytes).map_err(|_| untrusted)? {
+    if !authenticated(&policy, &signature, &bytes)
+        .map_err(|_| Refusal::Denied("verifier_unavailable"))?
+    {
         return Err(untrusted);
     }
 
