@@ -93,3 +93,9 @@ Follow `SECURITY.md`. Public issues, PRs, fixtures, and evidence must not contai
 R2–R4 changes require review from the owner of the affected surface. Resolve every current review finding and rerun required checks on the exact final head.
 
 Keep changes reversible until compatibility and runtime evidence is complete.
+
+Use GitHub’s **Squash and merge** when delivering a pull request to `main`. The G2 push verifier requires the previous tip of `main` to be the delivered commit’s only parent and the delivered tree to match the reviewed PR head.
+
+1. Read the PR’s `head.sha`, `base.sha`, and proposed `merge_commit_sha` from `gh api repos/OpenCoven/psyche/pulls/NUMBER`. Record the full SHAs. Confirm the base equals the current `main` tip and that required check runs and commit statuses passed on the recorded head.
+2. Fetch the head and proposed merge with `git fetch origin refs/pull/NUMBER/head refs/pull/NUMBER/merge`. Use `git show -s --format='%P %T' SHA` to confirm the proposed merge’s parents are the recorded base and head in that order, and its tree equals the head’s tree. Refresh the PR and `main` immediately before merging. If either SHA changed or the trees differ, qualify the updated proposal first.
+3. Squash-merge the tested head with `gh api --method PUT repos/OpenCoven/psyche/pulls/NUMBER/merge -f merge_method=squash -f sha=HEAD_SHA`, substituting the PR number and recorded head. Fetch the returned commit and inspect its parents and tree with the same Git command. Confirm its sole parent is the recorded base and its tree equals the tested head’s tree. Follow the push CI for that delivered SHA and confirm the G2 evidence step passes on Linux, macOS, and Windows.
