@@ -353,9 +353,12 @@ function render(page) {
   const sourceUrl = blobUrl(sourcePath);
   const canonical = BASE_URL ? `${BASE_URL}${page.url}` : '';
   const title = page.id === 'overview' ? SITE_NAME : `${page.navName} | ${SITE_NAME}`;
-  const description = md
-    .renderInline(page.lead, { id: page.id, linkDepth: 1, links: [], assets: new Set() })
-    .replace(/<[^>]+>/g, '');
+  let description = md.renderInline(page.lead, { id: page.id, linkDepth: 1, links: [], assets: new Set() });
+  let previousDescription;
+  do {
+    previousDescription = description;
+    description = description.replace(/<[^>]+>/g, '');
+  } while (description !== previousDescription);
   const issueUrl = `https://github.com/${REPO}/issues/new?${new URLSearchParams({
     title: `Docs: ${page.navName}`,
     body: `- Page: ${page.navName}\n- Source: \`${sourcePath}\` at \`${shortCommit}\`\n\n### What is the issue?\n`,
