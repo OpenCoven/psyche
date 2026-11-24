@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use psyche_core::contracts::build_receipt::BuildReceiptBinding;
+use psyche_core::contracts::build_receipt::{BuildReceiptBinding, NativeOutcome};
 use psyche_core::digest::{Sha256Digest, canonical_bytes};
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
@@ -189,6 +189,38 @@ fn binding_and_context_require_named_fields_even_if_array_values_match() {
     fixture.sign(BINDING, NAMESPACE);
     fixture.write("context", &canonical_bytes(&positional).unwrap());
     fixture.verify("denied", "invalid_context");
+}
+
+#[test]
+fn outcomes_accept_only_the_string_literals_defined_for_each_record() {
+    let fixture = Fixture::new();
+    for (outcome, context_result, context_code) in [
+        (json!({"terminal": null}), "denied", "invalid_context"),
+        (json!({"ambiguous": null}), "denied", "invalid_context"),
+        (json!({"missing": null}), "denied", "invalid_context"),
+        (json!(null), "denied", "invalid_context"),
+        (json!(false), "denied", "invalid_context"),
+        (json!(0), "denied", "invalid_context"),
+        (json!(["terminal"]), "denied", "invalid_context"),
+        (json!("missing"), "unknown", "recovery_required"),
+    ] {
+        let binding = changed(BINDING, "outcome", outcome.clone());
+        assert!(
+            serde_json::from_value::<NativeOutcome>(outcome.clone()).is_err(),
+            "{outcome}"
+        );
+        assert!(
+            serde_json::from_slice::<BuildReceiptBinding>(&binding).is_err(),
+            "{outcome}"
+        );
+        fixture.sign(&binding, NAMESPACE);
+        fixture.write("context", CONTEXT);
+        fixture.verify("denied", "invalid_binding");
+
+        fixture.sign(BINDING, NAMESPACE);
+        fixture.write("context", &changed(CONTEXT, "outcome", outcome));
+        fixture.verify(context_result, context_code);
+    }
 }
 
 #[test]

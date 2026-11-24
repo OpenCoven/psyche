@@ -20,12 +20,24 @@ pub const SIGNATURE_NAMESPACE: &str = "psyche.build-receipt-binding.v1";
 
 /// Native journal disposition, independent of whether a terminal action succeeded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(try_from = "String", rename_all = "snake_case")]
 pub enum NativeOutcome {
     /// The authoritative effect path produced a durable terminal receipt.
     Terminal,
     /// The outcome requires canonical reconciliation.
     Ambiguous,
+}
+
+impl TryFrom<String> for NativeOutcome {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "terminal" => Ok(Self::Terminal),
+            "ambiguous" => Ok(Self::Ambiguous),
+            _ => Err("unknown native outcome"),
+        }
+    }
 }
 
 /// Opaque Build identifier. It cannot confer authority or replace a Psyche ID.

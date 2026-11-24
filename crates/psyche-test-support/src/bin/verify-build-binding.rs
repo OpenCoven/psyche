@@ -38,11 +38,21 @@ impl Refusal {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(try_from = "String")]
 enum JournalState {
-    Terminal,
-    Ambiguous,
+    Recorded(NativeOutcome),
     Missing,
+}
+
+impl TryFrom<String> for JournalState {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value == "missing" {
+            return Ok(Self::Missing);
+        }
+        NativeOutcome::try_from(value).map(Self::Recorded)
+    }
 }
 
 /// Supplied by the trusted native reader, independently of the signed file.
@@ -212,7 +222,10 @@ fn verify(args: &[PathBuf]) -> Result<(), Refusal> {
         return Err(Refusal::Conflict);
     }
     if binding.outcome == NativeOutcome::Ambiguous
-        || matches!(context.outcome, JournalState::Ambiguous)
+        || matches!(
+            context.outcome,
+            JournalState::Recorded(NativeOutcome::Ambiguous)
+        )
     {
         return Err(Refusal::Ambiguous);
     }
