@@ -12,11 +12,15 @@ from zipfile import ZipFile
 
 def child(archive, role, case, golden, audit):
     sys.path.insert(0, archive)
-    from reference_fixture import adapt, observe
+    from reference_fixture import adapt, observe, rows, submit
 
     message = json.load(sys.stdin)
     if role == "adapter":
         reply = adapt(message, Path(golden).read_bytes(), "conforming", Path(audit))
+        if case == "replay-count" and Path.cwd().name == "success" and "state" in reply:
+            if message["phase"] == "replay":
+                submit(rows()[0]["binding"], Path(audit))
+            reply["executions"] = len(rows())
         if case == "refusal-count" and reply.get("code") and reply["executions"] == 1:
             reply["executions"] = 0
         if case == "refusal-fields" and reply.get("code"):
@@ -40,13 +44,20 @@ def check(archive, pin):
         golden = root / "request.json"
         golden.write_bytes(raw)
         for case, expected in (("refusal-count", "invalid_refusal"), ("refusal-fields", "invalid_refusal"),
-                               ("denial-state", "refused_native_state_changed"), ("terminal-refusal", "unexpected_native_refusal")):
+                               ("replay-count", "effect_count_mismatch"), ("denial-state", "refused_native_state_changed"), ("terminal-refusal", "unexpected_native_refusal")):
             commands = [[sys.executable, "-I", __file__, "child", str(archive), role, case, str(golden), str(root / case)]
                         for role in ("adapter", "observer")]
             result = subprocess.run([sys.executable, "-I", str(archive), "--sha256", pin, "--observer",
                                      json.dumps(commands[1]), "--", *commands[0]], capture_output=True, timeout=120)
             if result.returncode != 1 or json.loads(result.stdout).get("code") != expected:
                 raise AssertionError((case, result.returncode, result.stdout, result.stderr))
+            if case == "replay-count":
+                trace = [json.loads(line) for line in (root / case).read_text().splitlines()]
+                if len(trace) != 2:
+                    raise AssertionError(("unexpected replay effect count", len(trace)))
+                first, replay = trace
+                if first["binding"] != replay["binding"] or first["execution_id"] == replay["execution_id"]:
+                    raise AssertionError(("unexpected replay trace", trace))
             print(json.dumps(dict(control=case, expected_refusal=expected)))
 
         # Inject a storage discrepancy in the parent-owned disposable ledger immediately after the first append.
