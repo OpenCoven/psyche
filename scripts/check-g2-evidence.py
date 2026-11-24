@@ -27,24 +27,38 @@ _LEGACY_VALIDATE_EVIDENCE_ONLY_COMPARE = validate_evidence_only_compare
 _LEGACY_VERIFY_ACTIONS_SOURCE_RELATIONSHIP = verify_actions_source_relationship
 _LEGACY_VERIFY_PASSED = verify_passed
 _LEGACY_VALIDATE_REPOSITORY = validate_repository
+_LEGACY_VALIDATE_WORKFLOW_SCOPE = validate_workflow_scope
 
 SCOPE_SCHEMA = "psyche.g2-attestation-scope/v1"
 SCOPE_MANIFEST_PATH = "scripts/g2-attestation-scope.json"
 SCOPE_EVIDENCE_PATH = "docs/G2-SCOPE-EVIDENCE.md"
 HISTORIC_EVIDENCE_PATH = "docs/G2-EVIDENCE.md"
 HISTORIC_EVIDENCE_SHA256 = "5005824cbd1935b802158696be6264021202c4420a9b0796772a4756d23d91e1"
-SCOPE_MANIFEST_SHA256 = "4e535973d4ab49de80e78cd35177bde658d5c31f6d0fd3a5d91edb579a118fa4"
+SCOPE_MANIFEST_SHA256 = "a562eb016dfd658087a688e738ee5d20f275a3afc43486dbf0bc6d8bfb7f7809"
+ROOT_LICENSE_ENTRY = ("100644", "blob", "5f5ad1fba60dd07f73285e82ed67c974aed34977")
+SITE_NOTICE_PATH = "site/assets/LICENSE-threads.txt"
+SITE_NOTICE_ENTRY = ("100644", "blob", "0cea5dc1a1ce3355c1353b961a8ca7a90367f976")
 _SCOPE_TEST_COMMAND = "python3 scripts/check-g2-attestation-scope-test.py"
 
 if CI_COMMANDS[-1] != "python3 scripts/check-g2-evidence.py" or _SCOPE_TEST_COMMAND in CI_COMMANDS:
     fail("immutable G2 checker core has an unexpected CI command boundary")
 CI_COMMANDS = CI_COMMANDS[:-1] + (_SCOPE_TEST_COMMAND, CI_COMMANDS[-1])
-REVIEWED_WORKFLOW_SHA256 = "d7bd1d76a31e446d038ce74d7ca7e8ed763920b584461d09faf6aeeedec119b6"
+REVIEWED_WORKFLOW_SHA256 = "686897d1b936c86187fc64b6ed8bdb25206922e30ce51383fbb3afa5184f2620"
+
+def validate_workflow_scope(workflow: str) -> None:
+    # Validate the new root mapping here. The retained checker still validates
+    # every other root key, trigger and environment entry.
+    lines = workflow.splitlines()
+    permissions = nested_mapping_lines(lines, 0, "permissions")
+    if [line for line in permissions if line.strip()] != ["  contents: read"]:
+        fail("workflow permissions must grant only contents: read")
+    start = lines.index("permissions:")
+    _LEGACY_VALIDATE_WORKFLOW_SCOPE("\n".join(lines[:start] + lines[start + 1 + len(permissions):]))
+
 
 EXPECTED_UNATTESTED_PATHS = {
     "AGENTS.md": {"operations": ("added", "modified"), "modes": ("100644",)},
     "CONTRIBUTING.md": {"operations": ("added", "modified"), "modes": ("100644",)},
-    "LICENSE": {"operations": ("added", "modified"), "modes": ("100644",)},
     "README.md": {"operations": ("added", "modified"), "modes": ("100644",)},
     "SECURITY.md": {"operations": ("added", "modified"), "modes": ("100644",)},
     "agent/manifest.yaml": {"operations": ("added", "modified"), "modes": ("100644",)},
@@ -269,6 +283,11 @@ def _local_tree_entries(root: pathlib.Path, ref: str) -> dict[str, tuple[str, st
     return result
 
 
+def _validate_root_license(root: pathlib.Path) -> None:
+    if _local_tree_entries(root, "HEAD").get("LICENSE") != ROOT_LICENSE_ENTRY:
+        fail("root LICENSE must match the approved mode and Git blob")
+
+
 def _change_status(
     before: tuple[str, str, str] | None,
     after: tuple[str, str, str] | None,
@@ -468,7 +487,17 @@ def _validate_readiness_operations(
             fail("Git returned an invalid G2 copy or rename status")
         old_path = _safe_repository_path(os.fsdecode(source))
         new_path = _safe_repository_path(os.fsdecode(destination))
-        if new_path in scope or (status.startswith(b"R") and old_path in scope):
+        # The approved initial license addition is a copy of the site notice
+        # in Git's proposal diff. Bind approval to both complete tree entries.
+        if (
+            status == b"C096" and old_path == SITE_NOTICE_PATH and new_path == "LICENSE"
+            and "LICENSE" not in prior and terminal.get("LICENSE") == ROOT_LICENSE_ENTRY
+            and prior.get(old_path) == terminal.get(old_path) == SITE_NOTICE_ENTRY
+        ):
+            continue
+        if new_path in scope or new_path == "LICENSE" or (
+            status.startswith(b"R") and (old_path in scope or old_path == "LICENSE")
+        ):
             fail(f"readiness policy rejects a proposed copy or rename: {old_path} to {new_path}")
 
 
@@ -629,6 +658,7 @@ def validate_repository(
 ) -> None:
     root = root.resolve()
     overrides = source_overrides or {}
+    _validate_root_license(root)
     _load_scope_state(root, overrides)
     historic = read_text(root, HISTORIC_EVIDENCE_PATH, overrides) if evidence is None else evidence
     if hashlib.sha256(historic.encode("utf-8")).hexdigest() != HISTORIC_EVIDENCE_SHA256:
