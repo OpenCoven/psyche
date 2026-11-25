@@ -46,11 +46,11 @@ jobs:
           CARGO_BUILD_RUSTC: unintended-compiler-for-kit-test
           RUSTC_WRAPPER: unintended-wrapper-for-kit-test
           CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: unintended-workspace-wrapper-for-kit-test
-          RUSTFLAGS: -C linker=unintended-linker-for-kit-test
           CARGO_PROFILE_RELEASE_OPT_LEVEL: unintended-opt-level-for-kit-test
-          RUSTC_BOOTSTRAP: '1'
         shell: bash
         run: |
+          # A target linker leaked into the build would fail it.
+          export "CARGO_TARGET_$(echo "$TARGET" | tr 'a-z-' 'A-Z_')_LINKER=unintended-linker-for-kit-test"
           archive="$RUNNER_TEMP/first-build-profile-$TARGET.tar.gz"
           python profiles/first-build-profile/kit.py build --source "$SOURCE_COMMIT" --target "$TARGET" --archive "$archive" $RESTART
           python -c 'import hashlib, pathlib, sys; print("Inner SHA-256:", hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$archive" >> "$GITHUB_STEP_SUMMARY"
