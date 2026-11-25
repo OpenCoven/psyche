@@ -716,6 +716,8 @@ dependencies = [
  "psyche-coven",
  "psyche-store",
  "psyche-surfaces",
+ "rustix",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",

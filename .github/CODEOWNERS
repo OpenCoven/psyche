@@ -1,0 +1,28 @@
+# Proposed recipients. The owner must accept review responsibility before landing.
+# @BunsDev is the only established owner: the repository has one administrator and no teams.
+# GitHub does not let an author approve their own pull request, so requiring code-owner review
+# in a ruleset would block every self-authored change until a second owner or a bypass exists.
+# The last matching pattern wins. A path no later rule names falls back to the first rule.
+* @BunsDev
+/crates/psyche-core/ @BunsDev
+/crates/psyche-config/ @BunsDev
+/crates/psyche-store/ @BunsDev
+/crates/psyche-coven/ @BunsDev
+/crates/psyche-surfaces/ @BunsDev
+/crates/psyche-runtime/ @BunsDev
+/crates/psyche-cli/ @BunsDev
+/crates/psyche-test-support/ @BunsDev
+/scripts/ @BunsDev
+/docs/ @BunsDev
+/site/ @BunsDev
+/vercel.json @BunsDev
+/*.md @BunsDev
+/agent/ @BunsDev
+/.github/ @BunsDev
+/.github/CODEOWNERS @BunsDev
+/packages/ @BunsDev
+/Cargo.toml @BunsDev
+/Cargo.lock @BunsDev
+/deny.toml @BunsDev
+/clippy.toml @BunsDev
+/rust-toolchain.toml @BunsDev

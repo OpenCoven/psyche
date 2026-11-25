@@ -1142,7 +1142,8 @@ impl Sha256Digest {
         Ok(Sha256Digest(value.to_string()))
     }
 
-    pub(crate) fn from_raw_bytes(bytes: &[u8]) -> Self {
+    /// Hash the supplied bytes exactly, including whitespace and binary data.
+    pub fn from_raw_bytes(bytes: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         Self(format!(

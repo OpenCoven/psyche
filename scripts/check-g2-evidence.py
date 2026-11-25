@@ -521,7 +521,7 @@ def verify_local_source_relationship(root: pathlib.Path, tested: str) -> None:
     _validate_readiness_operations(root, baseline, _local_tree_entries(root, baseline), after, scope)
 
 
-def _actions_proposal(root: pathlib.Path) -> tuple[str, str]:
+def _actions_proposal(root: pathlib.Path, *, candidate: bool = False) -> tuple[str, str]:
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if not event_path:
         fail("GitHub Actions event payload path is absent")
@@ -535,6 +535,8 @@ def _actions_proposal(root: pathlib.Path) -> tuple[str, str]:
     if not isinstance(repository, dict) or repository.get("full_name") != "OpenCoven/psyche":
         fail("GitHub Actions repository provenance is invalid")
     pull_request = event.get("pull_request")
+    if candidate and (os.environ.get("GITHUB_EVENT_NAME") != "pull_request" or not isinstance(pull_request, dict)):
+        fail("candidate G2 scope evidence requires a pull_request event; delivery requires passed evidence")
     if isinstance(pull_request, dict):
         base = pull_request.get("base")
         head = pull_request.get("head")
@@ -555,6 +557,10 @@ def _actions_proposal(root: pathlib.Path) -> tuple[str, str]:
         base_sha = base.get("sha")
         if not isinstance(base_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", base_sha):
             fail("GitHub Actions pull-request base commit is invalid")
+        if candidate:
+            checkout = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            if checkout != terminal:
+                fail("candidate G2 checkout does not match the pull-request head")
         return _proposal_merge_base(root, base_sha, terminal), terminal
     terminal = squash_merge_terminal(root, event)
     return event["before"], terminal
@@ -567,6 +573,7 @@ def verify_actions_source_relationship(root: pathlib.Path, tested: str) -> None:
         return
     scope, status, scope_tested = state
     if status == "candidate":
+        _actions_proposal(root, candidate=True)
         return
     assert scope_tested is not None
     proposal_base, terminal = _actions_proposal(root)
