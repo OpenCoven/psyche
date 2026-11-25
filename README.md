@@ -59,7 +59,10 @@ The GitHub workflow remains the source of truth for the full Linux, macOS, Windo
 
 ## Quick start
 
+In Bash or zsh, put the installed rustup proxies first so the helpers use the version in `rust-toolchain.toml`. The PATH change applies to the current shell.
+
 ```sh
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 ./scripts/agent-bootstrap
 ./scripts/agent-check fast
 ```
