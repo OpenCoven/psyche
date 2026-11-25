@@ -17,6 +17,7 @@ jobs:
   kit:
     name: First profile kit (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +46,9 @@ jobs:
           CARGO_BUILD_RUSTC: unintended-compiler-for-kit-test
           RUSTC_WRAPPER: unintended-wrapper-for-kit-test
           CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: unintended-workspace-wrapper-for-kit-test
+          RUSTFLAGS: -C linker=unintended-linker-for-kit-test
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: unintended-opt-level-for-kit-test
+          RUSTC_BOOTSTRAP: '1'
         shell: bash
         run: |
           archive="$RUNNER_TEMP/first-build-profile-$TARGET.tar.gz"

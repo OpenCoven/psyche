@@ -34,6 +34,7 @@ const EXPERIMENTAL: &[&str] = &[
 ];
 const EXCLUDED: &[&str] = &["surface_effect", "delivery"];
 const SOURCE: &str = "0123456789abcdef0123456789abcdef01234567";
+const TARGET: &str = "x86_64-unknown-linux-gnu";
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -136,19 +137,29 @@ fn cases_cover_both_majors_and_an_unknown_field_for_every_selected_kind() {
             assert!(names.contains(&name), "missing case {name}");
         }
     }
-    // Excluded kinds are dispositioned, not silently omitted.
-    let all: Vec<&str> = STABLE_TARGETS
-        .iter()
-        .chain(EXPERIMENTAL)
-        .chain(EXCLUDED)
-        .copied()
-        .collect();
-    assert_eq!(all.len(), 16);
+    // Five cases per selected kind plus ten global cases, and nothing else.
+    assert_eq!(
+        names.len(),
+        (STABLE_TARGETS.len() + EXPERIMENTAL.len()) * 5 + 10
+    );
+    for kind in EXCLUDED {
+        assert!(!names.iter().any(|n| n.starts_with(&format!("{kind}/"))));
+    }
 }
 
-/// Assembles a kit directory with the repository's vectors and denial cases.
+/// The generated cases with any working-tree CRLF conversion undone, as the
+/// kit builder takes them from the committed blob.
+fn denials_bytes() -> Vec<u8> {
+    String::from_utf8(fs::read(denials_path()).unwrap())
+        .unwrap()
+        .replace("\r\n", "\n")
+        .into_bytes()
+}
+
+/// Assembles a complete kit directory: the repository's vectors, cases and
+/// golden binding inputs, with synthetic executables and replay archive.
 fn kit(dir: &Path) -> Value {
-    let mut files = BTreeMap::new();
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut kinds = BTreeMap::new();
     for (class, list) in [
         ("stable-v1-target", STABLE_TARGETS),
@@ -164,8 +175,57 @@ fn kit(dir: &Path) -> Value {
             files.insert(name, bytes);
         }
     }
-    files.insert("denials.json".to_owned(), fs::read(denials_path()).unwrap());
-    files.insert("README.md".to_owned(), b"synthetic".to_vec());
+    files.insert("denials.json".to_owned(), denials_bytes());
+    files.insert("README.md".to_owned(), b"synthetic readme".to_vec());
+    files.insert("LICENSE".to_owned(), b"synthetic license".to_vec());
+    files.insert(
+        "bin/verify-profile".to_owned(),
+        b"synthetic runner".to_vec(),
+    );
+    files.insert(
+        "bin/verify-build-binding".to_owned(),
+        b"synthetic verifier".to_vec(),
+    );
+    let binding = repo().join("profiles/build-receipt-binding");
+    files.insert(
+        "binding/binding.schema.json".to_owned(),
+        fs::read(binding.join("binding.schema.json")).unwrap(),
+    );
+    for name in [
+        "allowed_signers",
+        "binding.json",
+        "binding.sig",
+        "context.json",
+        "receipt.json",
+    ] {
+        files.insert(
+            format!("binding/golden/{name}"),
+            fs::read(binding.join("golden").join(name)).unwrap(),
+        );
+    }
+    files.insert(
+        "binding/golden/request.json".to_owned(),
+        fs::read(repo().join("crates/psyche-coven/tests/fixtures/execution-request-launch.json"))
+            .unwrap(),
+    );
+    files.insert(
+        "receipt-replay/receipt-replay.pyz".to_owned(),
+        b"synthetic replay archive".to_vec(),
+    );
+    for name in [
+        "action.json",
+        "check_inputs.py",
+        "check_witness.py",
+        "qualify.py",
+        "recovery.py",
+        "request.json",
+        "submit.py",
+    ] {
+        files.insert(
+            format!("receipt-replay/consumer/{name}"),
+            fs::read(repo().join("profiles/receipt-replay/consumer").join(name)).unwrap(),
+        );
+    }
     for (name, bytes) in &files {
         let path = dir.join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -177,16 +237,27 @@ fn kit(dir: &Path) -> Value {
         "status": "experimental-prerelease",
         "repository": "OpenCoven/psyche",
         "source_commit": SOURCE,
-        "target": "test-target",
-        "rustc": "rustc test",
-        "cargo": "cargo test",
-        "rust_channel": "test",
+        "target": TARGET,
+        "rustc": "rustc 1.89.0 (test)",
+        "cargo": "cargo 1.89.0 (test)",
+        "rust_channel": "1.89.0",
         "build_profile": "release",
         "cargo_locked": true,
         "cargo_lock_sha256": "a".repeat(64),
         "kinds": kinds,
         "excluded_kinds": excluded,
-        "components": {"receipt-replay": {"archive_sha256": "b".repeat(64)}},
+        "components": {
+            "build-receipt-binding": {
+                "schema_version": "psyche.build_receipt_binding.v1",
+                "request_sha256": hex(&files["binding/golden/request.json"]),
+                "receipt_sha256": hex(&files["binding/golden/receipt.json"]),
+                "binding_sha256": hex(&files["binding/golden/binding.json"]),
+            },
+            "receipt-replay": {
+                "profile": "psyche.experimental.receipt-replay.v1",
+                "archive_sha256": hex(&files["receipt-replay/receipt-replay.pyz"]),
+            },
+        },
         "files": files.iter().map(|(n, b)| (n.clone(), hex(b))).collect::<BTreeMap<_, _>>(),
     });
     write_manifest(dir, &manifest);
@@ -201,10 +272,20 @@ fn write_manifest(dir: &Path, manifest: &Value) {
     .unwrap();
 }
 
-fn run(dir: &Path, extra: &[&str]) -> (bool, Value) {
+/// Replaces member NAME with BYTES and re-pins its manifest digest, so the
+/// refusal comes from a later check and not the member check.
+fn repin(dir: &Path, manifest: &mut Value, name: &str, bytes: &[u8]) {
+    fs::write(dir.join(name), bytes).unwrap();
+    manifest["files"][name] = json!(hex(bytes));
+    write_manifest(dir, manifest);
+}
+
+const PINS: &[&str] = &["--source", SOURCE, "--target", TARGET];
+
+fn run(dir: &Path, args: &[&str]) -> (bool, Value) {
     let output = Command::new(env!("CARGO_BIN_EXE_verify-profile"))
         .arg(dir)
-        .args(extra)
+        .args(args)
         .env_clear()
         .output()
         .unwrap();
@@ -214,28 +295,68 @@ fn run(dir: &Path, extra: &[&str]) -> (bool, Value) {
     (output.status.success(), report)
 }
 
-fn denied(dir: &Path, extra: &[&str], code: &str) {
-    let (ok, report) = run(dir, extra);
+fn denied_with(dir: &Path, args: &[&str], code: &str) {
+    let (ok, report) = run(dir, args);
     assert!(!ok, "expected {code}, got {report}");
     assert_eq!(report["result"], "denied", "{report}");
     assert_eq!(report["code"], code, "{report}");
+}
+
+fn denied(dir: &Path, code: &str) {
+    denied_with(dir, PINS, code);
 }
 
 #[test]
 fn runner_verifies_an_intact_kit() {
     let tmp = tempfile::tempdir().unwrap();
     kit(tmp.path());
-    let (ok, report) = run(tmp.path(), &["--source", SOURCE, "--target", "test-target"]);
+    let (ok, report) = run(tmp.path(), PINS);
     assert!(ok, "{report}");
     assert_eq!(report["code"], "profile_verified");
+    assert_eq!(report["members_verified"], 34);
     assert_eq!(report["vectors_verified"], 14);
     assert_eq!(report["proposed_stable_targets"], 3);
+    assert_eq!(report["experimental_kinds"], 11);
     assert_eq!(report["excluded_kinds"], 2);
-    let total = cases().len();
-    let rejected = report["denials_verified"].as_u64().unwrap();
-    let canonical = report["canonicalizations_verified"].as_u64().unwrap();
-    assert_eq!(rejected + canonical, total as u64);
-    assert!(rejected >= 50 && canonical >= 28, "{report}");
+    assert_eq!(report["components_verified"], 2);
+    assert_eq!(report["denials_verified"], 52);
+    assert_eq!(report["canonicalizations_verified"], 28);
+    assert_eq!(cases().len(), 80);
+}
+
+#[test]
+fn runner_requires_both_provenance_pins() {
+    let tmp = tempfile::tempdir().unwrap();
+    kit(tmp.path());
+    denied_with(tmp.path(), &[], "usage");
+    denied_with(tmp.path(), &["--source", SOURCE], "usage");
+    denied_with(tmp.path(), &["--target", TARGET], "usage");
+    denied_with(
+        tmp.path(),
+        &["--source", "abc", "--target", TARGET],
+        "usage",
+    );
+    denied_with(
+        tmp.path(),
+        &["--source", SOURCE, "--target", "x86_64-evil"],
+        "usage",
+    );
+    denied_with(
+        tmp.path(),
+        &[PINS[0], PINS[1], PINS[2], PINS[3], "--source", SOURCE],
+        "usage",
+    );
+    let other = "f".repeat(40);
+    denied_with(
+        tmp.path(),
+        &["--source", &other, "--target", TARGET],
+        "provenance_mismatch",
+    );
+    denied_with(
+        tmp.path(),
+        &["--source", SOURCE, "--target", "aarch64-apple-darwin"],
+        "provenance_mismatch",
+    );
 }
 
 #[test]
@@ -259,21 +380,8 @@ fn runner_refuses_other_profile_majors_and_unknown_profiles() {
         let mut manifest = kit(tmp.path());
         manifest["format"] = json!(format);
         write_manifest(tmp.path(), &manifest);
-        denied(tmp.path(), &[], code);
+        denied(tmp.path(), code);
     }
-}
-
-#[test]
-fn runner_refuses_mismatched_provenance() {
-    let tmp = tempfile::tempdir().unwrap();
-    kit(tmp.path());
-    denied(
-        tmp.path(),
-        &["--source", &"f".repeat(40)],
-        "provenance_mismatch",
-    );
-    denied(tmp.path(), &["--target", "other"], "provenance_mismatch");
-    denied(tmp.path(), &["--source"], "usage");
 }
 
 #[test]
@@ -285,16 +393,50 @@ fn runner_refuses_tampered_missing_and_extra_members() {
     let mut changed = original.clone();
     changed.push(b'\n');
     fs::write(&vector, &changed).unwrap();
-    denied(tmp.path(), &[], "member_digest_mismatch");
+    denied(tmp.path(), "member_digest_mismatch");
     fs::remove_file(&vector).unwrap();
-    denied(tmp.path(), &[], "missing_member");
+    denied(tmp.path(), "missing_member");
     fs::write(&vector, &original).unwrap();
     fs::write(tmp.path().join("extra.json"), b"{}").unwrap();
-    denied(tmp.path(), &[], "unexpected_member");
+    denied(tmp.path(), "unexpected_member");
+    fs::remove_file(tmp.path().join("extra.json")).unwrap();
+    // An excluded kind's vector is not a kit member, even when unlisted.
+    fs::write(
+        tmp.path().join("vectors/psyche.delivery.v1.json"),
+        fs::read(vector_path("delivery")).unwrap(),
+    )
+    .unwrap();
+    denied(tmp.path(), "unexpected_member");
+    fs::remove_file(tmp.path().join("vectors/psyche.delivery.v1.json")).unwrap();
+    fs::create_dir_all(tmp.path().join("bin/empty/deep")).unwrap();
+    denied(tmp.path(), "unexpected_member");
 }
 
 #[test]
-fn runner_refuses_non_canonical_or_repinned_vectors() {
+fn runner_requires_the_complete_member_set() {
+    // Dropping a required member from both the manifest and the directory is
+    // still refused: the member set is the runner's, not the manifest's.
+    for name in [
+        "LICENSE",
+        "bin/verify-build-binding",
+        "receipt-replay/consumer/qualify.py",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut manifest = kit(tmp.path());
+        manifest["files"].as_object_mut().unwrap().remove(name);
+        fs::remove_file(tmp.path().join(name)).unwrap();
+        write_manifest(tmp.path(), &manifest);
+        denied(tmp.path(), "manifest_invalid");
+    }
+    // Listing an extra member in the manifest is refused too.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut manifest = kit(tmp.path());
+    repin(tmp.path(), &mut manifest, "notes.txt", b"extra");
+    denied(tmp.path(), "manifest_invalid");
+}
+
+#[test]
+fn runner_refuses_non_canonical_repinned_and_foreign_vectors() {
     // A consistent manifest over non-canonical bytes still fails: the runner
     // re-derives canonical bytes rather than trusting the manifest digest.
     let tmp = tempfile::tempdir().unwrap();
@@ -302,22 +444,33 @@ fn runner_refuses_non_canonical_or_repinned_vectors() {
     let name = "vectors/psyche.intent.v1.json";
     let mut bytes = fs::read(tmp.path().join(name)).unwrap();
     bytes.push(b'\n');
-    fs::write(tmp.path().join(name), &bytes).unwrap();
-    manifest["files"][name] = json!(hex(&bytes));
     manifest["kinds"]["intent"]["sha256"] = json!(hex(&bytes));
-    write_manifest(tmp.path(), &manifest);
-    denied(tmp.path(), &[], "canonical_bytes_mismatch");
+    repin(tmp.path(), &mut manifest, name, &bytes);
+    denied(tmp.path(), "canonical_bytes_mismatch");
 
     // A wrong kind digest with intact member digests fails on the kind pin.
     let tmp = tempfile::tempdir().unwrap();
     let mut manifest = kit(tmp.path());
     manifest["kinds"]["graph"]["sha256"] = json!("0".repeat(64));
     write_manifest(tmp.path(), &manifest);
-    denied(tmp.path(), &[], "vector_digest_mismatch");
+    denied(tmp.path(), "vector_digest_mismatch");
+
+    // A different valid canonical document, consistently re-pinned, is not
+    // this profile's vector.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut manifest = kit(tmp.path());
+    let name = "vectors/psyche.graph.v1.json";
+    let other = String::from_utf8(fs::read(tmp.path().join(name)).unwrap())
+        .unwrap()
+        .replace(r#""version":4"#, r#""version":5"#)
+        .into_bytes();
+    manifest["kinds"]["graph"]["sha256"] = json!(hex(&other));
+    repin(tmp.path(), &mut manifest, name, &other);
+    denied(tmp.path(), "vector_not_in_profile");
 }
 
 #[test]
-fn runner_requires_every_registry_kind_to_be_dispositioned() {
+fn runner_refuses_a_changed_selection() {
     let tmp = tempfile::tempdir().unwrap();
     let mut manifest = kit(tmp.path());
     manifest["excluded_kinds"]
@@ -325,98 +478,196 @@ fn runner_requires_every_registry_kind_to_be_dispositioned() {
         .unwrap()
         .remove("delivery");
     write_manifest(tmp.path(), &manifest);
-    denied(tmp.path(), &[], "registry_mismatch");
+    denied(tmp.path(), "selection_mismatch");
 
     let mut manifest = kit(tmp.path());
     manifest["excluded_kinds"]["intent"] = json!("twice");
     write_manifest(tmp.path(), &manifest);
-    denied(tmp.path(), &[], "kind_dispositioned_twice");
+    denied(tmp.path(), "selection_mismatch");
 
     let mut manifest = kit(tmp.path());
     manifest["excluded_kinds"]["lease"] = json!("no such kind");
     write_manifest(tmp.path(), &manifest);
-    denied(tmp.path(), &[], "unknown_kind");
+    denied(tmp.path(), "selection_mismatch");
+
+    // Promoting an experimental kind or demoting a stable target is refused.
+    let mut manifest = kit(tmp.path());
+    manifest["kinds"]["graph"]["proposed_class"] = json!("stable-v1-target");
+    write_manifest(tmp.path(), &manifest);
+    denied(tmp.path(), "selection_mismatch");
+
+    let mut manifest = kit(tmp.path());
+    manifest["kinds"]["intent"]["proposed_class"] = json!("experimental");
+    write_manifest(tmp.path(), &manifest);
+    denied(tmp.path(), "selection_mismatch");
 }
 
 #[test]
-fn runner_refuses_widened_manifest_fields() {
+fn runner_refuses_widened_or_ambiguous_manifests() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut manifest = kit(tmp.path());
-    manifest["capabilities"] = json!(["dispatch"]);
-    write_manifest(tmp.path(), &manifest);
-    denied(tmp.path(), &[], "manifest_invalid");
-
-    let mut manifest = kit(tmp.path());
-    manifest["status"] = json!("stable");
-    write_manifest(tmp.path(), &manifest);
-    denied(tmp.path(), &[], "manifest_invalid");
-
-    let mut manifest = kit(tmp.path());
-    manifest["kinds"]["intent"]["proposed_class"] = json!("stable-v1");
-    write_manifest(tmp.path(), &manifest);
-    denied(tmp.path(), &[], "manifest_invalid");
+    for edit in [
+        (|m: &mut Value| m["capabilities"] = json!(["dispatch"])) as fn(&mut Value),
+        |m| m["status"] = json!("stable"),
+        |m| m["kinds"]["intent"]["proposed_class"] = json!("stable-v1"),
+        |m| m["components"]["capabilities"] = json!(["dispatch", "redispatch"]),
+        |m| m["components"]["receipt-replay"]["mode"] = json!("live"),
+        |m| m["target"] = json!("x".repeat(5000)),
+        |m| m["rustc"] = json!("r".repeat(129)),
+        |m| m["cargo"] = json!("cargo\n1"),
+    ] {
+        let mut manifest = kit(tmp.path());
+        edit(&mut manifest);
+        write_manifest(tmp.path(), &manifest);
+        denied(tmp.path(), "manifest_invalid");
+    }
+    // A duplicate key anywhere in the manifest is ambiguous and refused.
+    kit(tmp.path());
+    let raw = fs::read_to_string(tmp.path().join("manifest.json")).unwrap();
+    let duplicated = raw.replacen(r#""files":{"#, r#""files":{"denials.json":"00","#, 1);
+    assert_ne!(raw, duplicated);
+    fs::write(tmp.path().join("manifest.json"), duplicated).unwrap();
+    denied(tmp.path(), "manifest_invalid");
 }
 
-/// Rewrites denials.json with `edit` applied, keeping member digests valid,
-/// so the refusal comes from the case check and not the member check.
-fn with_denials(edit: impl Fn(&mut Value)) -> tempfile::TempDir {
+#[test]
+fn runner_checks_component_pins_against_member_bytes() {
     let tmp = tempfile::tempdir().unwrap();
     let mut manifest = kit(tmp.path());
-    let mut denials: Value = serde_json::from_slice(&fs::read(denials_path()).unwrap()).unwrap();
-    edit(&mut denials);
-    let bytes = serde_json::to_vec(&denials).unwrap();
-    fs::write(tmp.path().join("denials.json"), &bytes).unwrap();
-    manifest["files"]["denials.json"] = json!(hex(&bytes));
+    manifest["components"]["receipt-replay"]["archive_sha256"] = json!("b".repeat(64));
     write_manifest(tmp.path(), &manifest);
+    denied(tmp.path(), "component_mismatch");
+
+    let mut manifest = kit(tmp.path());
+    repin(
+        tmp.path(),
+        &mut manifest,
+        "binding/golden/receipt.json",
+        b"{\"changed\":true}",
+    );
+    denied(tmp.path(), "component_mismatch");
+
+    let mut manifest = kit(tmp.path());
+    manifest["components"]["build-receipt-binding"]["schema_version"] =
+        json!("psyche.build_receipt_binding.v2");
+    write_manifest(tmp.path(), &manifest);
+    denied(tmp.path(), "component_mismatch");
+}
+
+/// Rewrites denials.json with `edit` applied and re-pins it.
+fn with_denials(edit: impl Fn(&mut Vec<Value>)) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut manifest = kit(tmp.path());
+    let mut denials: Value = serde_json::from_slice(&denials_bytes()).unwrap();
+    edit(denials["cases"].as_array_mut().unwrap());
+    let bytes = serde_json::to_vec(&denials).unwrap();
+    repin(tmp.path(), &mut manifest, "denials.json", &bytes);
     tmp
+}
+
+fn case<'a>(cases: &'a mut [Value], name: &str) -> &'a mut Value {
+    cases.iter_mut().find(|c| c["name"] == name).unwrap()
+}
+
+fn vector_text(kind: &str) -> String {
+    String::from_utf8(fs::read(vector_path(kind)).unwrap()).unwrap()
 }
 
 #[test]
 fn runner_refuses_a_case_whose_pinned_reason_differs() {
-    let tmp = with_denials(|d| {
-        let case = d["cases"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|c| c["name"] == "intent/unknown_major_v2")
-            .unwrap();
-        case["expect"]["found"] = json!(3);
+    let tmp = with_denials(|cases| {
+        case(cases, "intent/unknown_major_v2")["expect"]["found"] = json!(3);
     });
-    denied(tmp.path(), &[], "denial_reason_mismatch");
+    denied(tmp.path(), "denial_reason_mismatch");
 }
 
 #[test]
 fn runner_refuses_a_denial_that_the_decoder_accepts() {
-    let vector = String::from_utf8(fs::read(vector_path("intent")).unwrap()).unwrap();
-    let tmp = with_denials(move |d| {
-        d["cases"].as_array_mut().unwrap().push(json!({
-            "name": "laundered", "input": vector,
-            "expect": {"result": "rejected", "code": "unknown_schema"},
-        }));
+    let vector = vector_text("intent");
+    let tmp = with_denials(move |cases| {
+        case(cases, "global/unknown_schema_kind")["input"] = json!(vector);
     });
-    denied(tmp.path(), &[], "denial_accepted");
+    denied(tmp.path(), "denial_accepted");
 }
 
 #[test]
-fn runner_refuses_an_identity_canonicalization_case() {
+fn runner_refuses_an_identity_or_loose_canonicalization_case() {
     // A canonicalization case equal to the vector bytes proves nothing.
-    let vector = String::from_utf8(fs::read(vector_path("graph")).unwrap()).unwrap();
-    let tmp = with_denials(move |d| {
-        d["cases"].as_array_mut().unwrap().push(json!({
-            "name": "identity", "input": vector,
-            "expect": {"result": "canonicalizes", "vector": "graph"},
-        }));
+    let vector = vector_text("graph");
+    let tmp = with_denials(move |cases| {
+        case(cases, "graph/whitespace")["input"] = json!(vector);
     });
-    denied(tmp.path(), &[], "canonicalization_mismatch");
+    denied(tmp.path(), "canonicalization_mismatch");
+    // Extra keys in a canonicalization expectation are not ignored.
+    let tmp = with_denials(|cases| {
+        case(cases, "graph/whitespace")["expect"]["note"] = json!("ignored?");
+    });
+    denied(tmp.path(), "denials_invalid");
+}
+
+#[test]
+fn runner_requires_every_generated_case() {
+    let tmp = with_denials(|cases| cases.retain(|c| c["name"] != "intent/unknown_field"));
+    denied(tmp.path(), "denials_incomplete");
+    let tmp = with_denials(|cases| {
+        cases.retain(|c| c["expect"]["result"] == "canonicalizes");
+    });
+    denied(tmp.path(), "denials_incomplete");
+    let tmp = with_denials(|cases| {
+        cases.push(json!({"name": "extra", "input": "{}", "expect": {"result": "rejected"}}));
+    });
+    denied(tmp.path(), "denials_incomplete");
+}
+
+#[test]
+fn runner_refuses_cases_replaced_with_weaker_ones() {
+    // A trivially malformed input under a required name satisfies its own
+    // expectation but is not the generated case.
+    let tmp = with_denials(|cases| {
+        let weak = case(cases, "intent/unknown_field");
+        weak["input"] = json!("not json");
+        weak["expect"] = json!({"result": "rejected", "code": "invalid_shape",
+                                "schema": "error", "field": "json"});
+    });
+    denied(tmp.path(), "denials_not_in_profile");
 }
 
 #[cfg(unix)]
 #[test]
-fn runner_refuses_a_linked_member() {
+fn runner_refuses_linked_and_special_members() {
     let tmp = tempfile::tempdir().unwrap();
     kit(tmp.path());
     let readme = tmp.path().join("README.md");
     fs::remove_file(&readme).unwrap();
     std::os::unix::fs::symlink(tmp.path().join("denials.json"), &readme).unwrap();
-    denied(tmp.path(), &[], "member_invalid");
+    denied(tmp.path(), "member_invalid");
+
+    let tmp = tempfile::tempdir().unwrap();
+    kit(tmp.path());
+    let binding = tmp.path().join("binding");
+    fs::rename(&binding, tmp.path().join("real-binding")).unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("real-binding"), &binding).unwrap();
+    denied(tmp.path(), "member_invalid");
+
+    let tmp = tempfile::tempdir().unwrap();
+    kit(tmp.path());
+    let fifo = tmp.path().join("README.md");
+    fs::remove_file(&fifo).unwrap();
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    denied(tmp.path(), "member_invalid");
+}
+
+#[test]
+fn runner_refuses_too_many_members() {
+    let tmp = tempfile::tempdir().unwrap();
+    kit(tmp.path());
+    for index in 0..40 {
+        fs::write(tmp.path().join(format!("extra-{index}")), b"x").unwrap();
+    }
+    denied(tmp.path(), "too_many_members");
 }

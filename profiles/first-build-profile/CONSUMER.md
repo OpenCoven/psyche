@@ -14,13 +14,13 @@ From the extracted root (on Windows, add `.exe` to each executable):
 ./bin/verify-profile . --source <producer commit> --target <target triple>
 ```
 
-Exit 0 prints `{"result":"passed","code":"profile_verified",...,"redispatch":false}`. The runner checks that:
+Both pins are required. Exit 0 prints `{"result":"passed","code":"profile_verified",...,"redispatch":false}`. The selection, the vectors and the cases are compiled into the runner, so a kit cannot narrow them by editing its manifest. The runner checks that:
 
-- the directory holds exactly the members `manifest.json` lists, each with its SHA-256, and no link or special file;
-- the manifest is this profile's format and major. An older or newer major (`unsupported_profile_version`), another profile (`unknown_profile`), a widened or unknown manifest field (`manifest_invalid`) or a different producer commit or target (`provenance_mismatch`) is refused;
-- every registry kind is either selected or explicitly excluded;
-- each selected kind's vector decodes, re-encodes to exactly its own bytes (RFC 8785) and has its pinned SHA-256;
-- every case in `denials.json` gives its pinned result: an unknown or older major, an unknown field, schema or enum value, duplicate keys, trailing data, truncation and an unsafe integer are rejected with the stated reason, and reordered or re-spaced spellings re-encode to the pinned canonical bytes.
+- the directory holds exactly this profile's member set for the target, each with the SHA-256 the manifest lists, with no extra member, empty directory, link or special file;
+- the manifest is this profile's format and major, has no unknown, duplicate or oversized field, and names the commit and target you passed. An older or newer major gives `unsupported_profile_version`, another profile gives `unknown_profile`, a widened or ambiguous manifest gives `manifest_invalid` and a different producer gives `provenance_mismatch`;
+- the selection is unchanged (`selection_mismatch`) and each component pin matches the bytes of the member it names (`component_mismatch`), including the receipt-replay archive digest used below;
+- each selected kind's vector decodes, re-encodes to exactly its own bytes (RFC 8785) and matches both its manifest digest and the profile's own vector;
+- `denials.json` is the profile's own generated case set, complete. Every case gives its pinned result. An unknown or older major, an unknown field, schema or enum value, duplicate keys, trailing data, truncation and an unsafe integer are rejected with the stated reason. Reordered or re-spaced spellings re-encode to the pinned canonical bytes.
 
 Any other result exits 1 with `{"result":"denied","code":...}`. Treat it as a refusal, keep the previously accepted kit, and do not proceed.
 

@@ -86,8 +86,32 @@ def receipt_replay_archive(source):
     return data, pin
 
 
+def cargo_home():
+    return Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
+
+
+def refuse_cargo_config():
+    """Cargo also reads config files from every ancestor directory and CARGO_HOME."""
+    for base in [*(directory / ".cargo" for directory in [ROOT, *ROOT.parents]), cargo_home()]:
+        for name in ("config", "config.toml"):
+            require(not (base / name).exists(), f"refusing ambient cargo configuration {base / name}")
+
+
+def build_environment(compiler):
+    # Cargo accepts compiler, wrapper, flag, linker and profile selections from the
+    # environment. Drop every one, then pin the probed compiler and remap build paths
+    # so the binaries carry no host-specific directory.
+    env = {k: v for k, v in os.environ.items()
+           if not k.upper().startswith(("CARGO_", "RUSTC", "RUSTFLAGS", "RUSTDOC"))
+           or k.upper() == "CARGO_HOME"}
+    remaps = [f"--remap-path-prefix={ROOT}=/psyche", f"--remap-path-prefix={cargo_home()}=/cargo"]
+    env.update(RUSTC=compiler, CARGO_ENCODED_RUSTFLAGS="\x1f".join(remaps))
+    return env
+
+
 def build(args):
     verify_source(args.source)
+    refuse_cargo_config()
     archive = args.archive.resolve()
     require(ROOT not in archive.parents, "write the archive outside the checkout")
     require(show(args.source, f"{PROFILE}/denials.json") == make_denials.render(),
@@ -124,9 +148,7 @@ def build(args):
         kinds[kind] = {"proposed_class": "stable-v1-target" if kind in make_denials.STABLE_TARGETS
                        else "experimental", "vector": name, "sha256": sha(files[name])}
 
-    build_env = dict(os.environ, RUSTC=compiler, CARGO_BUILD_RUSTC=compiler,
-                     RUSTC_WRAPPER="", RUSTC_WORKSPACE_WRAPPER="",
-                     CARGO_BUILD_RUSTC_WRAPPER="", CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER="")
+    build_env = build_environment(compiler)
     with tempfile.TemporaryDirectory(prefix="first-profile-build-") as tmp:
         command = [cargo_bin, "build", "--locked", "--release", "--target", args.target, "--target-dir", tmp,
                    "-p", "psyche-test-support"]
@@ -175,16 +197,18 @@ def extract(data, dest, binaries):
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
         for member in tar:
             name = member.name
-            require(MEMBER_PATTERN.match(name) and ".." not in name.split("/") and name not in seen,
+            parts = name.split("/")
+            require(MEMBER_PATTERN.match(name) and not {".", ".."} & set(parts) and name.lower() not in seen,
                     f"unexpected or duplicate kit member {name!r}")
             require(member.isfile() and member.size <= SIZE_LIMIT, f"kit member {name!r} has invalid type or size")
             require(member.mode == (0o755 if name in binaries else 0o644), f"invalid mode for {name!r}")
-            seen.add(name)
+            seen.add(name.lower())
             path = dest / name
+            require(not path.exists() and not path.is_symlink(), f"kit member {name!r} already extracted")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(tar.extractfile(member).read())
             path.chmod(member.mode)
-    require(binaries <= seen and "manifest.json" in seen, "incomplete kit")
+    require({b.lower() for b in binaries} <= seen and "manifest.json" in seen, "incomplete kit")
 
 
 def offline(command, cwd):
@@ -214,8 +238,9 @@ def smoke(args, digest):
         extract(data, kit, binaries)
         verifier = str(kit / exe("verify-profile", args.target))
 
-        def profile(root, expected, *extra):
-            run = subprocess.run([verifier, str(root), *extra], env=env, capture_output=True, timeout=60)
+        def profile(root, expected, source=args.source):
+            run = subprocess.run([verifier, str(root), "--source", source, "--target", args.target],
+                                 env=env, capture_output=True, timeout=60)
             report = json.loads(run.stdout)
             require(report["code"] == expected and report["redispatch"] is False and
                     (run.returncode == 0) == (expected == "profile_verified"),
@@ -223,7 +248,7 @@ def smoke(args, digest):
             print(json.dumps(report, sort_keys=True), flush=True)
             return report
 
-        report = profile(kit, "profile_verified", "--source", args.source, "--target", args.target)
+        report = profile(kit, "profile_verified")
         require(report["vectors_verified"] == len(make_denials.SELECTED), "wrong vector count")
 
         # Fail-closed controls on copies of the extracted kit.
@@ -246,7 +271,7 @@ def smoke(args, digest):
                 "member_digest_mismatch")
         control("downgrade", lambda r: set_format(r, FORMAT[:-1] + "0"), "unsupported_profile_version")
         control("newer-major", lambda r: set_format(r, FORMAT[:-1] + "2"), "unsupported_profile_version")
-        profile(kit, "provenance_mismatch", "--source", "0" * 40)
+        profile(kit, "provenance_mismatch", source="0" * 40)
 
         # ADR 4 binding: both digests and the issuer signature, four dispositions.
         binding = str(kit / exe("verify-build-binding", args.target))
@@ -286,7 +311,7 @@ def smoke(args, digest):
             print("restart witness passed", flush=True)
 
         # Running the controls must not have changed the extracted kit.
-        profile(kit, "profile_verified", "--source", args.source, "--target", args.target)
+        profile(kit, "profile_verified")
     print(f"{args.target} {args.source} verified archive {digest}", flush=True)
 
 
