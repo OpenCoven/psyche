@@ -3,7 +3,7 @@ description: Report a reproducible non-security defect
 body:
   - type: markdown
     attributes:
-      value: For a suspected vulnerability, use the [private advisory intake](https://github.com/OpenCoven/coven/security/advisories/new) and name OpenCoven/psyche. Keep security details out of public issues.
+      value: Report suspected vulnerabilities through the [Psyche private advisory form](https://github.com/OpenCoven/psyche/security/advisories/new). Keep security details out of public issues. If the form is unavailable, follow the [fallback in the security policy](https://github.com/OpenCoven/psyche/blob/main/SECURITY.md#reporting-a-vulnerability).
   - type: input
     id: version
     attributes:
