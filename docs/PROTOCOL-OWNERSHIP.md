@@ -1,8 +1,8 @@
 # OpenCoven protocol ownership
 
-**Status:** proposed baseline pending [OpenCoven/psyche#12](https://github.com/OpenCoven/psyche/issues/12)
+The accountable owner approved the assignments and compatibility policy below for the first Build profile. Broader domain entries remain planning guidance. [Owner decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214)
 
-**Last reconciled:** 2026-11-20
+Last reconciled on 24 November 2026.
 
 This document prevents implementation order from becoming accidental canonical ownership.
 
@@ -14,17 +14,17 @@ Transport location, process identity, filesystem paths, tmux panes, worktrees, b
 
 ## Recorded Telegram boundary
 
-The separate Rust Telegram adapter belongs in Psyche. Familiar Contract owns familiar/person identity, Threads owns protected-surface authorization, Psyche composes local admission and orchestration, and Coven owns execution, adoption and fencing. The recorded scope permits interface and denial-vector planning. Actual integration depends on G4/Coven #1230, production child dispatch on G6, and cutover on applicable G10. The cross-repository profile, old-to-current rebind obligations and spec provenance remain open in #12. [Decision and gates](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462) · [Product placement](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303108240)
+The separate Rust Telegram adapter belongs in Psyche. Familiar Contract owns familiar/person identity, Threads owns protected-surface authorization, Psyche composes local admission and orchestration, and Coven owns execution, adoption and fencing. The recorded scope permits interface and denial-vector planning. Actual integration depends on G4/Coven #1230, production child dispatch on G6, and cutover on applicable G10. The first-profile decisions below govern rebind migration and historical spec provenance. [Decision and gates](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462) · [Product placement](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303108240)
 
-## Proposed ownership matrix
+## Ownership by domain
 
 | Domain | Canonical owner | Consumer relationship |
 |---|---|---|
 | Familiar identity and person binding | `OpenCoven/familiar-contract` | Psyche references stable familiar/person bindings |
 | Protected-surface authorization decision | `OpenCoven/coven-threads` | Psyche carries and enforces the decision/constraints; it does not redefine policy |
 | Orchestration task/graph/lane/attempt/delegation/delivery | `OpenCoven/psyche` | Products and runtimes implement versioned adapters |
-| Lease, approval, receipt, cancellation, recovery, terminal outcome | `OpenCoven/psyche` | Adapters preserve exact correlation and fail-closed behavior |
-| Daemon session, persistence, and runtime authority | `OpenCoven/coven` | Psyche references canonical daemon/runtime resources through typed boundaries |
+| Orchestration lease, approval, receipt correlation, cancellation and recovery vocabulary | `OpenCoven/psyche` | Build retains native receipt bytes. Psyche issues the request-to-receipt binding. |
+| Daemon sessions, execution admission, adoption, fencing and native terminal state | `OpenCoven/coven` | Psyche carries correlated orchestration evidence through typed boundaries. The #19 graph host issues a disposition using containment evidence from each acting resource owner. |
 | Runtime capability descriptors | `OpenCoven/coven-runtimes` | Psyche negotiates a pinned supported capability profile |
 | Coding cockpit and local product behavior | `OpenCoven/psyche-build` | First Psyche reference client; panes/worktrees remain product-local |
 | Human oversight and approval UI | `OpenCoven/coven-cave` | Renders/requests protocol state; does not infer completion |
@@ -43,7 +43,7 @@ Psyche canonically owns:
 - approval lifecycle;
 - action and receipt lifecycle;
 - cancellation acknowledgement and unresolved outcomes;
-- ambiguity reconciliation, idempotency, and fencing;
+- orchestration rules for ambiguity reconciliation, idempotency and consuming fence evidence;
 - artifact/evidence correlation;
 - recovery and terminal-state vocabulary;
 - canonical serialization, digest, version, and structured-denial behavior;
@@ -109,15 +109,17 @@ Do not merge a change that creates circular release ownership or requires a cons
 - Retained evidence identifies source/artifact digest, exact command/action, correlation IDs, result, and unavailable proof gaps.
 - Evidence must be bounded and exclude protected user/project content.
 
-## Open decisions
+## First Build profile decisions
 
-The owning issue must approve:
+The accountable owner decided the following against revision 3 of the ownership packet. These decisions govern the first Build profile. Stable publication, runtime certification and live client activation each need separate evidence. [Owner decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214) · [Packet and row definitions](https://github.com/OpenCoven/psyche/pull/29)
 
-- exact integration of Familiar and Threads identifiers/decisions;
-- first stable Psyche consumer profile;
-- Coven and runtime version-negotiation boundary;
-- Cave/iOS approval and reconnect flow;
-- SDK mutation profiles;
-- release-order and emergency compatibility policy.
+| Decision | Boundary | Remaining evidence and owner |
+|---|---|---|
+| Replace legacy `coven.familiar.identityRebind.v1` | Preserve Familiar/person authority. Map each historical guarantee to its producer, current contract/version, executable canary and denial. | #12 tracks prior-session survival, unresolved adoption and restart. An identity change keeps an unproven route blocked. |
+| Correct the historical spec reference | Spec pin `9b07c500` is unrecoverable. The preserved Coven #1230 acceptance text and 20 October matrix retain the obligations. | Historical obligations remain open under [Coven #1230](https://github.com/OpenCoven/coven/issues/1230). The owner assigned no replacement SHA. |
+| Fence a process-bound attempt | The graph-owning host issues the #19 disposition after authenticated containment evidence from every resource owner that can still act. Coven supplies evidence for its sessions. A fence resolves only the old attempt. | [#19](https://github.com/OpenCoven/psyche/issues/19) and [Coven #804](https://github.com/OpenCoven/coven/issues/804) own the in-process enforcer and surviving-resource/restart proof. Indeterminate attempts stay blocked. Fresh dispatch requires its own admission and the G2 redispatch test needs a separately reviewed change. |
+| Bind a Build receipt to a Psyche request | Psyche issues a versioned binding from request ID and canonical request digest to the exact native receipt bytes’ digest. Build keeps the bytes and supplies opaque task/action or idempotency references. The pinned verifier checks issuer provenance and both digests. | [#11](https://github.com/OpenCoven/psyche/issues/11) owns wire format, distribution and verification. [#13](https://github.com/OpenCoven/psyche/issues/13) owns the native canary. Missing means unknown/recovery, ambiguity stays unknown until reconciliation, and conflicts preserve the original and quarantine the conflicting evidence. None permits dispatch. Effect counts require independent evidence. |
 
-Until approved, this document is a proposed boundary and must not be cited as shipped protocol support.
+Producers are approved for rows 1, 2, 4–9, 15 and 16. Row 4 excludes rebind. Row 9 gives Coven authority over sessions, execution admission, adoption, fencing and native terminal state. Rows 5–7 need released representations. Rows 11 and 13 return for owner approval with fence and receipt-binding evidence respectively. Rows 10, 12, 14 and 17–21 are deferred. The policy requires an exact immutable pin and rollback. Emergency and deprecation procedures remain proposed until exercised. [Decision and row dispositions](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214)
+
+The merged experimental lifecycle producer and Build's pinned native canary provide evidence for their exercised fixture paths. The released receipt-binding verifier, stable consumer profile and live Build activation remain open. The roadmap lists the exact producer and consumer pins, owners, prerequisites and acceptance gates. [Roadmap](ROADMAP.md)
