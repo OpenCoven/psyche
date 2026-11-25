@@ -45,6 +45,7 @@ use time::OffsetDateTime;
 /// Unset, no test in this file writes anything.
 const REGENERATE_ENV: &str = "PSYCHE_REGENERATE_VECTORS";
 const README: &str = "README.md";
+const CHECKSUMS: &str = "SHA256SUMS";
 /// Operating-system metadata files that can appear in a checkout without
 /// being tracked. The directory test skips exactly these names; any other
 /// unclaimed entry still fails it.
@@ -199,6 +200,23 @@ fn regenerate_requested() -> bool {
     }
 }
 
+fn write_generated(name: &str, bytes: &[u8]) -> &'static str {
+    let path = vector_dir().join(name);
+    let action = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            assert!(metadata.is_file(), "{name} must be a regular file");
+            if std::fs::read(&path).unwrap() == bytes {
+                return "unchanged";
+            }
+            "changed"
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "created",
+        Err(error) => panic!("cannot inspect {name} before regeneration: {error}"),
+    };
+    std::fs::write(path, bytes).unwrap();
+    action
+}
+
 /// The documented generator: typed construction -> validation -> the crate's
 /// RFC 8785 encoder -> file. Reached only when [`REGENERATE_ENV`] is `1`.
 /// Each file is compared with the encoder output before anything is written,
@@ -214,15 +232,8 @@ fn regenerate() -> Vec<String> {
         let bytes = canonical_bytes(&document).unwrap();
         let pin = digest(&document).unwrap();
         let file = vector_file_name(kind);
-        let path = vector_dir().join(&file);
-        let action = match std::fs::read(&path) {
-            Ok(existing) if existing == bytes => "unchanged",
-            Ok(_) => "changed",
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => "created",
-            Err(error) => panic!("cannot read {file} before regenerating it: {error}"),
-        };
+        let action = write_generated(&file, &bytes);
         if action != "unchanged" {
-            std::fs::write(&path, &bytes).unwrap();
             let literal = if pin.as_str() == pinned_digest(kind) {
                 "matches"
             } else {
@@ -231,6 +242,22 @@ fn regenerate() -> Vec<String> {
             written.push(format!("{action} {file} (pinned_digest literal {literal})"));
         }
         println!("{file} {} {pin} {action}", bytes.len());
+    }
+    // Export the reviewed pins, independently of the bytes written above.
+    let mut pins = BTreeMap::new();
+    for &kind in SCHEMA_KINDS {
+        pins.insert(vector_file_name(kind), pinned_digest(kind));
+    }
+    let mut checksums = String::new();
+    for (file, pin) in pins {
+        let hex = pin.strip_prefix("sha256:").unwrap();
+        writeln!(&mut checksums, "{hex} *{file}").unwrap();
+    }
+    let action = write_generated(CHECKSUMS, checksums.as_bytes());
+    if action != "unchanged" {
+        written.push(format!(
+            "{action} {CHECKSUMS} (exported from pinned_digest)"
+        ));
     }
     println!("pinned_digest arms:");
     for kind in SCHEMA_KINDS {
@@ -832,6 +859,32 @@ fn every_registered_kind_has_a_pinned_canonical_vector() {
 }
 
 #[test]
+fn checksum_index_pins_every_registered_vector_in_filename_order() {
+    let mut expected = BTreeMap::new();
+    for &kind in SCHEMA_KINDS {
+        expected.insert(vector_file_name(kind), raw_sha256(&vector(kind)));
+    }
+    let bytes = std::fs::read(vector_dir().join(CHECKSUMS)).unwrap();
+    let index = std::str::from_utf8(&bytes).unwrap();
+    let lines = index
+        .strip_suffix('\n')
+        .expect("index must end in LF")
+        .split('\n');
+    assert_eq!(
+        lines.clone().count(),
+        expected.len(),
+        "checksum entry count"
+    );
+    for ((file, digest), line) in expected.iter().zip(lines) {
+        let (hex, name) = line
+            .split_once(" *")
+            .expect("expected a binary-mode SHA-256 entry");
+        assert_eq!(name, file, "checksum filename or ordering");
+        assert_eq!(&format!("sha256:{hex}"), digest, "{file}");
+    }
+}
+
+#[test]
 fn vector_directory_holds_exactly_one_file_per_registered_kind() {
     for kind in SCHEMA_KINDS.iter().copied() {
         assert!(is_registered(kind));
@@ -866,6 +919,7 @@ fn vector_directory_holds_exactly_one_file_per_registered_kind() {
 
     let mut expected = distinct;
     expected.insert(README.to_owned());
+    expected.insert(CHECKSUMS.to_owned());
     let mut found = BTreeSet::new();
     for entry in std::fs::read_dir(vector_dir()).unwrap() {
         let entry = entry.unwrap();
