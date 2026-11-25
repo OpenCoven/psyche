@@ -92,7 +92,7 @@ Public issues, PRs, fixtures, and evidence must not contain secrets, credentials
 
 ## Review
 
-For R2–R4 changes, request review from the owner of each affected path. In the ownership file, the last matching rule identifies the reviewer. [CODEOWNERS](.github/CODEOWNERS)
+R2–R4 changes require review from the owner of each affected path before merge. In the ownership file, the last matching rule identifies the reviewer. [CODEOWNERS](.github/CODEOWNERS)
 
 Resolve every current review finding and rerun required checks on the exact final head.
 
