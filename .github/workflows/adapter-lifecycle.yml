@@ -1,0 +1,31 @@
+name: Experimental lifecycle kit
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Fetch immutable receipt profile source
+        run: git fetch --no-tags origin bada1b6a854e72e0cc20cfe8e54ca2d11c6ca7a9
+      - name: Compare independent builds and member hashes
+        run: bash profiles/adapter-lifecycle/qualify.sh "$RUNNER_TEMP/adapter-lifecycle.pyz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-adapter-lifecycle-${{ matrix.os }}
+          path: ${{ runner.temp }}/adapter-lifecycle.pyz
+          if-no-files-found: error
+      - name: Qualify the independent lifecycle v2 witness
+        run: bash profiles/adapter-lifecycle-v2/qualify.sh "$RUNNER_TEMP/adapter-lifecycle-v2.pyz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-adapter-lifecycle-v2-${{ matrix.os }}
+          path: ${{ runner.temp }}/adapter-lifecycle-v2.pyz
+          if-no-files-found: error
