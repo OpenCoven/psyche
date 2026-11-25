@@ -98,6 +98,21 @@ Resolve every current review finding and rerun required checks on the exact fina
 
 Keep changes reversible until compatibility and runtime evidence is complete.
 
+### Qualify the head for delivery
+
+For a protected change, record the source as a candidate in the current G2 scope evidence and let the ordinary PR CI qualify that exact head. A successful candidate run supplies the source SHA and immutable run URL for a follow-up commit that changes only the scope evidence to `passed`. Push the evidence-only commit to the same PR and wait for the checks on its new head. For a change covered by the manifest’s permitted paths, file modes and operations, retain the existing passed record. CI verifies whether the new tree can inherit it. [Scope manifest](scripts/g2-attestation-scope.json) · [Scope evidence](docs/G2-SCOPE-EVIDENCE.md)
+
+The separate `Delivery readiness` commit status evaluates completed `CI` runs for ordinary pull requests and pushes to `main`. A candidate can pass qualification CI while delivery readiness fails. To deliver it, finish the evidence-only transition above. A failed CI run or invalid evidence also fails delivery readiness. Follow the status’s target URL and repair the first failed condition. After a head or base update, inspect the current proposal again. If the status is absent, confirm that the default branch contains the publisher and that CI finished for the exact head and event. These read-only commands show GitHub’s check runs and commit statuses separately. Replace `HEAD_SHA` with the full recorded SHA.
+
+```sh
+gh api --paginate repos/OpenCoven/psyche/commits/HEAD_SHA/check-runs --jq '.check_runs[] | [.name, .status, .conclusion]'
+gh api --paginate repos/OpenCoven/psyche/commits/HEAD_SHA/statuses --jq '.[] | [.context, .state, .target_url]'
+```
+
+The maintainer selected ten strict contexts (three Rust jobs, three contributor jobs, dependency audit, secret guard and both npm distribution jobs), plus delivery readiness and squash-only delivery. A publisher on the default branch emits the status. Effective enforcement requires a separate settings change and an ordinary PR showing that an unmet requirement blocks merge. Consult #25 for the latest readback, review requirements and bypass policy. [Maintainer decision](https://github.com/OpenCoven/psyche/issues/25#issuecomment-7153733959) · [Repository enforcement](https://github.com/OpenCoven/psyche/issues/25)
+
+### Deliver the qualified head
+
 Use GitHub’s **Squash and merge** when delivering a pull request to `main`. The G2 push verifier requires the previous tip of `main` to be the delivered commit’s only parent and the delivered tree to match the reviewed PR head.
 
 1. Read the PR’s `head.sha`, `base.sha`, and proposed `merge_commit_sha` from `gh api repos/OpenCoven/psyche/pulls/NUMBER`. Record the full SHAs. Confirm the base equals the current `main` tip and that required check runs and commit statuses passed on the recorded head.
