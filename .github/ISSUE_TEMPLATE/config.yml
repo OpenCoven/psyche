@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability privately
-    url: https://github.com/OpenCoven/coven/security/advisories/new
-    about: Name OpenCoven/psyche in the private advisory so the organization can route your report.
+    url: https://github.com/OpenCoven/psyche/security/advisories/new
+    about: Use Psyche’s private intake. See SECURITY.md for the organization fallback if it is unavailable.
