@@ -5,7 +5,7 @@ Psyche is a protocol and durable-state repository. Contributions are welcome, bu
 ## Before starting
 
 1. Read `README.md`, `AGENTS.md`, and `docs/ROADMAP.md`.
-2. Find or open one owning issue with outcome, acceptance criteria, dependencies, non-goals, and evidence requirements.
+2. Find the issue that owns the outcome, or use the issue chooser for an ordinary defect or change request. Define the acceptance criteria, dependencies, non-goals and evidence required. [Issue chooser](https://github.com/OpenCoven/psyche/issues/new/choose)
 3. For cross-repository work, read `docs/PROTOCOL-OWNERSHIP.md`.
 4. Classify the change using the risk classes in `AGENTS.md`.
 
@@ -86,11 +86,15 @@ Review every generated change.
 
 ## Security and protected data
 
-Follow `SECURITY.md`. Public issues, PRs, fixtures, and evidence must not contain secrets, credentials, private keys, raw prompts, unrestricted terminal output, private repository contents, full environment dumps, infrastructure details, or unnecessary personal paths.
+Send suspected vulnerabilities to the Psyche maintainers through GitHub’s private reporting form. If the form is unavailable, use the OpenCoven/coven private advisory intake and identify OpenCoven/psyche as affected. [Report privately](https://github.com/OpenCoven/psyche/security/advisories/new) · [Security policy and fallback](SECURITY.md#reporting-a-vulnerability)
+
+Public issues, PRs, fixtures, and evidence must not contain secrets, credentials, private keys, raw prompts, unrestricted terminal output, private repository contents, full environment dumps, infrastructure details, or unnecessary personal paths.
 
 ## Review
 
-R2–R4 changes require review from the owner of the affected surface. Resolve every current review finding and rerun required checks on the exact final head.
+R2–R4 changes require review from the owner of each affected path before merge. In the ownership file, the last matching rule identifies the reviewer. [CODEOWNERS](.github/CODEOWNERS)
+
+Resolve every current review finding and rerun required checks on the exact final head.
 
 Keep changes reversible until compatibility and runtime evidence is complete.
 

@@ -1,8 +1,8 @@
 # G2 Attestation Scope Evidence
 
 **Status:** passed
-**Tested source commit:** `6e57b77b19971a0561f2bd9f14b3357e598a416c`
-**CI attestation:** https://github.com/OpenCoven/psyche/actions/runs/45543059216
+**Tested source commit:** `30c4f1c5c4e8315440a1dc4e28720cb80e0d4eed`
+**CI attestation:** https://github.com/OpenCoven/psyche/actions/runs/45556136645
 **Scope schema:** `psyche.g2-attestation-scope/v1`
 **Scope manifest:** `scripts/g2-attestation-scope.json`
 **Scope manifest SHA-256:** `sha256:a562eb016dfd658087a688e738ee5d20f275a3afc43486dbf0bc6d8bfb7f7809`
