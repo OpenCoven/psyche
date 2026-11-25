@@ -37,10 +37,19 @@ store-acceptable records and not a consistent data set.
 The pin is the digest literal per kind in `pinned_digest` in the same test
 file, not this directory. The test fails if a file, a typed construction, the
 encoder or a literal changes without the others, if a kind has no file, or if
-this directory holds a file no kind claims. Besides the vectors and this
-README, the directory test ignores exactly two operating-system metadata
+this directory holds a file no kind claims. Besides the vectors, the checksum index and this README, the directory test ignores exactly two operating-system metadata
 file names, `.DS_Store` and `Thumbs.db`, when they are regular files; any other
 entry, including a directory or link with either name, fails it.
+
+## Verify an offline copy
+
+Copy this directory from an independently pinned revision. Its `SHA256SUMS` file lists the sixteen experimental vector files in filename order and pins SHA-256 over their exact bytes. From the copied directory, run:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+```
+
+GNU systems can also use `sha256sum -c SHA256SUMS`. A complete copy reports sixteen successful checks and exits zero. A missing or modified listed vector makes the command fail. The Rust suite additionally rejects unexpected directory entries. These byte checks rely on the consumer obtaining the index from the trusted pin.
 
 ## Regenerating
 
@@ -49,6 +58,8 @@ Do not edit a vector by hand. Change the typed construction, then run:
 ```sh
 PSYCHE_REGENERATE_VECTORS=1 cargo test --locked -p psyche-core --test canonical_vectors -- --nocapture
 ```
+
+The generator exports `SHA256SUMS` from the reviewed digest literals.
 
 The run encodes all sixteen typed constructions, compares each with the file
 on disk, and writes only the files that are missing or differ. It prints each

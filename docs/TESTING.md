@@ -78,6 +78,8 @@ not a G2 matrix row. The directory README gives the one regeneration command;
 a default test run never writes a file, and a regenerating run that creates
 or changes a file always fails.
 
+A consumer can verify an offline copy with the generated `SHA256SUMS` index and a standard SHA-256 tool. The suite checks every entry against the exact fixture bytes. [Offline verification](../crates/psyche-core/tests/fixtures/vectors/README.md#verify-an-offline-copy)
+
 ## First Build profile prerelease kit
 
 `crates/psyche-test-support/tests/first_build_profile.rs` checks each of the
