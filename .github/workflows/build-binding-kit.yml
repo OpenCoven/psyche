@@ -1,0 +1,62 @@
+name: Experimental native binding kit
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/build-binding-kit.yml'
+      - 'profiles/build-receipt-binding/**'
+      - 'crates/**'
+      - 'Cargo.*'
+      - 'LICENSE'
+      - 'rust-toolchain.toml'
+      - 'docs/G2-SCOPE-EVIDENCE.md'
+permissions:
+  contents: read
+jobs:
+  kit:
+    name: Binding kit (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu}
+          - {runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu}
+          - {runner: macos-15, target: aarch64-apple-darwin}
+          - {runner: macos-15-intel, target: x86_64-apple-darwin}
+          - {runner: windows-2022, target: x86_64-pc-windows-msvc}
+    env:
+      SOURCE_COMMIT: ${{ github.event.pull_request.head.sha }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.89.0 --profile minimal --no-self-update
+      - name: Build and smoke the locked native release
+        # The producer must ignore ambient compiler overrides and use the probed Rust toolchain.
+        env:
+          CARGO_BUILD_RUSTC: unintended-compiler-for-kit-test
+          RUSTC_WRAPPER: unintended-wrapper-for-kit-test
+          CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: unintended-workspace-wrapper-for-kit-test
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/verify-build-binding-$TARGET.tar.gz"
+          python profiles/build-receipt-binding/kit.py build --source "$SOURCE_COMMIT" --target "$TARGET" --archive "$archive"
+          python -c 'import hashlib, pathlib, sys; print("Inner SHA-256:", hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$archive" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain the verified experimental kit
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verify-build-binding-${{ matrix.target }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/verify-build-binding-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+      - name: Record download coordinates
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          OUTER_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          echo "Artifact ID: $ARTIFACT_ID, ZIP SHA-256: $OUTER_DIGEST" >> "$GITHUB_STEP_SUMMARY"
