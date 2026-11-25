@@ -10,7 +10,7 @@ Supported versions and future maintenance windows will be listed here when the f
 
 ## Reporting a vulnerability
 
-Use **Report a vulnerability** on Psyche’s Security page or open the private report form directly. If the button is missing, submit a private advisory to OpenCoven/coven and name OpenCoven/psyche as the affected repository. List each affected repository for cross-project reports. [Psyche private report form](https://github.com/OpenCoven/psyche/security/advisories/new) · [OpenCoven private advisory intake](https://github.com/OpenCoven/coven/security/advisories/new) · [Organization reporting policy](https://github.com/OpenCoven/.github/blob/main/SECURITY.md)
+Choose **Report a vulnerability** on Psyche’s Security page or open the private reporting form directly. Sign in to GitHub to continue. If the Psyche form is unavailable, use the OpenCoven/coven private advisory intake and name OpenCoven/psyche as the affected repository. List each affected repository for cross-project reports. [Psyche private reporting form](https://github.com/OpenCoven/psyche/security/advisories/new) · [OpenCoven private advisory intake](https://github.com/OpenCoven/coven/security/advisories/new) · [Organization reporting policy](https://github.com/OpenCoven/.github/blob/main/SECURITY.md)
 
 Use public issues only for ordinary support. Keep security reports inside the private advisory. Use synthetic examples and omit real credentials, prompts, user data and private repository paths.
 

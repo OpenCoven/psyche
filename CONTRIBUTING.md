@@ -86,7 +86,9 @@ Review every generated change.
 
 ## Security and protected data
 
-Use the public change or defect form for ordinary contributions. Send suspected vulnerabilities through Psyche’s private report form. The security policy gives the organization fallback. [Private report form](https://github.com/OpenCoven/psyche/security/advisories/new) · [Security policy](SECURITY.md) Public issues, PRs, fixtures, and evidence must not contain secrets, credentials, private keys, raw prompts, unrestricted terminal output, private repository contents, full environment dumps, infrastructure details, or unnecessary personal paths.
+Send suspected vulnerabilities to the Psyche maintainers through GitHub’s private reporting form. If the form is unavailable, use the OpenCoven/coven private advisory intake and identify OpenCoven/psyche as affected. [Report privately](https://github.com/OpenCoven/psyche/security/advisories/new) · [Security policy and fallback](SECURITY.md#reporting-a-vulnerability)
+
+Public issues, PRs, fixtures, and evidence must not contain secrets, credentials, private keys, raw prompts, unrestricted terminal output, private repository contents, full environment dumps, infrastructure details, or unnecessary personal paths.
 
 ## Review
 
