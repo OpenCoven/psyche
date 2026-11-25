@@ -103,7 +103,7 @@ The G2 scope defaults every unlisted path to protected. Its manifest lists the e
 
 ## Generated and evidence files
 
-`agent/manifest.yaml` lists the protected review surfaces, verification commands and required handoff evidence. No generated repository paths are currently declared. Do not edit generated artifacts manually. Use the documented generator or update the generator and artifact in the same PR.
+`agent/manifest.yaml` lists the protected review surfaces, verification commands and required handoff evidence. Its one declared generated path is the experimental canonical vector set under `crates/psyche-core/tests/fixtures/vectors/`, regenerated only by the command in that directory's README. Do not edit generated artifacts manually. Use the documented generator or update the generator and artifact in the same PR.
 
 `docs/G2-EVIDENCE.md` is retained evidence tied to immutable commits and runs. It is not a mutable status dashboard. New evidence must identify source SHA, command, result, and immutable artifact/run.
 
