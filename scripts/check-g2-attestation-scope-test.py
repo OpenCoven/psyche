@@ -391,6 +391,38 @@ class ReadinessDeliveryTests(unittest.TestCase):
             return {"sha": commit, "tree": {"sha": tree}, "parents": [{"sha": p} for p in parents]}
         self.fail(f"Unexpected GitHub request: {command}")
 
+    def verify_candidate(self, event_name, payload):
+        if payload is not None:
+            self.event_path.write_text(payload, encoding="utf-8")
+        with mock.patch.object(
+            self.checker, "_scope_relationship_for_actual_evidence",
+            return_value=(self.scope, "candidate", None),
+        ), mock.patch.dict(os.environ, {
+            "GITHUB_EVENT_NAME": event_name, "GITHUB_EVENT_PATH": str(self.event_path),
+        }):
+            self.checker.verify_actions_source_relationship(self.root, self.pinned)
+
+    def test_candidate_requires_a_pull_request_event(self):
+        repo = {"full_name": "OpenCoven/psyche"}
+        head = self.git("rev-parse", "HEAD")
+        pull = {"base": {"ref": "main", "repo": repo, "sha": self.pinned},
+                "head": {"repo": repo, "sha": head}}
+        payload = json.dumps({"repository": repo, "pull_request": pull})
+        self.verify_candidate("pull_request", payload)
+        with self.assertRaisesRegex(self.checker.EvidenceError, "candidate.*pull_request"):
+            self.verify_candidate("push", json.dumps({"repository": repo, "ref": "refs/heads/main",
+                                                     "before": self.pinned, "after": head}))
+        with self.assertRaisesRegex(self.checker.EvidenceError, "candidate.*pull_request"):
+            self.verify_candidate("push", payload)
+        with self.assertRaisesRegex(self.checker.EvidenceError, "checkout"):
+            pull["head"]["sha"] = self.pinned
+            self.verify_candidate("pull_request", json.dumps({"repository": repo, "pull_request": pull}))
+
+    def test_candidate_requires_valid_event_data(self):
+        for payload in (None, "{", "[]", "{}", '{"repository":{"full_name":"OpenCoven/psyche"}}'):
+            with self.subTest(payload=payload), self.assertRaises(self.checker.EvidenceError):
+                self.verify_candidate("pull_request", payload)
+
     def assert_delivery(self, operation):
         readme = self.root / "README.md"
         if operation != "first addition":
