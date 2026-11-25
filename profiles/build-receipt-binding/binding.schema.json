@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Psyche Build receipt binding, first profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "issuer", "request_id", "request_digest", "task_id", "receipt_digest", "outcome"],
+  "anyOf": [{"required": ["action_id"]}, {"required": ["idempotency_key"]}],
+  "properties": {
+    "schema_version": {"const": "psyche.build_receipt_binding.v1"},
+    "issuer": {"const": "psyche-receipt-issuer"},
+    "request_id": {"type": "string", "minLength": 30, "maxLength": 30, "pattern": "^req_[0-7][0-9A-HJKMNP-TV-Z]{25}$"},
+    "request_digest": {"$ref": "#/$defs/digest"},
+    "task_id": {"$ref": "#/$defs/reference"},
+    "action_id": {"$ref": "#/$defs/reference"},
+    "idempotency_key": {"$ref": "#/$defs/reference"},
+    "receipt_digest": {"$ref": "#/$defs/digest"},
+    "outcome": {"enum": ["terminal", "ambiguous"]}
+  },
+  "$defs": {
+    "digest": {"type": "string", "minLength": 71, "maxLength": 71, "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reference": {"type": "string", "minLength": 1, "maxLength": 255, "not": {"pattern": "[^!-~]"}}
+  }
+}

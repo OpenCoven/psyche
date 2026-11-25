@@ -16,6 +16,10 @@ Transport location, process identity, filesystem paths, tmux panes, worktrees, b
 
 The separate Rust Telegram adapter belongs in Psyche. Familiar Contract owns familiar/person identity, Threads owns protected-surface authorization, Psyche composes local admission and orchestration, and Coven owns execution, adoption and fencing. The recorded scope permits interface and denial-vector planning. Actual integration depends on G4/Coven #1230, production child dispatch on G6, and cutover on applicable G10. The first-profile decisions below govern rebind migration and historical spec provenance. [Decision and gates](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462) · [Product placement](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303108240)
 
+## Approved first-profile Build receipt binding
+
+Psyche owns the versioned binding from its execution request ID and canonical request digest to the digest of Build’s exact native receipt bytes. Build owns its journal and supplies opaque task and action or idempotency references from the authoritative native path. The pinned Psyche verifier checks issuer provenance, reference correlation and both digests. Missing evidence requires recovery, ambiguity remains unknown pending reconciliation, and conflict preserves the original and quarantines the conflicting evidence. These results confer no dispatch authority. Effect-count claims require an independent witness. Stable publication and live adoption have separate approvals. [Owner decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117194956) · [Wire format and verification](../profiles/build-receipt-binding/README.md)
+
 ## Ownership by domain
 
 | Domain | Canonical owner | Consumer relationship |
