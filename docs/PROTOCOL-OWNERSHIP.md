@@ -1,8 +1,8 @@
 # OpenCoven protocol ownership
 
-**Status:** proposed baseline pending [OpenCoven/psyche#12](https://github.com/OpenCoven/psyche/issues/12)
+**Status:** proposed baseline with first Build profile decisions recorded in [OpenCoven/psyche#12](https://github.com/OpenCoven/psyche/issues/12)
 
-**Last reconciled:** 2026-11-20
+**Last reconciled:** 2026-11-24
 
 This document prevents implementation order from becoming accidental canonical ownership.
 
@@ -14,7 +14,7 @@ Transport location, process identity, filesystem paths, tmux panes, worktrees, b
 
 ## Recorded Telegram boundary
 
-The separate Rust Telegram adapter belongs in Psyche. Familiar Contract owns familiar/person identity, Threads owns protected-surface authorization, Psyche composes local admission and orchestration, and Coven owns execution, adoption and fencing. The recorded scope permits interface and denial-vector planning. Actual integration depends on G4/Coven #1230, production child dispatch on G6, and cutover on applicable G10. The cross-repository profile, old-to-current rebind obligations and spec provenance remain open in #12. [Decision and gates](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462) · [Product placement](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303108240)
+The separate Rust Telegram adapter belongs in Psyche. Familiar Contract owns familiar/person identity, Threads owns protected-surface authorization, Psyche composes local admission and orchestration, and Coven owns execution, adoption and fencing. The recorded scope permits interface and denial-vector planning. Actual integration depends on G4/Coven #1230, production child dispatch on G6, and cutover on applicable G10. For the first Build profile, #12 approved an old-to-current mapping and recorded the historical spec pin as unavailable. Each route still needs executable evidence before migration. [Decision and gates](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462) · [Product placement](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303108240)
 
 ## Proposed ownership matrix
 
@@ -109,19 +109,12 @@ Do not merge a change that creates circular release ownership or requires a cons
 - Retained evidence identifies source/artifact digest, exact command/action, correlation IDs, result, and unavailable proof gaps.
 - Evidence must be bounded and exclude protected user/project content.
 
-## Open decisions
+## First Build profile decisions
 
-The owning issue must approve:
+The graph-owning host issues a process-attempt fence only with authenticated containment evidence from the owner of each resource that can still act. Coven owns its sessions. #19 and Coven #804 own the in-process enforcer. An unresolved attempt remains blocked, and a fresh dispatch needs its own admission. [Owner decision, ADR 3](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214)
 
-- exact integration of Familiar and Threads identifiers/decisions;
-- first stable Psyche consumer profile;
-- Coven and runtime version-negotiation boundary;
-- Cave/iOS approval and reconnect flow;
-- SDK mutation profiles;
-- release-order and emergency compatibility policy;
-- for a process-bound (coven-agents) attempt, the trusted issuer and enforcer of its fence, and the evidence that every surviving resource is covered ([#19](https://github.com/OpenCoven/psyche/issues/19));
-- which released record or projection binds a Psyche Build task ID, action or idempotency key and terminal receipt to a Psyche execution request ID and digest, who issues and verifies that binding, and what a consumer does when the stored outcome is missing, ambiguous or conflicting after restart ([question on #12](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7074231074), adoption tracked in [#13](https://github.com/OpenCoven/psyche/issues/13)).
+Psyche issues the binding between its execution request ID, canonical request digest and the digest of the exact native terminal receipt bytes. Build preserves those bytes and supplies opaque task and action or idempotency identifiers. The pinned Psyche verifier checks provenance, correlation and both digests. Missing or ambiguous evidence keeps the outcome unknown. Conflicts preserve the original and quarantine the conflicting evidence. Effect counts require independent evidence. [Owner decision, ADR 4](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117194956)
 
-A proposed decision packet for #12 is in review as [draft #29](https://github.com/OpenCoven/psyche/pull/29). It is a proposal and approves nothing.
+## Remaining work
 
-Until approved, this document is a proposed boundary and must not be cited as shipped protocol support.
+The #12 owner approved producers for the first profile and the policy for one exact pin. Rows 11 and 13 remain held for enforcement and receipt evidence. #11 owns released representations, versions, denial vectors and verifier artifacts. #13 owns the downstream Build pin, restart and rollback canaries. Emergency compatibility and deprecation still need rehearsal. The broader Familiar/Threads integration, runtime negotiation, Cave reconnect and SDK mutation profiles remain open beyond the approved scope. [Decision packet](https://github.com/OpenCoven/psyche/pull/29) · [Approved rows and remaining obligations](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214) · [Publication](https://github.com/OpenCoven/psyche/issues/11) · [Build adoption](https://github.com/OpenCoven/psyche/issues/13)

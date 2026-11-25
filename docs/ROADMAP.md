@@ -2,7 +2,7 @@
 
 **Status:** active program
 
-**Last reconciled:** 2026-11-20
+**Last reconciled:** 2026-11-24
 
 **Roadmap control:** [OpenCoven/psyche#9](https://github.com/OpenCoven/psyche/issues/9)
 
@@ -14,7 +14,7 @@ The roadmap is gate-driven. Target dates coordinate work; they never replace com
 
 ## Baseline
 
-The immutable W2/G2 source and run are retained in the G2 evidence document. The items below describe that implementation. Issue #9 tracks subsequent delivery and exact candidate evidence. [G2 evidence](G2-EVIDENCE.md) · [Active delivery plan](https://github.com/OpenCoven/psyche/issues/9#issuecomment-7035832051)
+The immutable W2/G2 source and run are retained in the G2 evidence document. The items below describe that implementation. Issue #9 tracks subsequent delivery and exact candidate evidence. [G2 evidence](G2-EVIDENCE.md) · [Active delivery plan](https://github.com/OpenCoven/psyche/issues/9#issuecomment-7081646023)
 
 - canonical records, IDs, validation, serialization, digests, and structured denials;
 - append-only durable storage, migrations, quarantine, retention, and crash recovery;
@@ -25,7 +25,11 @@ The immutable W2/G2 source and run are retained in the G2 evidence document. The
 
 The current foundation is not yet a consumer-ready protocol release. Stable schemas, immutable profile artifacts, downstream pins, compatibility policy, reference-client canaries, support windows, and release governance remain explicit work.
 
-The bounded Telegram decision places its Rust adapter in Psyche. Real integration needs G4/Coven #1230, production child dispatch needs G6, and cutover needs the applicable G10. The stable consumer profile requires #12 ownership decisions and #11 immutable artifacts before #13 can qualify the reference client. [Telegram decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462)
+The bounded Telegram decision places its Rust adapter in Psyche. Real integration needs G4/Coven #1230, production child dispatch needs G6, and cutover needs the applicable G10. The #12 owner approved the first Build profile’s producer roles and binding policy. #11 owns stable artifacts and #13 owns the pinned reference-client canary. [Telegram decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462)
+
+## Current delivery
+
+The #10 repository foundation and the experimental lifecycle v2 profile have shipped on main. Contributors can run the README’s local operator exercise today. The #14 owner tracks contributor ownership, forms and private reporting under #24, and settings enforcement under #25. The release and security rehearsal remains under #14. [Foundation](https://github.com/OpenCoven/psyche/issues/10) · [Lifecycle delivery](https://github.com/OpenCoven/psyche/pull/51) · [Contributor files](https://github.com/OpenCoven/psyche/issues/24) · [Enforcement](https://github.com/OpenCoven/psyche/issues/25)
 
 ## Program outcomes
 

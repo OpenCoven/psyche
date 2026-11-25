@@ -1,0 +1,9 @@
+{
+  "success": {"state":"succeeded","executions":1},
+  "ambiguous_adoption": {"state":"unknown","executions":1},
+  "unknown_version": {"code":"unsupported_version","executions":0},
+  "stale_correlation": {"code":"stale_correlation","executions":1},
+  "authority_denial": {"code":"operator_required","executions":0},
+  "cancellation": {"code":"action_invalidated","executions":0},
+  "incompatible_downgrade": {"code":"incompatible_downgrade","executions":1}
+}
