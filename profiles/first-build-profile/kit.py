@@ -104,7 +104,9 @@ def build_environment(compiler):
     env = {k: v for k, v in os.environ.items()
            if not k.upper().startswith(("CARGO_", "RUSTC", "RUSTFLAGS", "RUSTDOC"))
            or k.upper() == "CARGO_HOME"}
-    remaps = [f"--remap-path-prefix={ROOT}=/psyche", f"--remap-path-prefix={cargo_home()}=/cargo"]
+    sysroot = subprocess.check_output([compiler, "--print", "sysroot"], cwd=ROOT, text=True).strip()
+    remaps = [f"--remap-path-prefix={ROOT}=/psyche", f"--remap-path-prefix={cargo_home()}=/cargo",
+              f"--remap-path-prefix={sysroot}=/rust"]
     env.update(RUSTC=compiler, CARGO_ENCODED_RUSTFLAGS="\x1f".join(remaps))
     return env
 
