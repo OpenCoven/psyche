@@ -6,6 +6,7 @@ from __future__ import annotations
 # Keep the original reviewed checker byte-for-byte and layer the scope policy
 # around it. This makes the trust-root change small, reviewable, and reversible
 # while retaining every existing source, workflow, matrix, and remote-run check.
+import argparse
 import pathlib as _bootstrap_pathlib
 
 _LEGACY_PATH = _bootstrap_pathlib.Path(__file__).with_name("check-g2-evidence-v1.py")
@@ -662,11 +663,14 @@ def validate_repository(
     listed_tests: Mapping[str, str] | None = None,
     source_overrides: Mapping[str, str] | None = None,
     verify_remote: bool = True,
+    require_passed: bool = False,
 ) -> None:
     root = root.resolve()
     overrides = source_overrides or {}
     _validate_root_license(root)
-    _load_scope_state(root, overrides)
+    _, status, _, _ = _load_scope_state(root, overrides)
+    if require_passed and status != "passed":
+        fail("delivery requires passed G2 scope evidence; record the successful candidate CI run in an evidence-only commit")
     historic = read_text(root, HISTORIC_EVIDENCE_PATH, overrides) if evidence is None else evidence
     if hashlib.sha256(historic.encode("utf-8")).hexdigest() != HISTORIC_EVIDENCE_SHA256:
         fail("historic G2 evidence must match the immutable passed attestation")
@@ -681,9 +685,12 @@ def validate_repository(
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-passed", action="store_true", help="reject a candidate awaiting its CI attestation")
+    args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
     try:
-        validate_repository(root)
+        validate_repository(root, require_passed=args.require_passed)
         _, scope_status, _, _ = _load_scope_state(root)
     except (EvidenceError, subprocess.CalledProcessError, OSError) as error:
         print(f"G2 evidence check failed: {error}", file=sys.stderr)
