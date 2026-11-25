@@ -81,6 +81,14 @@ class G2AttestationScopeTests(unittest.TestCase):
             self.assertEqual(count, 1)
         return markdown
 
+    def test_delivery_rejects_qualifying_candidate(self):
+        with self.assertRaisesRegex(self.checker.EvidenceError, "delivery requires passed"):
+            self.checker.validate_repository(
+                ROOT,
+                source_overrides={self.checker.SCOPE_EVIDENCE_PATH: self.candidate_evidence()},
+                require_passed=True,
+            )
+
     def test_repository_scope_evidence_is_valid(self):
         self.checker._load_scope_state(ROOT)
 
