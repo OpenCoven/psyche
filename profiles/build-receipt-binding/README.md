@@ -50,3 +50,16 @@ The [golden binding](golden/binding.json) uses the [existing launch request](../
 | Canonical binding | `9def34c2cb39bfec001be9d7fcfb56f821f5b90fb655abd452bfab13dbf45843` |
 
 Negotiate the exact binding version, signer policy and verifier revision out of band before enabling this profile. A peer without that version must preserve stored bytes and report that verified binding is unavailable. The existing experimental comparator remains available for its observation-only use. Rolling back the verifier restores that earlier capability and keeps signed evidence available for a compatible reader. This candidate adds an opt-in wire format alongside the existing G2 storage registry. It requires no migration of existing journals. Stable publication, production key distribution and live Build activation have separate approval gates. [Experimental replay profile](../receipt-replay/README.md) · [Build adoption tracker](https://github.com/OpenCoven/psyche-build/issues/253)
+
+## Experimental native distribution
+
+The [native kit guide](KIT.md) covers artifact pins, offline verification and rollback. A producer with a clean native checkout builds with the workspace’s locked release dependencies, then exercises the archived executable and golden evidence from an empty directory. Set `TARGET` to the host triple from `rustc -vV`.
+
+```sh
+SOURCE=$(git rev-parse HEAD)
+ARCHIVE="$TMPDIR/verify-build-binding-$TARGET.tar.gz"
+python3 profiles/build-receipt-binding/kit.py build --source "$SOURCE" --target "$TARGET" --archive "$ARCHIVE"
+python3 profiles/build-receipt-binding/kit.py smoke --source "$SOURCE" --target "$TARGET" --archive "$ARCHIVE" --sha256 "$EXPECTED_SHA256"
+```
+
+The download workflow builds and exercises each target on its native runner, preserves only the verified archive, and records the inner checksum and GitHub artifact digest for the consumer handoff. The existing receipt-replay profile retains its separate observation-comparison contract.
