@@ -1,139 +1,26 @@
 # Psyche roadmap
 
-**Status:** active program
+[@BunsDev](https://github.com/BunsDev) owns the active program. This snapshot records the 24 November 2026 delivery state. Each milestone ends when its observable gate passes. [Roadmap control and handoff](https://github.com/OpenCoven/psyche/issues/9#issuecomment-7076663830)
 
-**Last reconciled:** 2026-11-20
+## Delivered foundation
 
-**Roadmap control:** [OpenCoven/psyche#9](https://github.com/OpenCoven/psyche/issues/9)
+The repository has a contributor entrypoint, eight-crate map, pinned toolchain, risk manifest, bootstrap and fast/full checks. The roadmap owner closed the readiness foundation after the crate map and squash verification landed. Contributors can run the local checks from the README. Historical G2 evidence remains tied to its original source and run. [Readiness closure](https://github.com/OpenCoven/psyche/issues/10#issuecomment-7117976476) · [Contributor commands](../README.md) · [Historical G2 evidence](G2-EVIDENCE.md) · [Current scope and attestation](G2-SCOPE-EVIDENCE.md)
 
-**Owner:** [@BunsDev](https://github.com/BunsDev)
+The experimental adapter-lifecycle v2 producer landed at `dcd932ee6a5235a838615e1fc21ad8a83efb0093`. Psyche Build PR #601 at `a400364dba0fa4f6e021bd591aa5afc1f0312b79` pins producer source `9bf09b9c42e53fc38a15c7824db4f38aadb67a41` and archive SHA-256 `411932cffa050e0c73f29dac57f7b7b6b12a14e434cf76d616cf9efe37eccda3`. The open consumer PR exercises the instrumented native handler, lost acknowledgement, restart and rollback. Merge, distribution, live product activation and stable profile support remain separate gates. [Merged producer](https://github.com/OpenCoven/psyche/pull/51) · [Exact Build pin](https://github.com/OpenCoven/psyche-build/blob/a400364dba0fa4f6e021bd591aa5afc1f0312b79/protocol-fixtures/psyche-lifecycle/v2/pin.json) · [Build canary](https://github.com/OpenCoven/psyche-build/pull/601)
 
-Psyche is graduating from a strong G2 contract foundation into OpenCoven's consumer-ready canonical orchestration protocol.
+## Remaining milestones
 
-The roadmap is gate-driven. Target dates coordinate work; they never replace compatibility, security, recovery, or retained-evidence requirements.
+| Owning issue | Prerequisite | Next deliverable | Observable exit criterion |
+|---|---|---|---|
+| [#12 ownership and compatibility](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214) | First-profile producer assignments and four owner decisions | Map each historical rebind guarantee to a current producer, version, canary and denial. Return held rows 11 and 13 with containment and binding evidence. | The owner accepts each supported row against executable evidence. Identity changes on unmapped routes stay blocked. Emergency and deprecation procedures earn support through rehearsal. |
+| [#11 protocol publication](https://github.com/OpenCoven/psyche/issues/11#issuecomment-7119169484) | Approved producer rows from #12 | Select the publication surface, complete schemas and canonical vectors, package the verified receipt binding and standalone runner, and publish one immutable checksummed profile with version negotiation and rollback. [Publication proposal](https://github.com/OpenCoven/psyche/pull/60) · [Binding implementation](https://github.com/OpenCoven/psyche/pull/59) | A downstream clean checkout pins one artifact set and verifies canonical bytes, provenance, both digests, denials, restart and downgrade without a Psyche source checkout. |
+| [#13 Build reference client](https://github.com/OpenCoven/psyche/issues/13#issuecomment-7119170255) and [Build #253](https://github.com/OpenCoven/psyche-build/issues/253) | #11 prerelease verifier and profile, #12 binding policy | Run a pinned native-receipt canary across restart with missing, ambiguous, wrong-signer and conflicting evidence. Then exercise the reversible desktop adapter and persistence migration. | The native flow preserves protocol IDs alongside local IDs, rejects unsupported evidence, retains the original receipt, and demonstrates desktop restart/resume and rollback at recorded pins. |
+| [#18 typed Coven automation](https://github.com/OpenCoven/psyche/issues/18) | Producer API, authority and version boundaries for real daemon sessions | Exercise adoption, idempotent execution and exact receipt correlation against the daemon. | Restart/concurrent recovery preserves the original identity and evidence. Real integration has retained daemon-side conformance. |
+| [#19 process-attempt lifecycle](https://github.com/OpenCoven/psyche/issues/19) and [Coven #804](https://github.com/OpenCoven/coven/issues/804) | #12 fence decision and authenticated evidence from each resource owner | Identify the in-process enforcer, exercise surviving children/tools and host restart, and review the G2 redispatch-after-fence change. | The host issues a fence only after every acting resource is contained. Unknown attempts stay blocked and each new dispatch requires fresh admission. |
+| [#9 broader lifecycle](https://github.com/OpenCoven/psyche/issues/9) | Proven #11–#13 profile and relevant #18/#19 runtime evidence | Qualify lease issue/expiry/revocation/renewal, approvals and invalidation, action/receipt transitions, cancellation acknowledgement, artifact retention and cross-surface recovery. | Each consequential action has one durable identity across disconnect and restart, and each path yields correlated terminal evidence or an explicit unresolved outcome. |
+| [#14 governance and release](https://github.com/OpenCoven/psyche/issues/14) | Contributor controls, eligible owners, settings decisions and a pinned downstream reference flow | Qualify [contributor controls](https://github.com/OpenCoven/psyche/issues/24), [repository settings](https://github.com/OpenCoven/psyche/issues/25) and [event-specific G2 verification](https://github.com/OpenCoven/psyche/issues/58). Rehearse installed-package, support, migration, downgrade and emergency procedures. | Required checks and private reporting work on the intended surfaces. A pinned client verifies signed metadata, checksums, SBOM and provenance, and a clean install and rollback pass on claimed platforms. |
 
-## Baseline
-
-The immutable W2/G2 source and run are retained in the G2 evidence document. The items below describe that implementation. Issue #9 tracks subsequent delivery and exact candidate evidence. [G2 evidence](G2-EVIDENCE.md) · [Active delivery plan](https://github.com/OpenCoven/psyche/issues/9#issuecomment-7035832051)
-
-- canonical records, IDs, validation, serialization, digests, and structured denials;
-- append-only durable storage, migrations, quarantine, retention, and crash recovery;
-- typed Coven and bounded surface ports;
-- runtime and CLI composition;
-- deterministic property, conformance, migration, crash, restart, and evidence checks;
-- Linux, macOS, Windows, dependency-audit, secret, and npm CI surfaces.
-
-The current foundation is not yet a consumer-ready protocol release. Stable schemas, immutable profile artifacts, downstream pins, compatibility policy, reference-client canaries, support windows, and release governance remain explicit work.
-
-The bounded Telegram decision places its Rust adapter in Psyche. Real integration needs G4/Coven #1230, production child dispatch needs G6, and cutover needs the applicable G10. The stable consumer profile requires #12 ownership decisions and #11 immutable artifacts before #13 can qualify the reference client. [Telegram decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462)
-
-## Program outcomes
-
-| Issue | Outcome | Priority | Phase |
-|---|---|---:|---:|
-| [#10](https://github.com/OpenCoven/psyche/issues/10) | Repository and agent-readiness foundation | P0 | 0 |
-| [#11](https://github.com/OpenCoven/psyche/issues/11) | Protocol v1 schemas, golden vectors, and conformance runner | P0 | 1 |
-| [#12](https://github.com/OpenCoven/psyche/issues/12) | Cross-repository ownership and compatibility | P0 | 0–1 |
-| [#13](https://github.com/OpenCoven/psyche/issues/13) | Psyche Build reference-client conformance | P1 | 2 |
-| [#14](https://github.com/OpenCoven/psyche/issues/14) | Security, release, support, and governance readiness | P1 | 0 and 4 |
-
-## Phase 0 — control and agent readiness
-
-**Target:** Aug 26–Sep 8, 2026
-
-**Owners:** #10, #12, and the minimum security floor in #14
-
-Deliver:
-
-- root README, agent guide, contribution/security/license surfaces;
-- machine-readable repository role and risk manifest;
-- one bootstrap and fast/full verification interface;
-- active roadmap and ownership map;
-- protected/generated path policy;
-- initial cross-repository decision record;
-- minimum security reporting and ownership controls.
-
-**Exit gate:** a clean checkout can be understood and verified without private maintainer context, and no canonical ownership remains implicit.
-
-## Phase 1 — protocol v1 publication
-
-**Target:** Sep 9–Sep 29, 2026
-
-**Owners:** #11 and #12
-
-Deliver:
-
-- public record/schema inventory with stability classification;
-- versioned machine-readable schemas;
-- byte-exact canonical JSON and digest vectors;
-- positive, denial, ambiguity, restart, downgrade, and unknown-version fixtures;
-- standalone bounded conformance runner;
-- compatibility, migration, downgrade, deprecation, and rollback policy;
-- immutable, checksummed consumer profile artifacts.
-
-**Exit gate:** a downstream repository can pin one immutable artifact set and run conformance without copying internal Rust types or checking out Psyche source.
-
-## Phase 2 — Psyche Build reference client
-
-**Target:** Sep 30–Oct 20, 2026
-
-**Owners:** #13 and [OpenCoven/psyche-build#253](https://github.com/OpenCoven/psyche-build/issues/253)
-
-Deliver:
-
-- approved mapping of Psyche Build state to Psyche contracts;
-- immutable profile pin and digest verification;
-- positive and negative compatibility canaries;
-- protocol-owned IDs introduced alongside product-local IDs;
-- reversible adapter/persistence migrations;
-- desktop restart/resume reference flow.
-
-**Exit gate:** Psyche Build passes the pinned profile without making panes, worktrees, tmux, providers, Beads, GitHub, transports, or UI selections protocol identity.
-
-## Phase 3 — lifecycle completion
-
-**Target:** Oct 21–Nov 10, 2026
-
-Deliver executable lifecycle semantics for:
-
-- capability/lease issuance, expiry, revocation, and renewal;
-- approval request, resolution, invalidation, and audit correlation;
-- action/receipt pending, accepted, executing, succeeded, failed, unknown, and recovery-required states;
-- cancellation acknowledgement and unresolved outcomes;
-- retry/idempotency, ambiguity reconciliation, and fencing;
-- artifact/evidence correlation and retention;
-- cross-surface disconnect/restart/resume.
-
-**Exit gate:** consequential work has one durable identity and terminal/recovery path across restarts and adapters; no surface infers truth from activity alone.
-
-## Phase 4 — release candidate and governance
-
-**Target:** Nov 11–Nov 24, 2026
-
-**Owner:** #14
-
-Deliver:
-
-- protected owners and enforced required checks;
-- release/version/support policy;
-- packed clean-install verification;
-- checksums, SBOM, provenance, and signed immutable metadata;
-- downstream compatibility matrix and canary evidence;
-- migration, downgrade, rollback, deprecation, and emergency procedures;
-- one end-to-end OpenCoven reference flow.
-
-**Exit gate:** the release candidate is reproducible, supportable, reversible, and consumable by a pinned downstream client.
-
-## Critical path
-
-1. #10 makes the repository operable.
-2. #12 settles boundaries while #10 lands.
-3. #11 publishes stable consumer artifacts after #10/#12.
-4. #13 pins those artifacts in Psyche Build.
-5. lifecycle completion builds on the proven profile.
-6. #14 rehearses and publishes the release candidate.
-
-Minimum security work may run in parallel. Psyche Build mapping may begin before protocol publication, but no floating or invented profile may be treated as canonical.
+The Rust Telegram adapter belongs in Psyche. Interface and denial-vector planning can proceed. Actual integration needs G4/Coven #1230, production child dispatch needs G6, and cutover needs the applicable G10. [Telegram decision](https://github.com/OpenCoven/psyche/issues/12#issuecomment-6303089462) · [Producer assignments and remaining decisions](PROTOCOL-OWNERSHIP.md)
 
 ## Metrics
 
