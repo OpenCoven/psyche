@@ -89,3 +89,9 @@ When a protected source, test, workflow, dependency, policy, verifier, or eviden
 7. merge only after protected-owner review and retained evidence are complete.
 
 Never add a path to the unattested set merely to make a red check green.
+
+### Reading the two check results
+
+A protected candidate needs a successful CI run on its exact source commit. The separate delivery-readiness check blocks merging at this point. Use the successful candidate CI run to create the evidence-only child, then let CI and delivery readiness evaluate the child. The source SHA remains the candidate’s SHA throughout that transition.
+
+For a change confined to permitted readiness-file operations, retain the existing passed attestation. The relationship checker verifies the inherited evidence against the proposed tree. After both checks pass, complete the affected-owner review and squash the qualified head onto the tested base.
