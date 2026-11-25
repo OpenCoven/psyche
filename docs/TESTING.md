@@ -77,3 +77,21 @@ to #11, not a published artifact or store-acceptable records, and the suite is
 not a G2 matrix row. The directory README gives the one regeneration command;
 a default test run never writes a file, and a regenerating run that creates
 or changes a file always fails.
+
+## First Build profile prerelease kit
+
+`crates/psyche-test-support/tests/first_build_profile.rs` checks each of the
+80 generated cases in `profiles/first-build-profile/denials.json` against
+`decode_document`. It covers unknown and older majors and an unknown field
+for every selected kind, global shape, schema, enum and unsafe-integer
+rejections, and reordered or re-spaced spellings that must re-encode to the
+pinned vector. It then runs the `verify-profile` runner end to end on
+assembled kits. The intact kit passes. Tampered, missing, extra or linked
+members, re-pinned non-canonical vectors, older and newer profile majors,
+unknown profiles, widened manifest fields, undispositioned kinds,
+mismatched provenance, a laundered denial and an identity canonicalization
+case are each refused with their own code. The workflow
+`.github/workflows/first-build-profile.yml` builds the kit on five native
+targets and runs its consumer smoke. That smoke includes the ADR 4 binding
+dispositions and the network-isolated receipt-replay restart witness on
+Linux and macOS. The kit is an experimental prerelease, not a G2 matrix row.

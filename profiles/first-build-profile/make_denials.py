@@ -112,7 +112,9 @@ def render():
 def main():
     data = render()
     if sys.argv[1:] == ["--check"]:
-        if not OUTPUT.is_file() or OUTPUT.read_bytes() != data:
+        # A Windows checkout may convert line endings in the working tree. The kit
+        # builder compares the committed blob byte for byte.
+        if not OUTPUT.is_file() or OUTPUT.read_bytes().replace(b"\r\n", b"\n") != data:
             raise SystemExit(f"{OUTPUT.relative_to(ROOT)} is stale; run make_denials.py")
         return
     if sys.argv[1:]:

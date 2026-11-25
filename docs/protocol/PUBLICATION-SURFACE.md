@@ -127,7 +127,7 @@ The inventory asks a released profile to include or exclude the execution reques
 |---|---|---|
 | `psyche.execution_request.v1` and the `req_` request ID | Included, `experimental` | Rows 8 and 9 consume the sealed request, and the ADR 4 binding refers to its ID and digest. Main pins a launch golden and an input golden byte for byte. `decode_document` rejects the schema string as unknown. |
 | Result bundle | Excluded | Row 14 is deferred. |
-| `psyche.build_receipt_binding.v1`, as proposed in unmerged PR #59 | Not selected here | Row 13 is held. Its wire format and verifier belong to the ADR 4 slice in PR #59. |
+| `psyche.build_receipt_binding.v1`, merged in PR #59 | `experimental` component of the prerelease kit, not a registry kind | Row 13 stays held. The owner's ADR 4 decision assigns the wire format, issuer evidence, negotiation and denial vectors to #11, so the [prerelease kit](../../profiles/first-build-profile/README.md) carries the verifier and golden inputs. Admitting row 13 to the surface is a separate owner decision. |
 | `psyche.experimental.receipt-replay.v1` profile | Unchanged, `experimental` | The decision keeps the comparator available for experimental consumers and rollback. |
 | Port capability names and disposition enums | Not published | Most have no serialized form, and capability descriptors are deferred row 10. |
 | `qua_`, store transitions, quarantine resolution states, `ContractError`, `StoreError`, fixture enums | `internal` | Store and harness detail. |
