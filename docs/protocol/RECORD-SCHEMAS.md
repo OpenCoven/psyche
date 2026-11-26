@@ -382,3 +382,28 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 <!-- parser-only-cases:delivery:end -->
 
 **Decoder behaviour recorded:** unknown enum strings are refused as `UnknownEnumValue` for `relationship`, `state` and `surface_decision.state`, and every other rejection surfaces as `InvalidShape { Delivery, "document" }`. Decimals may carry leading zeros (`chat_id_leading_zeros`). As for graph_node, the same document relabelled `psyche.graph.v1` is refused for its `state` before its members are seen (`schema_version_graph_with_delivery_state`).
+
+## Findings for the #11 owner
+
+These are current decoder behaviours across all sixteen kinds, including intent, pinned so that any change is deliberate. They are inputs to #11 decision D5 (a published denial vocabulary) and to the disposition #60 asks for, not decisions made here.
+
+1. **Denial detail is lost for fourteen of the sixteen kinds.** Thirteen record kinds and intent run `validate()` inside `Deserialize`, and `decode_document` maps every serde error to `InvalidShape { <kind>, "document" }`. A wrong-kind identifier, a bound failure and a wrong JSON type are indistinguishable. Only the execution binding and the error envelope decode first and validate after, so their errors name the member or say `WrongRecordKind`. A published vocabulary would need the other kinds to do the same, or the vocabulary to stop at `document`.
+2. **Cancellation failures collapse to one error.** In the execution binding, every failure in the cancellation members surfaces as `CancellationEvidenceMismatch`, from a missing evidence member to a wrong session. Only an unknown acknowledgement `kind` is distinguishable.
+3. **Enum inspection precedes shape and follows the declared kind.** An unknown enum string is refused as `UnknownEnumValue` before any other check. A document relabelled as another kind is refused for that kind's enum first, when it has one (`schema_version_graph_with_node_state`, `schema_version_graph_with_delivery_state`).
+4. **Error envelopes share `schema: Error` with probe and JSON errors.** A consumer cannot tell from `schema` alone whether an error envelope was malformed or some other document failed to parse.
+5. **Absent and null differ for four members.** The execution binding's cancellation members may be `null` but not absent. Every other optional member in every kind may be either.
+6. **Typed integers refuse `3.0` and `3e0`.** Free-form values accept both spellings. A consumer that normalizes number spelling can turn a valid document into an invalid one.
+7. **Only two digests are checked.** `effect_digest` in the surface effect and delivery is recomputed. Every other digest member is taken as given.
+8. **No cross-record or transition rule is checked at decode time.** Budgets may be overdrawn, approvals may be expired, nodes may depend on themselves, and any graph or node state decodes with any version. Those rules, if they exist, belong to the store or to policy owners that #60 lists as missing.
+
+## Coverage and blocked kinds
+
+Every #50 kind now has a schema and a parity corpus: intent on [INTENT-SCHEMA.md](INTENT-SCHEMA.md), and the fifteen others above. No kind was blocked. None needed an owner decision to describe its current decoder, because each schema states only what the decoder does today and gives no member a published meaning.
+
+The #11 minimum names facts, not kinds. Fencing (`execution_binding.adoption_state: "fenced"`, `recovery.fence_token`), cancellation acknowledgement and unresolved outcomes (`execution_binding`) have a described shape here and no published meaning, because #60 holds or defers their rows (11 and 12). Result and artifact binding (row 14) has no #50 kind, so this slice cannot describe it.
+
+## Rollback and non-goals
+
+Rolling back is reverting the commits. The slice adds schemas, this document, one shared test harness and one test target. It changes no record, decoder, vector, fixture or wire format, adds no dependency, and no shipped crate depends on the schemas.
+
+Not in scope: publishing or signing a schema, adding schemas to the #68 kit, selecting which kinds are stable, a generator, or any change to decoder behaviour.
