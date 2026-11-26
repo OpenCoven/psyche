@@ -3,7 +3,8 @@
 //! (held row 11), cancellation acknowledgement and unresolved cancellation
 //! (deferred row 12). The vector is in `acknowledged_terminated`.
 
-use psyche_core::contracts::{ContractError, RecordKind, SchemaKind};
+use psyche_core::contracts::{ContractError, RecordKind, SchemaKind, decode_document};
+use psyche_core::digest::canonical_bytes;
 use serde_json::{Map, Value, json};
 
 use crate::schema_parity::{Case, Expect, Kind, ULID, id, positional, replace_once};
@@ -681,7 +682,16 @@ fn corpus() -> Vec<Case> {
         ),
         Case::new(
             "cancellation_unresolved_as_positional_array",
-            doc(&unknown),
+            {
+                let bytes = doc(&unknown);
+                let canonical = |b: &[u8]| canonical_bytes(&decode_document(b).unwrap()).unwrap();
+                assert_eq!(
+                    canonical(&bytes),
+                    canonical(&doc(&in_state("termination_unknown"))),
+                    "the unresolved evidence order is not the declared field order"
+                );
+                bytes
+            },
             Expect::DecoderOnly,
         ),
         Case::new(
@@ -774,7 +784,7 @@ fn bound_members_sweep_together() {
             (vec![&["request_id"], &[ACK, "execution_request_id"]], false),
             (
                 vec![&["request_digest"], &[ACK, "execution_request_digest"]],
-                false,
+                true,
             ),
             (
                 vec![TERMINATION_ID, &[ACK, "termination_request_id"]],
@@ -797,7 +807,7 @@ fn bound_members_sweep_together() {
                         &["request_digest"],
                         &[UNRESOLVED, "execution_request_digest"],
                     ],
-                    false,
+                    true,
                 ),
                 (
                     vec![TERMINATION_ID, &[UNRESOLVED, "termination_request_id"]],

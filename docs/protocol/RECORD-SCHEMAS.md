@@ -7,8 +7,10 @@ Each schema in [`schemas/`](../../schemas) describes the documents of one kind t
 ## Verifying
 
 ```sh
-cargo test --locked -p psyche-core --test record_schemas
+cargo test --locked -p psyche-core --test record_schemas -- --nocapture
 ```
+
+`--nocapture` displays one line per case: its name, the expected result, the schema's verdict with the validator's or JSON parser's reason, and the decoder's result.
 
 The test needs no network. It shares the harness `crates/psyche-core/tests/schema_parity/mod.rs` with `intent_schema`: the validator ([boon](https://crates.io/crates/boon) 0.6, a dev-dependency of `psyche-core` only) carries the 2020-12 metaschema and is given a loader that refuses every URL. Each kind's corpus is derived in code from its #50 vector in `crates/psyche-core/tests/fixtures/vectors/`, at the digest pinned in `SHA256SUMS`. Each case is one mutation of that vector, or a deliberate rewrite of its spelling, and pins the decoder's exact `ContractError` and the schema's verdict.
 
@@ -66,7 +68,7 @@ Three rules recur in the kind tables:
 The schemas describe each document in the encoding the decoder emits. `decode_document` also accepts two other encodings, which `serde_json::Value`'s deserializer allows and the decoder does not refuse:
 
 - **A unit enum variant as a one-member object.** `"state": {"running": null}` decodes as `"state": "running"`. Enum inspection looks only at strings, so this form also skips it. An unknown value in this form, such as `{"paused": null}`, is refused later, as a shape error and not as `UnknownEnumValue` (`..._unknown_as_single_key_object`).
-- **A closed object as a positional array.** `"provenance": ["home:synthetic-1", "resolver-synthetic-1"]` decodes as `familiar_home_id` and `resolver_version`, in the order the Rust type declares its fields. Where two members share a type, the array decodes in either order, with the values bound to whichever member sits at that position.
+- **A closed object as a positional array.** `"provenance": ["home:synthetic-1", "resolver-synthetic-1"]` decodes as `familiar_home_id` and `resolver_version`, in the order the Rust type declares its fields. Where two members share a type, the array decodes in either order, with the values bound to whichever member sits at that position (`a_swapped_positional_array_binds_values_to_the_wrong_members`).
 
 The six affected schemas reject both forms on purpose. Describing them would publish the Rust field order and serde's enum encoding as part of the contract. It would also mean rewriting each `if`/`then` condition, which compares a state with `const`: `{"not_requested": null}` takes the `else` branch. The canonical re-encoding of every such case is the ordinary form, which passes the schema. Each affected kind lists its cases in a decoder-only table, and `every_non_canonical_form_the_decoder_accepts_is_declared` searches every member of every accepted case for any form the decoder accepts that is not listed. The same search over the intent vector finds none (`intent_has_no_decoder_only_form`), so [INTENT-SCHEMA.md](INTENT-SCHEMA.md) needs no such table. Finding 9 below records the consequences for the #11 owner.
 
@@ -388,7 +390,7 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 <!-- decoder-only-cases:error:start -->
 | Case | Form |
 |---|---|
-| `error_as_positional_array` | `[code, correlation_id, retryable, message, details]` |
+| `error_as_positional_array` | `[code, message, retryable, correlation_id, details]` |
 <!-- decoder-only-cases:error:end -->
 
 **Decoder behaviour recorded:** like the execution binding, the envelope decodes first and then validates, so bound failures name their member (`InvalidShape { Error, "message" }`, `InvalidShape { Error, "correlation_id" }`, `InvalidShape { Error, "details" }`, `InvalidShape { Error, "details.key" }`, `InvalidShape { Error, "details.value" }`). Shape failures surface as `InvalidShape { Error, "document" }`, and an unknown `code` as `UnknownEnumValue { Error, "code" }`. Because the envelope's own schema kind is `Error`, its denials share a `schema` value with the probe and JSON errors (`InvalidShape { Error, "json" }`, `InvalidShape { Error, "schema_version" }`) that every kind returns. A consumer cannot tell from `schema` alone whether an error envelope or some other document was refused.
@@ -446,7 +448,7 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `relationship_as_single_key_object` | `{"reply_same_topic": null}` |
 | `state_as_single_key_object` | `{"sent": null}` |
 | `surface_decision.state_as_single_key_object` | `{"consumed": null}` |
-| `topic_as_positional_array` | `[id, kind]` |
+| `topic_as_positional_array` | `[kind, id]` |
 | `surface_decision_as_positional_array` | `[decision_id, request_digest, policy_revision, expires_at, state]` |
 <!-- decoder-only-cases:delivery:end -->
 

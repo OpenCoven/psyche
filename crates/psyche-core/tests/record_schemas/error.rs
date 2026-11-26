@@ -200,7 +200,7 @@ fn corpus() -> Vec<Case> {
         "error_as_positional_array",
         KIND.as_positional_array(
             &["error"],
-            &["code", "correlation_id", "retryable", "message", "details"],
+            &["code", "message", "retryable", "correlation_id", "details"],
         ),
         Expect::DecoderOnly,
     ));

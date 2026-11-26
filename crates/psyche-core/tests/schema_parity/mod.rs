@@ -339,11 +339,20 @@ impl Kind {
 
     /// The vector with the object member at `path` as an array of its
     /// values in `order`, serde's sequence encoding of a struct. `order`
-    /// must name every member once.
+    /// must be the declared field order: decoding the array and re-encoding
+    /// must give back the vector, so no value lands on another member.
     pub(crate) fn as_positional_array(&self, path: &[&str], order: &[&str]) -> Vec<u8> {
         let mut map = self.vector_object();
         let object = path_at(&mut map, path).clone();
-        self.with_at(path, positional(&object, order))
+        let bytes = self.with_at(path, positional(&object, order));
+        let decoded = decode_document(&bytes).expect("the array form decodes");
+        assert_eq!(
+            canonical_bytes(&decoded).unwrap(),
+            self.vector(),
+            "{}: {order:?} is not the declared field order",
+            path_name(path)
+        );
+        bytes
     }
 
     // --- case generators ------------------------------------------------
@@ -903,7 +912,22 @@ impl Kind {
         for case in corpus {
             assert!(names.insert(case.name), "duplicate case {}", case.name);
             let decoded = decode_document(&case.bytes).map(|_| ());
-            let schema = self.schema_accepts(&case.bytes);
+            // The per-case report `-- --nocapture` displays: what was
+            // expected, and what the schema and the decoder each did.
+            let (schema, reason) = match serde_json::from_slice::<Value>(&case.bytes) {
+                Err(error) => (false, format!("JSON parser: {error}")),
+                Ok(instance) => {
+                    let (schemas, index) = self.compiled();
+                    match schemas.validate(&instance, *index) {
+                        Ok(()) => (true, "schema accepted".to_owned()),
+                        Err(error) => (false, format!("schema rejected: {error}")),
+                    }
+                }
+            };
+            println!(
+                "{} | expected {:?} | {reason} | decoder {decoded:?}",
+                case.name, case.expect
+            );
             let ok = match &case.expect {
                 Expect::Accept => decoded.is_ok() && schema,
                 Expect::Reject(error) => decoded.as_ref().err() == Some(error) && !schema,
@@ -1148,7 +1172,9 @@ impl Kind {
                                 .or_insert_with(|| format!("{{{s:?}: null}}"));
                         }
                     }
-                    Value::Object(object) if tried_objects.insert(name.clone()) => {
+                    Value::Object(object)
+                        if tried_objects.insert((name.clone(), value.to_string())) =>
+                    {
                         if object.len() > 8 {
                             let sub = lookup_subschema(&schema, &path);
                             assert!(
@@ -1181,6 +1207,28 @@ impl Kind {
             .filter(|c| c.expect == Expect::DecoderOnly)
             .map(|c| c.name.to_owned())
             .collect();
+        for case in corpus.iter().filter(|c| c.expect == Expect::DecoderOnly) {
+            let document: Value = serde_json::from_slice(&case.bytes).unwrap();
+            let (path, single) = if let Some(p) = case.name.strip_suffix("_as_single_key_object") {
+                (p, true)
+            } else if let Some(p) = case.name.strip_suffix("_as_positional_array") {
+                (p, false)
+            } else {
+                panic!("{}: a decoder-only case names its form", case.name)
+            };
+            let mut value = &document;
+            for segment in path.split('.') {
+                value = &value[segment];
+            }
+            let carries = if single {
+                value
+                    .as_object()
+                    .is_some_and(|o| o.len() == 1 && o.values().all(Value::is_null))
+            } else {
+                value.is_array()
+            };
+            assert!(carries, "{}: {path} does not carry the form", case.name);
+        }
         let found_names: BTreeSet<String> = found.keys().cloned().collect();
         assert_eq!(
             found_names, declared,

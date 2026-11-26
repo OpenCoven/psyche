@@ -5,7 +5,7 @@ use psyche_core::contracts::{ContractError, SchemaKind};
 use psyche_core::digest::digest;
 use serde_json::{Value, json};
 
-use crate::schema_parity::{Case, Expect, Kind};
+use crate::schema_parity::{Case, Expect, Kind, positional};
 
 const KIND: Kind = Kind {
     name: "delivery",
@@ -260,7 +260,7 @@ fn corpus() -> Vec<Case> {
         ),
         Case::new(
             "topic_as_positional_array",
-            KIND.as_positional_array(&["topic"], &["id", "kind"]),
+            KIND.as_positional_array(&["topic"], &["kind", "id"]),
             Expect::DecoderOnly,
         ),
         Case::new(
@@ -317,4 +317,20 @@ fn the_relationship_enum_matches_the_decoder() {
 #[test]
 fn the_surface_decision_state_enum_matches_the_decoder() {
     KIND.check_enum(&["surface_decision", "state"], &["reserved", "consumed"]);
+}
+
+/// `topic`'s two members are both strings, so its array form also decodes
+/// in the other order, binding each value to the other member. Nothing in
+/// the decoder notices.
+#[test]
+fn a_swapped_positional_array_binds_values_to_the_wrong_members() {
+    let topic = KIND.vector_object()["topic"].as_object().unwrap().clone();
+    let swapped = KIND.with("topic", positional(&topic, &["id", "kind"]));
+    let decoded = psyche_core::contracts::decode_document(&swapped).unwrap();
+    let canonical: Value =
+        serde_json::from_slice(&psyche_core::digest::canonical_bytes(&decoded).unwrap()).unwrap();
+    let original = KIND.vector_object();
+    assert_ne!(original["topic"]["id"], original["topic"]["kind"]);
+    assert_eq!(canonical["topic"]["kind"], original["topic"]["id"]);
+    assert_eq!(canonical["topic"]["id"], original["topic"]["kind"]);
 }
