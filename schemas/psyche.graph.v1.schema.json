@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opencoven:psyche:schema:psyche.graph.v1",
+  "title": "Psyche graph v1 (experimental, unpublished)",
+  "description": "Structural schema for one psyche.graph.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "graph_id",
+    "root_intent_id",
+    "owner_principal_id",
+    "policy_revision",
+    "state",
+    "version"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "psyche.graph.v1"
+    },
+    "graph_id": {
+      "$ref": "#/$defs/graph_id"
+    },
+    "root_intent_id": {
+      "$ref": "#/$defs/intent_id"
+    },
+    "owner_principal_id": {
+      "$ref": "#/$defs/reference"
+    },
+    "policy_revision": {
+      "$ref": "#/$defs/reference"
+    },
+    "state": {
+      "enum": [
+        "draft",
+        "admitted",
+        "rejected",
+        "running",
+        "waiting_approval",
+        "waiting_evidence",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled",
+        "recovery_required"
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "$defs": {
+    "graph_id": {
+      "type": "string",
+      "pattern": "^grf_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "intent_id": {
+      "type": "string",
+      "pattern": "^int_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "reference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    }
+  }
+}

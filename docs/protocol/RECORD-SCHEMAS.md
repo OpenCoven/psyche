@@ -69,6 +69,9 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `identity_snapshot` | `stable-v1` target | none | [`psyche.identity_snapshot.v1.schema.json`](../../schemas/psyche.identity_snapshot.v1.schema.json) |
 | `surface_event` | `stable-v1` target | none | [`psyche.surface_event.v1.schema.json`](../../schemas/psyche.surface_event.v1.schema.json) |
 | `execution_binding` | `experimental` | fencing (`fenced`), cancellation acknowledgement, unresolved outcomes | [`psyche.execution_binding.v1.schema.json`](../../schemas/psyche.execution_binding.v1.schema.json) |
+| `recovery` | `experimental` | fencing (`fence_token`) | [`psyche.recovery.v1.schema.json`](../../schemas/psyche.recovery.v1.schema.json) |
+| `graph` | `experimental` | none | [`psyche.graph.v1.schema.json`](../../schemas/psyche.graph.v1.schema.json) |
+| `graph_node` | `experimental` | none; its `termination_unknown` state names a result deferred row 12 produces | [`psyche.graph_node.v1.schema.json`](../../schemas/psyche.graph_node.v1.schema.json) |
 
 ## `identity_snapshot`
 
@@ -155,3 +158,55 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 - **State-dependent error for one bound.** An empty or over-long `coven_session_id` is `InvalidShape { ExecutionBinding, "coven_session_id" }` in `not_requested` and `CancellationEvidenceMismatch` in any other state.
 - **Absent and null differ.** The four cancellation members use a custom deserializer, so the decoder refuses them when absent (`state_not_requested_members_absent`) although it accepts `null`. The other four optional members may be absent.
 - **`fenced` has no further rule.** The decoder accepts `adoption_state: "fenced"` with any other member values (`adoption_state_fenced`).
+
+## `recovery`
+
+**#11 minimum.** `fence_token` carries the process-attempt fence (fencing, held row 11 in #60). The schema describes its current shape only and gives it no published meaning.
+
+**States:** `recovery_id` with `rcv_` and `attempt_id` with `att_`. `lease_id` and `fence_token` are 1–255 long, and `ambiguity` and `operator_disposition` 1–256. `reconciliation_count` is 0 to 2^53−1. `fence_token` and `operator_disposition` may be `null` or absent.
+
+<!-- parser-only-cases:recovery:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `lease_id_multibyte_over_255_bytes` | `InvalidShape { Recovery, "document" }` | Byte bound. |
+| `fence_token_multibyte_over_255_bytes` | `InvalidShape { Recovery, "document" }` | Byte bound. |
+| `ambiguity_multibyte_over_256_bytes` | `InvalidShape { Recovery, "document" }` | Byte bound. |
+| `operator_disposition_multibyte_over_256_bytes` | `InvalidShape { Recovery, "document" }` | Byte bound. |
+| `reconciliation_count_integral_fraction` | `InvalidShape { Recovery, "document" }` | Integer spelling. |
+| `reconciliation_count_exponent` | `InvalidShape { Recovery, "document" }` | Integer spelling. |
+<!-- parser-only-cases:recovery:end -->
+
+**Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { Recovery, "document" }`. `ambiguity` and `operator_disposition` are free text, not enums (`ambiguity_free_text`), although the vector spells `ambiguity` like an execution binding state.
+
+## `graph`
+
+**States:** `graph_id` with `grf_` and `root_intent_id` with `int_`. `owner_principal_id` and `policy_revision` are 1–255 long. `state` is one of the eleven graph states. `version` is 1 to 2^53−1.
+
+<!-- parser-only-cases:graph:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `owner_principal_id_multibyte_over_255_bytes` | `InvalidShape { Graph, "document" }` | Byte bound. |
+| `policy_revision_multibyte_over_255_bytes` | `InvalidShape { Graph, "document" }` | Byte bound. |
+| `version_integral_fraction` | `InvalidShape { Graph, "document" }` | Integer spelling. |
+| `version_exponent` | `InvalidShape { Graph, "document" }` | Integer spelling. |
+<!-- parser-only-cases:graph:end -->
+
+**Decoder behaviour recorded:** an unknown `state` string is refused as `UnknownEnumValue { Graph, "state" }` before decoding. A non-string `state` and every other rejection surface as `InvalidShape { Graph, "document" }`. No transition rule is checked: every state decodes alongside the vector's other members (`every_state_decodes_with_the_vector_members`).
+
+## `graph_node`
+
+**States:** `node_id` with `nod_`, `graph_id` with `grf_`, `familiar_snapshot_id` with `ids_`, `delegation_id` with `dlg_` and `budget_id` with `bud_`. `dependencies` is a list of `nod_` identifiers with no length bound, duplicates allowed. `required_evidence` holds at most 1024 items, each 1–256 long. `state` is one of the twenty-two node states. `version` is 1 to 2^53−1. `delegation_id` may be `null` or absent.
+
+<!-- parser-only-cases:graph_node:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `required_evidence_item_multibyte_over_256_bytes` | `InvalidShape { GraphNode, "document" }` | Byte bound. |
+| `version_integral_fraction` | `InvalidShape { GraphNode, "document" }` | Integer spelling. |
+| `version_exponent` | `InvalidShape { GraphNode, "document" }` | Integer spelling. |
+<!-- parser-only-cases:graph_node:end -->
+
+**Decoder behaviour recorded:**
+
+- An unknown `state` string is refused as `UnknownEnumValue { GraphNode, "state" }`, and every other rejection as `InvalidShape { GraphNode, "document" }`. Every state decodes alongside the vector's other members (`every_state_decodes_with_the_vector_members`).
+- **Enum inspection follows the declared kind.** The same document relabelled `psyche.graph.v1` is refused as `UnknownEnumValue { Graph, "state" }`, because `awaiting_verification` is not a graph state, before its node members are seen (`schema_version_graph_with_node_state`).
+- `dependencies` may name the node itself, repeat an entry or hold 2048 entries (`dependencies_self`, `dependencies_duplicates`, `dependencies_2048_items`). Only the 1 MiB document limit bounds it.

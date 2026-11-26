@@ -329,7 +329,10 @@ impl Kind {
     pub(crate) fn standard_cases(&self, nested: &[(&[&str], &[&str], ContractError)]) -> Vec<Case> {
         use Expect::{Accept, ParserDependent, ParserOnly, Reject};
         let vector = self.vector();
-        let other = if self.schema == SchemaKind::Graph {
+        // Intent has no enum the decoder inspects before decoding, so the
+        // relabelled document fails on shape alone. A graph node relabelled
+        // as a graph fails on its node `state` first (pinned in graph_node).
+        let other = if matches!(self.schema, SchemaKind::Graph | SchemaKind::GraphNode) {
             ("psyche.intent.v1", SchemaKind::Intent)
         } else {
             ("psyche.graph.v1", SchemaKind::Graph)
