@@ -72,6 +72,9 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `recovery` | `experimental` | fencing (`fence_token`) | [`psyche.recovery.v1.schema.json`](../../schemas/psyche.recovery.v1.schema.json) |
 | `graph` | `experimental` | none | [`psyche.graph.v1.schema.json`](../../schemas/psyche.graph.v1.schema.json) |
 | `graph_node` | `experimental` | none; its `termination_unknown` state names a result deferred row 12 produces | [`psyche.graph_node.v1.schema.json`](../../schemas/psyche.graph_node.v1.schema.json) |
+| `delegation` | `experimental` | none | [`psyche.delegation.v1.schema.json`](../../schemas/psyche.delegation.v1.schema.json) |
+| `budget` | `experimental` | none | [`psyche.budget.v1.schema.json`](../../schemas/psyche.budget.v1.schema.json) |
+| `approval` | `experimental` | none | [`psyche.approval.v1.schema.json`](../../schemas/psyche.approval.v1.schema.json) |
 
 ## `identity_snapshot`
 
@@ -210,3 +213,50 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 - An unknown `state` string is refused as `UnknownEnumValue { GraphNode, "state" }`, and every other rejection as `InvalidShape { GraphNode, "document" }`. Every state decodes alongside the vector's other members (`every_state_decodes_with_the_vector_members`).
 - **Enum inspection follows the declared kind.** The same document relabelled `psyche.graph.v1` is refused as `UnknownEnumValue { Graph, "state" }`, because `awaiting_verification` is not a graph state, before its node members are seen (`schema_version_graph_with_node_state`).
 - `dependencies` may name the node itself, repeat an entry or hold 2048 entries (`dependencies_self`, `dependencies_duplicates`, `dependencies_2048_items`). Only the 1 MiB document limit bounds it.
+
+## `delegation`
+
+**States:** `delegation_id` with `dlg_`, `parent_node_id` and `child_node_id` with `nod_`, and `budget_id` with `bud_`. `scope_digest` and `evidence_scope_digest` use the shared rule. `cancellation_policy` is 1–256 long.
+
+<!-- parser-only-cases:delegation:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `cancellation_policy_multibyte_over_256_bytes` | `InvalidShape { Delegation, "document" }` | Byte bound. |
+<!-- parser-only-cases:delegation:end -->
+
+**Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { Delegation, "document" }`. The decoder checks no relation between members: a node may delegate to itself (`parent_equals_child`), and `cancellation_policy` is free text. #60 asks for narrowed-scope and widening vectors, which need a policy this kind does not carry.
+
+## `budget`
+
+**States:** `budget_id` with `bud_` and `graph_id` with `grf_`. `resource_class` is 1–256 long. `limit`, `reserved`, `consumed` and `released` are each 0 to 2^53−1.
+
+<!-- parser-only-cases:budget:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `resource_class_multibyte_over_256_bytes` | `InvalidShape { Budget, "document" }` | Byte bound. |
+| `limit_integral_fraction` | `InvalidShape { Budget, "document" }` | Integer spelling. |
+| `limit_exponent` | `InvalidShape { Budget, "document" }` | Integer spelling. |
+| `reserved_integral_fraction` | `InvalidShape { Budget, "document" }` | Integer spelling. |
+| `reserved_exponent` | `InvalidShape { Budget, "document" }` | Integer spelling. |
+| `consumed_integral_fraction` | `InvalidShape { Budget, "document" }` | Integer spelling. |
+| `consumed_exponent` | `InvalidShape { Budget, "document" }` | Integer spelling. |
+| `released_integral_fraction` | `InvalidShape { Budget, "document" }` | Integer spelling. |
+| `released_exponent` | `InvalidShape { Budget, "document" }` | Integer spelling. |
+<!-- parser-only-cases:budget:end -->
+
+**Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { Budget, "document" }`. The amounts are independent: `consumed` above `limit`, and `reserved` and `released` above a zero `limit`, all decode (`consumed_above_limit`, `reserved_and_released_above_limit`), as #60 noted. An enforceable-limit rule would be a decoder change, not a schema one.
+
+## `approval`
+
+**States:** `approval_id` with `apr_` and `node_id` with `nod_`. `requester_principal_id` is 1–255 long. `decision` is 1–256 long, `null` or absent. `expires_at` uses the shared rule.
+
+<!-- parser-only-cases:approval:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `requester_principal_id_multibyte_over_255_bytes` | `InvalidShape { Approval, "document" }` | Byte bound. |
+| `decision_multibyte_over_256_bytes` | `InvalidShape { Approval, "document" }` | Byte bound. |
+| `expires_at_impossible_date` | `InvalidShape { Approval, "document" }` | Calendar. |
+| `expires_at_leap_second_off_boundary` | `InvalidShape { Approval, "document" }` | Calendar. |
+<!-- parser-only-cases:approval:end -->
+
+**Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { Approval, "document" }`. `decision` is free text, not an enum (`decision_free_text`), and an `expires_at` in the past decodes (`expires_at_in_the_past`): expiry is not checked at decode time. #60's row 7 lists what an approval does not yet carry.

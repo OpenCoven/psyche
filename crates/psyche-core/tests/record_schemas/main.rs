@@ -60,6 +60,9 @@ macro_rules! parity_tests {
     };
 }
 
+mod approval;
+mod budget;
+mod delegation;
 mod execution_binding;
 mod graph;
 mod graph_node;

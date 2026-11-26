@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opencoven:psyche:schema:psyche.approval.v1",
+  "title": "Psyche approval v1 (experimental, unpublished)",
+  "description": "Structural schema for one psyche.approval.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "approval_id",
+    "node_id",
+    "requester_principal_id",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "psyche.approval.v1"
+    },
+    "approval_id": {
+      "$ref": "#/$defs/approval_id"
+    },
+    "node_id": {
+      "$ref": "#/$defs/graph_node_id"
+    },
+    "requester_principal_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expires_at": {
+      "$ref": "#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "approval_id": {
+      "type": "string",
+      "pattern": "^apr_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "graph_node_id": {
+      "type": "string",
+      "pattern": "^nod_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])[\\x00-\\x7F]([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+    }
+  }
+}
