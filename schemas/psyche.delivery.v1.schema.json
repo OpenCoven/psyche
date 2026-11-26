@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opencoven:psyche:schema:psyche.delivery.v1",
+  "title": "Psyche delivery v1 (experimental, unpublished)",
+  "description": "Structural schema for one psyche.delivery.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity. effect_digest must be the SHA-256 of the RFC 8785 encoding of effect, which is parser-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "delivery_id",
+    "intent_id",
+    "action_class",
+    "account_id",
+    "chat_id",
+    "topic",
+    "relationship",
+    "effect",
+    "effect_digest",
+    "surface_decision",
+    "logical_response_id",
+    "logical_part",
+    "state",
+    "attempt_count"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "psyche.delivery.v1"
+    },
+    "delivery_id": {
+      "$ref": "#/$defs/delivery_id"
+    },
+    "intent_id": {
+      "$ref": "#/$defs/intent_id"
+    },
+    "action_class": {
+      "$ref": "#/$defs/label"
+    },
+    "account_id": {
+      "$ref": "#/$defs/label"
+    },
+    "chat_id": {
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^-?[0-9]+$"
+    },
+    "topic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/label"
+        },
+        "id": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    "relationship": {
+      "enum": [
+        "reply_same_dm",
+        "reply_same_group",
+        "reply_same_topic",
+        "cross_chat",
+        "broadcast"
+      ]
+    },
+    "effect": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/json_value"
+      }
+    },
+    "effect_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "surface_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "request_digest",
+        "policy_revision",
+        "expires_at",
+        "state"
+      ],
+      "properties": {
+        "decision_id": {
+          "$ref": "#/$defs/label"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy_revision": {
+          "$ref": "#/$defs/label"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "state": {
+          "enum": [
+            "reserved",
+            "consumed"
+          ]
+        }
+      }
+    },
+    "logical_response_id": {
+      "$ref": "#/$defs/label"
+    },
+    "logical_part": {
+      "$ref": "#/$defs/u32"
+    },
+    "state": {
+      "enum": [
+        "ready",
+        "sending",
+        "sent",
+        "retryable",
+        "delivery_unknown",
+        "failed",
+        "abandoned",
+        "dead_letter",
+        "resolving_unknown",
+        "compensated"
+      ]
+    },
+    "attempt_count": {
+      "$ref": "#/$defs/u32"
+    },
+    "telegram_message_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[0-9]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "if": {
+    "required": [
+      "state"
+    ],
+    "properties": {
+      "state": {
+        "const": "sent"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "telegram_message_id"
+    ],
+    "properties": {
+      "telegram_message_id": {
+        "type": "string"
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "telegram_message_id": {
+        "type": "null"
+      }
+    }
+  },
+  "$defs": {
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^del_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "intent_id": {
+      "type": "string",
+      "pattern": "^int_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "json_value": {
+      "description": "Any JSON value whose integers, at any depth, lie within the interoperable range +/-(2^53-1).",
+      "anyOf": [
+        {
+          "not": {
+            "type": "integer"
+          }
+        },
+        {
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      ],
+      "items": {
+        "$ref": "#/$defs/json_value"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/json_value"
+      }
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])[\\x00-\\x7F]([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+    },
+    "u32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    }
+  }
+}

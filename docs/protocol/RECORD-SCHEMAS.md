@@ -78,6 +78,9 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `evidence` | `experimental` | none | [`psyche.evidence.v1.schema.json`](../../schemas/psyche.evidence.v1.schema.json) |
 | `verdict` | `experimental` | none | [`psyche.verdict.v1.schema.json`](../../schemas/psyche.verdict.v1.schema.json) |
 | `addon` | `experimental` | none | [`psyche.addon.v1.schema.json`](../../schemas/psyche.addon.v1.schema.json) |
+| `error` | `experimental` | none | [`psyche.error.v1.schema.json`](../../schemas/psyche.error.v1.schema.json) |
+| `surface_effect` | `excluded` | none | [`psyche.surface_effect.v1.schema.json`](../../schemas/psyche.surface_effect.v1.schema.json) |
+| `delivery` | `excluded` | none | [`psyche.delivery.v1.schema.json`](../../schemas/psyche.delivery.v1.schema.json) |
 
 ## `identity_snapshot`
 
@@ -314,3 +317,68 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 <!-- parser-only-cases:addon:end -->
 
 **Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { Addon, "document" }`. `version` is not checked as a version (`version_not_semver`), and `revocation_state` is free text (`revocation_state_free_text`).
+
+## `error`
+
+**Not a record.** An error envelope is never stored and has no identifier. No producer row in #60 covers it, and whether it becomes the serialized rejection result (#60 slice 3) is undecided.
+
+**States:** `error` is a closed object. `code` is one of the thirty-six error codes. `message` is 1–4096 long and `correlation_id` 1–255. `retryable` is a boolean. `details` maps at most 128 keys, each 1–256 long, to strings 1–4096 long.
+
+<!-- parser-only-cases:error:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `error.message_multibyte_over_4096_bytes` | `InvalidShape { Error, "message" }` | Byte bound. |
+| `error.correlation_id_multibyte_over_255_bytes` | `InvalidShape { Error, "correlation_id" }` | Byte bound. |
+| `details_key_multibyte_over_256_bytes` | `InvalidShape { Error, "details.key" }` | Byte bound. |
+| `details_value_multibyte_over_4096_bytes` | `InvalidShape { Error, "details.value" }` | Byte bound. |
+| `duplicate_details_key` | `InvalidShape { Error, "json" }` | A duplicate key inside `details`, as at the top level. |
+<!-- parser-only-cases:error:end -->
+
+**Decoder behaviour recorded:** like the execution binding, the envelope decodes first and then validates, so bound failures name their member (`InvalidShape { Error, "message" }`, `InvalidShape { Error, "correlation_id" }`, `InvalidShape { Error, "details" }`, `InvalidShape { Error, "details.key" }`, `InvalidShape { Error, "details.value" }`). Shape failures surface as `InvalidShape { Error, "document" }`, and an unknown `code` as `UnknownEnumValue { Error, "code" }`. Because the envelope's own schema kind is `Error`, its denials share a `schema` value with the probe and JSON errors (`InvalidShape { Error, "json" }`, `InvalidShape { Error, "schema_version" }`) that every kind returns. A consumer cannot tell from `schema` alone whether an error envelope or some other document was refused.
+
+## `surface_effect`
+
+**Excluded** from the first profile by #60, because row 13 is held. The schema describes the current decoder only.
+
+**States:** `surface_effect_id` with `sfx_`, `intent_id` with `int_`, `graph_id` with `grf_`, `node_id` with `nod_`, `attempt_id` with `att_` and `familiar_snapshot_id` with `ids_`. `project_id`, `action_class` and `account_id` are 1–256 long. `locator` and `effect` are objects, possibly empty, with free-form values. `effect_digest` and `created_at` use the shared rules.
+
+<!-- parser-only-cases:surface_effect:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `project_id_multibyte_over_256_bytes` | `InvalidShape { SurfaceEffect, "document" }` | Byte bound. |
+| `action_class_multibyte_over_256_bytes` | `InvalidShape { SurfaceEffect, "document" }` | Byte bound. |
+| `account_id_multibyte_over_256_bytes` | `InvalidShape { SurfaceEffect, "document" }` | Byte bound. |
+| `created_at_impossible_date` | `InvalidShape { SurfaceEffect, "document" }` | Calendar. |
+| `created_at_leap_second_off_boundary` | `InvalidShape { SurfaceEffect, "document" }` | Calendar. |
+| `effect_digest_not_of_effect` | `InvalidShape { SurfaceEffect, "document" }` | `effect_digest` must equal the SHA-256 of the RFC 8785 encoding of `effect`. A schema cannot compute a digest. |
+| `effect_changed_without_its_digest` | `InvalidShape { SurfaceEffect, "document" }` | The same rule, broken from the other side. |
+<!-- parser-only-cases:surface_effect:end -->
+
+**Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { SurfaceEffect, "document" }`. The decoder recomputes `effect_digest` (`the_effect_digest_is_the_sha256_of_the_canonical_effect` pins the construction), unlike the intent and identity digests, which it does not check.
+
+## `delivery`
+
+**Excluded** from the first profile by #60, because row 13 is held. The schema describes the current decoder only.
+
+**States:** `delivery_id` with `del_` and `intent_id` with `int_`. `action_class`, `account_id`, `logical_response_id`, both `topic` members and the `surface_decision` labels are 1–256 long. `chat_id` is an optionally negative ASCII decimal and `telegram_message_id` an unsigned one, each at most 32 long. `relationship`, `state` and `surface_decision.state` are closed enums. `effect` is a non-empty object with free-form values. `logical_part` and `attempt_count` are 0 to 2^32−1. `topic` and `surface_decision` are closed. Through `if`/`then`, the schema states that `sent` carries a `telegram_message_id` and every other state carries none.
+
+<!-- parser-only-cases:delivery:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `action_class_multibyte_over_256_bytes` | `InvalidShape { Delivery, "document" }` | Byte bound. |
+| `account_id_multibyte_over_256_bytes` | `InvalidShape { Delivery, "document" }` | Byte bound. |
+| `logical_response_id_multibyte_over_256_bytes` | `InvalidShape { Delivery, "document" }` | Byte bound. |
+| `topic.kind_multibyte_over_256_bytes` | `InvalidShape { Delivery, "document" }` | Byte bound. |
+| `topic.id_multibyte_over_256_bytes` | `InvalidShape { Delivery, "document" }` | Byte bound. |
+| `surface_decision.decision_id_multibyte_over_256_bytes` | `InvalidShape { Delivery, "document" }` | Byte bound. |
+| `surface_decision.policy_revision_multibyte_over_256_bytes` | `InvalidShape { Delivery, "document" }` | Byte bound. |
+| `logical_part_integral_fraction` | `InvalidShape { Delivery, "document" }` | Integer spelling. |
+| `logical_part_exponent` | `InvalidShape { Delivery, "document" }` | Integer spelling. |
+| `attempt_count_integral_fraction` | `InvalidShape { Delivery, "document" }` | Integer spelling. |
+| `attempt_count_exponent` | `InvalidShape { Delivery, "document" }` | Integer spelling. |
+| `surface_decision.expires_at_impossible_date` | `InvalidShape { Delivery, "document" }` | Calendar. |
+| `surface_decision.expires_at_leap_second_off_boundary` | `InvalidShape { Delivery, "document" }` | Calendar. |
+| `effect_digest_not_of_effect` | `InvalidShape { Delivery, "document" }` | `effect_digest` must equal the SHA-256 of the RFC 8785 encoding of `effect`. |
+<!-- parser-only-cases:delivery:end -->
+
+**Decoder behaviour recorded:** unknown enum strings are refused as `UnknownEnumValue` for `relationship`, `state` and `surface_decision.state`, and every other rejection surfaces as `InvalidShape { Delivery, "document" }`. Decimals may carry leading zeros (`chat_id_leading_zeros`). As for graph_node, the same document relabelled `psyche.graph.v1` is refused for its `state` before its members are seen (`schema_version_graph_with_delivery_state`).

@@ -329,10 +329,14 @@ impl Kind {
     pub(crate) fn standard_cases(&self, nested: &[(&[&str], &[&str], ContractError)]) -> Vec<Case> {
         use Expect::{Accept, ParserDependent, ParserOnly, Reject};
         let vector = self.vector();
-        // Intent has no enum the decoder inspects before decoding, so the
-        // relabelled document fails on shape alone. A graph node relabelled
-        // as a graph fails on its node `state` first (pinned in graph_node).
-        let other = if matches!(self.schema, SchemaKind::Graph | SchemaKind::GraphNode) {
+        // Intent has no enum the decoder inspects before decoding, so a
+        // document relabelled as intent fails on shape alone. Kinds with a
+        // top-level `state` would fail as a graph on that state first, which
+        // graph_node and delivery pin as their own cases.
+        let other = if matches!(
+            self.schema,
+            SchemaKind::Graph | SchemaKind::GraphNode | SchemaKind::Delivery
+        ) {
             ("psyche.intent.v1", SchemaKind::Intent)
         } else {
             ("psyche.graph.v1", SchemaKind::Graph)
@@ -420,15 +424,14 @@ impl Kind {
             ),
             Case::new(
                 "invalid_utf8",
-                replace_once(&vector, "\"schema_version\"", "\"schema_version\u{0}\"")
-                    .into_iter()
-                    .map(|b| if b == 0 { 0xff } else { b })
-                    .collect(),
+                // Inside the first top-level key: vectors are canonical, so the
+                // document opens with `{"`.
+                [&vector[..2], b"\xff", &vector[2..]].concat(),
                 ParserDependent(json_error()),
             ),
             Case::new(
                 "lone_surrogate_escape",
-                replace_once(&vector, "\"schema_version\"", "\"schema_version\\ud800\""),
+                [&vector[..2], b"\\ud800", &vector[2..]].concat(),
                 ParserDependent(json_error()),
             ),
             Case::new(
