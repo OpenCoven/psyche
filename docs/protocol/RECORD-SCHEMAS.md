@@ -75,6 +75,9 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `delegation` | `experimental` | none | [`psyche.delegation.v1.schema.json`](../../schemas/psyche.delegation.v1.schema.json) |
 | `budget` | `experimental` | none | [`psyche.budget.v1.schema.json`](../../schemas/psyche.budget.v1.schema.json) |
 | `approval` | `experimental` | none | [`psyche.approval.v1.schema.json`](../../schemas/psyche.approval.v1.schema.json) |
+| `evidence` | `experimental` | none | [`psyche.evidence.v1.schema.json`](../../schemas/psyche.evidence.v1.schema.json) |
+| `verdict` | `experimental` | none | [`psyche.verdict.v1.schema.json`](../../schemas/psyche.verdict.v1.schema.json) |
+| `addon` | `experimental` | none | [`psyche.addon.v1.schema.json`](../../schemas/psyche.addon.v1.schema.json) |
 
 ## `identity_snapshot`
 
@@ -260,3 +263,54 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 <!-- parser-only-cases:approval:end -->
 
 **Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { Approval, "document" }`. `decision` is free text, not an enum (`decision_free_text`), and an `expires_at` in the past decodes (`expires_at_in_the_past`): expiry is not checked at decode time. #60's row 7 lists what an approval does not yet carry.
+
+## `evidence`
+
+**States:** `evidence_id` with `evd_`, `node_id` with `nod_` and `attempt_id` with `att_`. `content_digest` and `created_at` use the shared rules. `producer`, `collection_method`, `media_type` and `retention_policy` are 1–256 long. `size` is 0 to 2^53−1.
+
+<!-- parser-only-cases:evidence:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `producer_multibyte_over_256_bytes` | `InvalidShape { Evidence, "document" }` | Byte bound. |
+| `collection_method_multibyte_over_256_bytes` | `InvalidShape { Evidence, "document" }` | Byte bound. |
+| `media_type_multibyte_over_256_bytes` | `InvalidShape { Evidence, "document" }` | Byte bound. |
+| `retention_policy_multibyte_over_256_bytes` | `InvalidShape { Evidence, "document" }` | Byte bound. |
+| `size_integral_fraction` | `InvalidShape { Evidence, "document" }` | Integer spelling. |
+| `size_exponent` | `InvalidShape { Evidence, "document" }` | Integer spelling. |
+| `created_at_impossible_date` | `InvalidShape { Evidence, "document" }` | Calendar. |
+| `created_at_leap_second_off_boundary` | `InvalidShape { Evidence, "document" }` | Calendar. |
+<!-- parser-only-cases:evidence:end -->
+
+**Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { Evidence, "document" }`. `media_type` is not checked as a media type, and `content_digest` is not recomputed. #60 asks for a content and correlation mismatch pair, which needs the evidence bytes and the attempt, neither of which this kind carries.
+
+## `verdict`
+
+**States:** `verdict_id` with `vrd_` and `node_id` with `nod_`. `sealed_evidence_digest` and `created_at` use the shared rules. `policy_revision`, `verdict_type`, `reviewer_id` and `outcome` are 1–256 long. `reason_codes` holds at most 1024 items, each 1–256 long.
+
+<!-- parser-only-cases:verdict:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `policy_revision_multibyte_over_256_bytes` | `InvalidShape { Verdict, "document" }` | Byte bound. |
+| `verdict_type_multibyte_over_256_bytes` | `InvalidShape { Verdict, "document" }` | Byte bound. |
+| `reviewer_id_multibyte_over_256_bytes` | `InvalidShape { Verdict, "document" }` | Byte bound. |
+| `outcome_multibyte_over_256_bytes` | `InvalidShape { Verdict, "document" }` | Byte bound. |
+| `reason_codes_item_multibyte_over_256_bytes` | `InvalidShape { Verdict, "document" }` | Byte bound. |
+| `created_at_impossible_date` | `InvalidShape { Verdict, "document" }` | Calendar. |
+| `created_at_leap_second_off_boundary` | `InvalidShape { Verdict, "document" }` | Calendar. |
+<!-- parser-only-cases:verdict:end -->
+
+**Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { Verdict, "document" }`. `outcome` and `verdict_type` are free text, not enums (`outcome_free_text`), and `reason_codes` items need not follow the execution binding's reason-code shape (`reason_codes_free_text`). The two kinds spell reason codes differently.
+
+## `addon`
+
+**States:** `addon_id` with `adn_`. `package`, `version` and `revocation_state` are 1–256 long. The four digests use the shared rule.
+
+<!-- parser-only-cases:addon:start -->
+| Case | Decoder result | Why a structural schema cannot state it |
+|---|---|---|
+| `package_multibyte_over_256_bytes` | `InvalidShape { Addon, "document" }` | Byte bound. |
+| `version_multibyte_over_256_bytes` | `InvalidShape { Addon, "document" }` | Byte bound. |
+| `revocation_state_multibyte_over_256_bytes` | `InvalidShape { Addon, "document" }` | Byte bound. |
+<!-- parser-only-cases:addon:end -->
+
+**Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { Addon, "document" }`. `version` is not checked as a version (`version_not_semver`), and `revocation_state` is free text (`revocation_state_free_text`).

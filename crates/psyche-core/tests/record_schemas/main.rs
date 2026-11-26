@@ -60,12 +60,15 @@ macro_rules! parity_tests {
     };
 }
 
+mod addon;
 mod approval;
 mod budget;
 mod delegation;
+mod evidence;
 mod execution_binding;
 mod graph;
 mod graph_node;
 mod identity_snapshot;
 mod recovery;
 mod surface_event;
+mod verdict;

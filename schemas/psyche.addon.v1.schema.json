@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opencoven:psyche:schema:psyche.addon.v1",
+  "title": "Psyche addon v1 (experimental, unpublished)",
+  "description": "Structural schema for one psyche.addon.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "addon_id",
+    "package",
+    "version",
+    "package_digest",
+    "provenance_digest",
+    "contributions_digest",
+    "allowlist_digest",
+    "revocation_state"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "psyche.addon.v1"
+    },
+    "addon_id": {
+      "$ref": "#/$defs/addon_id"
+    },
+    "package": {
+      "$ref": "#/$defs/label"
+    },
+    "version": {
+      "$ref": "#/$defs/label"
+    },
+    "package_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "provenance_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "contributions_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "allowlist_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "revocation_state": {
+      "$ref": "#/$defs/label"
+    }
+  },
+  "$defs": {
+    "addon_id": {
+      "type": "string",
+      "pattern": "^adn_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    }
+  }
+}
