@@ -933,7 +933,20 @@ fn schema_and_decoder_agree_on_the_corpus() {
     for case in corpus() {
         assert!(names.insert(case.name), "duplicate case {}", case.name);
         let decoded = decode_document(&case.bytes).map(|_| ());
-        let schema = schema_accepts(&case.bytes);
+        let (schema, reason) = match serde_json::from_slice::<Value>(&case.bytes) {
+            Err(error) => (false, format!("JSON parser: {error}")),
+            Ok(instance) => {
+                let (schemas, index) = compiled();
+                match schemas.validate(&instance, *index) {
+                    Ok(()) => (true, "schema accepted".to_string()),
+                    Err(error) => (false, format!("schema rejected: {error}")),
+                }
+            }
+        };
+        println!(
+            "{} | expected {:?} | {reason} | decoder {decoded:?}",
+            case.name, case.expect
+        );
         let ok = match &case.expect {
             Expect::Accept => decoded.is_ok() && schema,
             Expect::Reject(error) => decoded.as_ref().err() == Some(error) && !schema,
