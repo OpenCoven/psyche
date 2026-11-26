@@ -56,3 +56,44 @@ blob URLs and SHA-256 values bind the evidence to the reviewed sources.
   cannot claim success.
 - C-S12 positive: known denials preserve the canonical structured error;
   negative: unknown enums/kinds/majors quarantine rather than dispatch.
+
+## Canonical document vectors
+
+The canonical vector suite, `crates/psyche-core/tests/canonical_vectors.rs`,
+pins one document for each of the sixteen registered schema kinds under
+`crates/psyche-core/tests/fixtures/vectors/`: the fifteen durable record kinds
+and the error envelope. Each `psyche.<kind>.v1.json` file is byte-for-byte the
+RFC 8785 output of `canonical_bytes` for a typed synthetic document, with no
+trailing newline, and its SHA-256 is a literal in the test. The suite fails
+when a file, a typed construction, the encoder, or a literal drifts, when a
+kind has no file, and when the directory holds a file no kind claims. Beyond
+the drift checks it has three acceptance controls and four denials. The
+acceptance controls show that a non-canonical spelling (for surface_event's
+free-form content, also respelled numbers) and a trailing newline decode and re-encode to the pinned bytes and
+digest, and that a one-byte value change still decodes but no longer carries
+the pinned digest. The denials cover an unknown field, an unknown major, an
+unknown schema name, and a duplicate key. The vectors are experimental inputs
+to #11, not a published artifact or store-acceptable records, and the suite is
+not a G2 matrix row. The directory README gives the one regeneration command;
+a default test run never writes a file, and a regenerating run that creates
+or changes a file always fails.
+
+A consumer can verify an offline copy with the generated `SHA256SUMS` index and a standard SHA-256 tool. The suite checks every entry against the exact fixture bytes. [Offline verification](../crates/psyche-core/tests/fixtures/vectors/README.md#verify-an-offline-copy)
+
+## First Build profile prerelease kit
+
+`crates/psyche-test-support/tests/first_build_profile.rs` checks each of the
+80 generated cases in `profiles/first-build-profile/denials.json` against
+`decode_document`. It covers unknown and older majors and an unknown field
+for every selected kind, global shape, schema, enum and unsafe-integer
+rejections, and reordered or re-spaced spellings that must re-encode to the
+pinned vector. It then runs the `verify-profile` runner end to end on
+assembled kits. The intact kit passes. Tampered, missing, extra or linked
+members, re-pinned non-canonical vectors, older and newer profile majors,
+unknown profiles, widened manifest fields, undispositioned kinds,
+mismatched provenance, a laundered denial and an identity canonicalization
+case are each refused with their own code. The workflow
+`.github/workflows/first-build-profile.yml` builds the kit on five native
+targets and runs its consumer smoke. That smoke includes the ADR 4 binding
+dispositions and the network-isolated receipt-replay restart witness on
+Linux and macOS. The kit is an experimental prerelease, not a G2 matrix row.

@@ -40,7 +40,13 @@ risk:
     - .github/**
     - Cargo.lock
     - deny.toml
-  generated_paths: []
+  generated_paths:
+    - path: crates/psyche-core/tests/fixtures/vectors/psyche.*.v1.json
+      generator: PSYCHE_REGENERATE_VECTORS=1 cargo test --locked -p psyche-core --test canonical_vectors -- --nocapture
+    - path: crates/psyche-core/tests/fixtures/vectors/SHA256SUMS
+      generator: PSYCHE_REGENERATE_VECTORS=1 cargo test --locked -p psyche-core --test canonical_vectors -- --nocapture
+    - path: profiles/first-build-profile/denials.json
+      generator: python3 -I profiles/first-build-profile/make_denials.py
   external_side_effects:
     - package-publication
     - release-publication

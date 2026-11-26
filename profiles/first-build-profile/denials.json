@@ -1,0 +1,747 @@
+{
+ "cases": [
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"declaration_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"familiar_id\":\"familiar:synthetic-1\",\"identity_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"identity_file_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"principal_id\":\"principal:synthetic-1\",\"provenance\":{\"familiar_home_id\":\"home:synthetic-1\",\"resolver_version\":\"resolver-synthetic-1\"},\"resolved_at\":\"2026-08-01T00:00:00Z\",\"revision\":3,\"role_skill_digest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"schema_version\":\"psyche.identity_snapshot.v2\",\"snapshot_id\":\"ids_01J00000000000000000000001\",\"soul_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}",
+   "name": "identity_snapshot/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"declaration_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"familiar_id\":\"familiar:synthetic-1\",\"identity_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"identity_file_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"principal_id\":\"principal:synthetic-1\",\"provenance\":{\"familiar_home_id\":\"home:synthetic-1\",\"resolver_version\":\"resolver-synthetic-1\"},\"resolved_at\":\"2026-08-01T00:00:00Z\",\"revision\":3,\"role_skill_digest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"schema_version\":\"psyche.identity_snapshot.v0\",\"snapshot_id\":\"ids_01J00000000000000000000001\",\"soul_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}",
+   "name": "identity_snapshot/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "identity_snapshot"
+   },
+   "input": "{\"declaration_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"familiar_id\":\"familiar:synthetic-1\",\"identity_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"identity_file_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"principal_id\":\"principal:synthetic-1\",\"provenance\":{\"familiar_home_id\":\"home:synthetic-1\",\"resolver_version\":\"resolver-synthetic-1\"},\"resolved_at\":\"2026-08-01T00:00:00Z\",\"revision\":3,\"role_skill_digest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"schema_version\":\"psyche.identity_snapshot.v1\",\"snapshot_id\":\"ids_01J00000000000000000000001\",\"soul_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"zz_unknown_field\":true}",
+   "name": "identity_snapshot/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "identity_snapshot"
+   },
+   "input": "{\"soul_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"snapshot_id\":\"ids_01J00000000000000000000001\",\"schema_version\":\"psyche.identity_snapshot.v1\",\"role_skill_digest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"revision\":3,\"resolved_at\":\"2026-08-01T00:00:00Z\",\"provenance\":{\"resolver_version\":\"resolver-synthetic-1\",\"familiar_home_id\":\"home:synthetic-1\"},\"principal_id\":\"principal:synthetic-1\",\"identity_file_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"identity_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"familiar_id\":\"familiar:synthetic-1\",\"declaration_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+   "name": "identity_snapshot/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "identity_snapshot"
+   },
+   "input": "{\n  \"declaration_digest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"familiar_id\": \"familiar:synthetic-1\",\n  \"identity_digest\": \"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\n  \"identity_file_digest\": \"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"principal_id\": \"principal:synthetic-1\",\n  \"provenance\": {\n    \"familiar_home_id\": \"home:synthetic-1\",\n    \"resolver_version\": \"resolver-synthetic-1\"\n  },\n  \"resolved_at\": \"2026-08-01T00:00:00Z\",\n  \"revision\": 3,\n  \"role_skill_digest\": \"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\n  \"schema_version\": \"psyche.identity_snapshot.v1\",\n  \"snapshot_id\": \"ids_01J00000000000000000000001\",\n  \"soul_digest\": \"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n}\n",
+   "name": "identity_snapshot/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.intent.v2\",\"surface_event_id\":\"sev_01J00000000000000000000003\"}",
+   "name": "intent/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.intent.v0\",\"surface_event_id\":\"sev_01J00000000000000000000003\"}",
+   "name": "intent/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "intent"
+   },
+   "input": "{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.intent.v1\",\"surface_event_id\":\"sev_01J00000000000000000000003\",\"zz_unknown_field\":true}",
+   "name": "intent/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "intent"
+   },
+   "input": "{\"surface_event_id\":\"sev_01J00000000000000000000003\",\"schema_version\":\"psyche.intent.v1\",\"required_evidence\":[\"tests\",\"diff_review\"],\"requested_outcome\":\"Review and verify the synthetic change.\",\"project_id\":\"project:synthetic-1\",\"principal_id\":\"principal:synthetic-1\",\"intent_id\":\"int_01J00000000000000000000001\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"created_at\":\"2026-08-01T00:00:00Z\",\"constraints\":{\"limits\":{\"max_attempts\":2,\"escalation\":null,\"dry_run\":true},\"allowed_actions\":[\"read\",\"test\"]}}",
+   "name": "intent/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "intent"
+   },
+   "input": "{\n  \"constraints\": {\n    \"allowed_actions\": [\n      \"read\",\n      \"test\"\n    ],\n    \"limits\": {\n      \"dry_run\": true,\n      \"escalation\": null,\n      \"max_attempts\": 2\n    }\n  },\n  \"created_at\": \"2026-08-01T00:00:00Z\",\n  \"digest\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\n  \"familiar_snapshot_id\": \"ids_01J00000000000000000000002\",\n  \"intent_id\": \"int_01J00000000000000000000001\",\n  \"principal_id\": \"principal:synthetic-1\",\n  \"project_id\": \"project:synthetic-1\",\n  \"requested_outcome\": \"Review and verify the synthetic change.\",\n  \"required_evidence\": [\n    \"tests\",\n    \"diff_review\"\n  ],\n  \"schema_version\": \"psyche.intent.v1\",\n  \"surface_event_id\": \"sev_01J00000000000000000000003\"\n}\n",
+   "name": "intent/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"account_id\":\"account-synthetic-1\",\"actor\":{\"id\":\"1001\",\"type\":\"user\"},\"adapter_event_digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"adapter_id\":\"adapter-synthetic\",\"content\":{\"control\":\"\\u0001\\u001f\",\"empty_list\":[],\"empty_object\":{},\"entities\":[{\"kind\":\"bold\",\"length\":9,\"offset\":0},{\"kind\":\"italic\",\"length\":4,\"offset\":10}],\"flag\":false,\"micro\":1e-06,\"negative\":-1.5,\"nothing\":null,\"ratio\":0.25,\"scale\":1e-07,\"short_escapes\":\"\\b\\f\\r\\t\",\"text\":\"Synthetic line one\\nline two \\\"quoted\\\" \\\\ € 😀\",\"type\":\"text\",\"😀\":\"astral key\",\"￦\":\"bmp key\"},\"locator\":{\"chat_id\":\"-1000000000001\",\"message_id\":\"42\",\"type\":\"message\"},\"received_at\":\"2026-08-01T00:00:00Z\",\"schema_version\":\"psyche.surface_event.v2\",\"surface_event_id\":\"sev_01J00000000000000000000001\"}",
+   "name": "surface_event/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"account_id\":\"account-synthetic-1\",\"actor\":{\"id\":\"1001\",\"type\":\"user\"},\"adapter_event_digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"adapter_id\":\"adapter-synthetic\",\"content\":{\"control\":\"\\u0001\\u001f\",\"empty_list\":[],\"empty_object\":{},\"entities\":[{\"kind\":\"bold\",\"length\":9,\"offset\":0},{\"kind\":\"italic\",\"length\":4,\"offset\":10}],\"flag\":false,\"micro\":1e-06,\"negative\":-1.5,\"nothing\":null,\"ratio\":0.25,\"scale\":1e-07,\"short_escapes\":\"\\b\\f\\r\\t\",\"text\":\"Synthetic line one\\nline two \\\"quoted\\\" \\\\ € 😀\",\"type\":\"text\",\"😀\":\"astral key\",\"￦\":\"bmp key\"},\"locator\":{\"chat_id\":\"-1000000000001\",\"message_id\":\"42\",\"type\":\"message\"},\"received_at\":\"2026-08-01T00:00:00Z\",\"schema_version\":\"psyche.surface_event.v0\",\"surface_event_id\":\"sev_01J00000000000000000000001\"}",
+   "name": "surface_event/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "surface_event"
+   },
+   "input": "{\"account_id\":\"account-synthetic-1\",\"actor\":{\"id\":\"1001\",\"type\":\"user\"},\"adapter_event_digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"adapter_id\":\"adapter-synthetic\",\"content\":{\"control\":\"\\u0001\\u001f\",\"empty_list\":[],\"empty_object\":{},\"entities\":[{\"kind\":\"bold\",\"length\":9,\"offset\":0},{\"kind\":\"italic\",\"length\":4,\"offset\":10}],\"flag\":false,\"micro\":1e-06,\"negative\":-1.5,\"nothing\":null,\"ratio\":0.25,\"scale\":1e-07,\"short_escapes\":\"\\b\\f\\r\\t\",\"text\":\"Synthetic line one\\nline two \\\"quoted\\\" \\\\ € 😀\",\"type\":\"text\",\"😀\":\"astral key\",\"￦\":\"bmp key\"},\"locator\":{\"chat_id\":\"-1000000000001\",\"message_id\":\"42\",\"type\":\"message\"},\"received_at\":\"2026-08-01T00:00:00Z\",\"schema_version\":\"psyche.surface_event.v1\",\"surface_event_id\":\"sev_01J00000000000000000000001\",\"zz_unknown_field\":true}",
+   "name": "surface_event/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "surface_event"
+   },
+   "input": "{\"surface_event_id\":\"sev_01J00000000000000000000001\",\"schema_version\":\"psyche.surface_event.v1\",\"received_at\":\"2026-08-01T00:00:00Z\",\"locator\":{\"type\":\"message\",\"message_id\":\"42\",\"chat_id\":\"-1000000000001\"},\"content\":{\"￦\":\"bmp key\",\"😀\":\"astral key\",\"type\":\"text\",\"text\":\"Synthetic line one\\nline two \\\"quoted\\\" \\\\ € 😀\",\"short_escapes\":\"\\b\\f\\r\\t\",\"scale\":1e-07,\"ratio\":0.25,\"nothing\":null,\"negative\":-1.5,\"micro\":1e-06,\"flag\":false,\"entities\":[{\"offset\":0,\"length\":9,\"kind\":\"bold\"},{\"offset\":10,\"length\":4,\"kind\":\"italic\"}],\"empty_object\":{},\"empty_list\":[],\"control\":\"\\u0001\\u001f\"},\"adapter_id\":\"adapter-synthetic\",\"adapter_event_digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"actor\":{\"type\":\"user\",\"id\":\"1001\"},\"account_id\":\"account-synthetic-1\"}",
+   "name": "surface_event/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "surface_event"
+   },
+   "input": "{\n  \"account_id\": \"account-synthetic-1\",\n  \"actor\": {\n    \"id\": \"1001\",\n    \"type\": \"user\"\n  },\n  \"adapter_event_digest\": \"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\n  \"adapter_id\": \"adapter-synthetic\",\n  \"content\": {\n    \"control\": \"\\u0001\\u001f\",\n    \"empty_list\": [],\n    \"empty_object\": {},\n    \"entities\": [\n      {\n        \"kind\": \"bold\",\n        \"length\": 9,\n        \"offset\": 0\n      },\n      {\n        \"kind\": \"italic\",\n        \"length\": 4,\n        \"offset\": 10\n      }\n    ],\n    \"flag\": false,\n    \"micro\": 1e-06,\n    \"negative\": -1.5,\n    \"nothing\": null,\n    \"ratio\": 0.25,\n    \"scale\": 1e-07,\n    \"short_escapes\": \"\\b\\f\\r\\t\",\n    \"text\": \"Synthetic line one\\nline two \\\"quoted\\\" \\\\ € 😀\",\n    \"type\": \"text\",\n    \"😀\": \"astral key\",\n    \"￦\": \"bmp key\"\n  },\n  \"locator\": {\n    \"chat_id\": \"-1000000000001\",\n    \"message_id\": \"42\",\n    \"type\": \"message\"\n  },\n  \"received_at\": \"2026-08-01T00:00:00Z\",\n  \"schema_version\": \"psyche.surface_event.v1\",\n  \"surface_event_id\": \"sev_01J00000000000000000000001\"\n}\n",
+   "name": "surface_event/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"graph_id\":\"grf_01J00000000000000000000001\",\"owner_principal_id\":\"principal:synthetic-1\",\"policy_revision\":\"policy:synthetic-rev-1\",\"root_intent_id\":\"int_01J00000000000000000000002\",\"schema_version\":\"psyche.graph.v2\",\"state\":\"waiting_evidence\",\"version\":4}",
+   "name": "graph/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"graph_id\":\"grf_01J00000000000000000000001\",\"owner_principal_id\":\"principal:synthetic-1\",\"policy_revision\":\"policy:synthetic-rev-1\",\"root_intent_id\":\"int_01J00000000000000000000002\",\"schema_version\":\"psyche.graph.v0\",\"state\":\"waiting_evidence\",\"version\":4}",
+   "name": "graph/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "graph"
+   },
+   "input": "{\"graph_id\":\"grf_01J00000000000000000000001\",\"owner_principal_id\":\"principal:synthetic-1\",\"policy_revision\":\"policy:synthetic-rev-1\",\"root_intent_id\":\"int_01J00000000000000000000002\",\"schema_version\":\"psyche.graph.v1\",\"state\":\"waiting_evidence\",\"version\":4,\"zz_unknown_field\":true}",
+   "name": "graph/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "graph"
+   },
+   "input": "{\"version\":4,\"state\":\"waiting_evidence\",\"schema_version\":\"psyche.graph.v1\",\"root_intent_id\":\"int_01J00000000000000000000002\",\"policy_revision\":\"policy:synthetic-rev-1\",\"owner_principal_id\":\"principal:synthetic-1\",\"graph_id\":\"grf_01J00000000000000000000001\"}",
+   "name": "graph/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "graph"
+   },
+   "input": "{\n  \"graph_id\": \"grf_01J00000000000000000000001\",\n  \"owner_principal_id\": \"principal:synthetic-1\",\n  \"policy_revision\": \"policy:synthetic-rev-1\",\n  \"root_intent_id\": \"int_01J00000000000000000000002\",\n  \"schema_version\": \"psyche.graph.v1\",\n  \"state\": \"waiting_evidence\",\n  \"version\": 4\n}\n",
+   "name": "graph/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"budget_id\":\"bud_01J00000000000000000000007\",\"delegation_id\":\"dlg_01J00000000000000000000006\",\"dependencies\":[\"nod_01J00000000000000000000004\",\"nod_01J00000000000000000000005\"],\"familiar_snapshot_id\":\"ids_01J00000000000000000000003\",\"graph_id\":\"grf_01J00000000000000000000002\",\"node_id\":\"nod_01J00000000000000000000001\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.graph_node.v2\",\"state\":\"awaiting_verification\",\"version\":2}",
+   "name": "graph_node/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"budget_id\":\"bud_01J00000000000000000000007\",\"delegation_id\":\"dlg_01J00000000000000000000006\",\"dependencies\":[\"nod_01J00000000000000000000004\",\"nod_01J00000000000000000000005\"],\"familiar_snapshot_id\":\"ids_01J00000000000000000000003\",\"graph_id\":\"grf_01J00000000000000000000002\",\"node_id\":\"nod_01J00000000000000000000001\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.graph_node.v0\",\"state\":\"awaiting_verification\",\"version\":2}",
+   "name": "graph_node/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "graph_node"
+   },
+   "input": "{\"budget_id\":\"bud_01J00000000000000000000007\",\"delegation_id\":\"dlg_01J00000000000000000000006\",\"dependencies\":[\"nod_01J00000000000000000000004\",\"nod_01J00000000000000000000005\"],\"familiar_snapshot_id\":\"ids_01J00000000000000000000003\",\"graph_id\":\"grf_01J00000000000000000000002\",\"node_id\":\"nod_01J00000000000000000000001\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.graph_node.v1\",\"state\":\"awaiting_verification\",\"version\":2,\"zz_unknown_field\":true}",
+   "name": "graph_node/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "graph_node"
+   },
+   "input": "{\"version\":2,\"state\":\"awaiting_verification\",\"schema_version\":\"psyche.graph_node.v1\",\"required_evidence\":[\"tests\",\"diff_review\"],\"node_id\":\"nod_01J00000000000000000000001\",\"graph_id\":\"grf_01J00000000000000000000002\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000003\",\"dependencies\":[\"nod_01J00000000000000000000004\",\"nod_01J00000000000000000000005\"],\"delegation_id\":\"dlg_01J00000000000000000000006\",\"budget_id\":\"bud_01J00000000000000000000007\"}",
+   "name": "graph_node/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "graph_node"
+   },
+   "input": "{\n  \"budget_id\": \"bud_01J00000000000000000000007\",\n  \"delegation_id\": \"dlg_01J00000000000000000000006\",\n  \"dependencies\": [\n    \"nod_01J00000000000000000000004\",\n    \"nod_01J00000000000000000000005\"\n  ],\n  \"familiar_snapshot_id\": \"ids_01J00000000000000000000003\",\n  \"graph_id\": \"grf_01J00000000000000000000002\",\n  \"node_id\": \"nod_01J00000000000000000000001\",\n  \"required_evidence\": [\n    \"tests\",\n    \"diff_review\"\n  ],\n  \"schema_version\": \"psyche.graph_node.v1\",\n  \"state\": \"awaiting_verification\",\n  \"version\": 2\n}\n",
+   "name": "graph_node/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"adoption_state\":\"adopted\",\"attempt_id\":\"att_01J00000000000000000000001\",\"cancellation_acknowledgement\":{\"acknowledged_at\":\"2026-08-01T00:02:00Z\",\"acknowledgement_id\":\"ack-synthetic-1\",\"authority_evidence_digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"execution_request_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"execution_request_id\":\"req_01J00000000000000000000001\",\"kind\":\"terminated\",\"session_id\":\"session-synthetic-1\",\"termination_request_id\":\"req_01J00000000000000000000002\"},\"cancellation_state\":\"acknowledged_terminated\",\"cancellation_unresolved\":null,\"coven_contract_version\":\"coven.execution.v1\",\"coven_session_id\":\"session-synthetic-1\",\"event_cursor\":\"cursor-0007\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"previous_revision_digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"project_id\":\"project:synthetic-1\",\"request_created_at\":\"2026-08-01T00:00:00Z\",\"request_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"request_id\":\"req_01J00000000000000000000001\",\"request_valid_until\":\"2026-08-01T00:10:00Z\",\"revision\":2,\"revision_created_at\":\"2026-08-01T00:02:30Z\",\"schema_version\":\"psyche.execution_binding.v2\",\"terminal_state\":\"terminated\",\"termination_reason_code\":\"operator_requested\",\"termination_request\":{\"created_at\":\"2026-08-01T00:01:00Z\",\"termination_request_id\":\"req_01J00000000000000000000002\",\"valid_until\":\"2026-08-01T00:05:00Z\"}}",
+   "name": "execution_binding/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"adoption_state\":\"adopted\",\"attempt_id\":\"att_01J00000000000000000000001\",\"cancellation_acknowledgement\":{\"acknowledged_at\":\"2026-08-01T00:02:00Z\",\"acknowledgement_id\":\"ack-synthetic-1\",\"authority_evidence_digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"execution_request_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"execution_request_id\":\"req_01J00000000000000000000001\",\"kind\":\"terminated\",\"session_id\":\"session-synthetic-1\",\"termination_request_id\":\"req_01J00000000000000000000002\"},\"cancellation_state\":\"acknowledged_terminated\",\"cancellation_unresolved\":null,\"coven_contract_version\":\"coven.execution.v1\",\"coven_session_id\":\"session-synthetic-1\",\"event_cursor\":\"cursor-0007\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"previous_revision_digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"project_id\":\"project:synthetic-1\",\"request_created_at\":\"2026-08-01T00:00:00Z\",\"request_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"request_id\":\"req_01J00000000000000000000001\",\"request_valid_until\":\"2026-08-01T00:10:00Z\",\"revision\":2,\"revision_created_at\":\"2026-08-01T00:02:30Z\",\"schema_version\":\"psyche.execution_binding.v0\",\"terminal_state\":\"terminated\",\"termination_reason_code\":\"operator_requested\",\"termination_request\":{\"created_at\":\"2026-08-01T00:01:00Z\",\"termination_request_id\":\"req_01J00000000000000000000002\",\"valid_until\":\"2026-08-01T00:05:00Z\"}}",
+   "name": "execution_binding/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "execution_binding"
+   },
+   "input": "{\"adoption_state\":\"adopted\",\"attempt_id\":\"att_01J00000000000000000000001\",\"cancellation_acknowledgement\":{\"acknowledged_at\":\"2026-08-01T00:02:00Z\",\"acknowledgement_id\":\"ack-synthetic-1\",\"authority_evidence_digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"execution_request_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"execution_request_id\":\"req_01J00000000000000000000001\",\"kind\":\"terminated\",\"session_id\":\"session-synthetic-1\",\"termination_request_id\":\"req_01J00000000000000000000002\"},\"cancellation_state\":\"acknowledged_terminated\",\"cancellation_unresolved\":null,\"coven_contract_version\":\"coven.execution.v1\",\"coven_session_id\":\"session-synthetic-1\",\"event_cursor\":\"cursor-0007\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"previous_revision_digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"project_id\":\"project:synthetic-1\",\"request_created_at\":\"2026-08-01T00:00:00Z\",\"request_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"request_id\":\"req_01J00000000000000000000001\",\"request_valid_until\":\"2026-08-01T00:10:00Z\",\"revision\":2,\"revision_created_at\":\"2026-08-01T00:02:30Z\",\"schema_version\":\"psyche.execution_binding.v1\",\"terminal_state\":\"terminated\",\"termination_reason_code\":\"operator_requested\",\"termination_request\":{\"created_at\":\"2026-08-01T00:01:00Z\",\"termination_request_id\":\"req_01J00000000000000000000002\",\"valid_until\":\"2026-08-01T00:05:00Z\"},\"zz_unknown_field\":true}",
+   "name": "execution_binding/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "execution_binding"
+   },
+   "input": "{\"termination_request\":{\"valid_until\":\"2026-08-01T00:05:00Z\",\"termination_request_id\":\"req_01J00000000000000000000002\",\"created_at\":\"2026-08-01T00:01:00Z\"},\"termination_reason_code\":\"operator_requested\",\"terminal_state\":\"terminated\",\"schema_version\":\"psyche.execution_binding.v1\",\"revision_created_at\":\"2026-08-01T00:02:30Z\",\"revision\":2,\"request_valid_until\":\"2026-08-01T00:10:00Z\",\"request_id\":\"req_01J00000000000000000000001\",\"request_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"request_created_at\":\"2026-08-01T00:00:00Z\",\"project_id\":\"project:synthetic-1\",\"previous_revision_digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"event_cursor\":\"cursor-0007\",\"coven_session_id\":\"session-synthetic-1\",\"coven_contract_version\":\"coven.execution.v1\",\"cancellation_unresolved\":null,\"cancellation_state\":\"acknowledged_terminated\",\"cancellation_acknowledgement\":{\"termination_request_id\":\"req_01J00000000000000000000002\",\"session_id\":\"session-synthetic-1\",\"kind\":\"terminated\",\"execution_request_id\":\"req_01J00000000000000000000001\",\"execution_request_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"authority_evidence_digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"acknowledgement_id\":\"ack-synthetic-1\",\"acknowledged_at\":\"2026-08-01T00:02:00Z\"},\"attempt_id\":\"att_01J00000000000000000000001\",\"adoption_state\":\"adopted\"}",
+   "name": "execution_binding/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "execution_binding"
+   },
+   "input": "{\n  \"adoption_state\": \"adopted\",\n  \"attempt_id\": \"att_01J00000000000000000000001\",\n  \"cancellation_acknowledgement\": {\n    \"acknowledged_at\": \"2026-08-01T00:02:00Z\",\n    \"acknowledgement_id\": \"ack-synthetic-1\",\n    \"authority_evidence_digest\": \"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\n    \"execution_request_digest\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\n    \"execution_request_id\": \"req_01J00000000000000000000001\",\n    \"kind\": \"terminated\",\n    \"session_id\": \"session-synthetic-1\",\n    \"termination_request_id\": \"req_01J00000000000000000000002\"\n  },\n  \"cancellation_state\": \"acknowledged_terminated\",\n  \"cancellation_unresolved\": null,\n  \"coven_contract_version\": \"coven.execution.v1\",\n  \"coven_session_id\": \"session-synthetic-1\",\n  \"event_cursor\": \"cursor-0007\",\n  \"familiar_snapshot_id\": \"ids_01J00000000000000000000002\",\n  \"previous_revision_digest\": \"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\n  \"project_id\": \"project:synthetic-1\",\n  \"request_created_at\": \"2026-08-01T00:00:00Z\",\n  \"request_digest\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\n  \"request_id\": \"req_01J00000000000000000000001\",\n  \"request_valid_until\": \"2026-08-01T00:10:00Z\",\n  \"revision\": 2,\n  \"revision_created_at\": \"2026-08-01T00:02:30Z\",\n  \"schema_version\": \"psyche.execution_binding.v1\",\n  \"terminal_state\": \"terminated\",\n  \"termination_reason_code\": \"operator_requested\",\n  \"termination_request\": {\n    \"created_at\": \"2026-08-01T00:01:00Z\",\n    \"termination_request_id\": \"req_01J00000000000000000000002\",\n    \"valid_until\": \"2026-08-01T00:05:00Z\"\n  }\n}\n",
+   "name": "execution_binding/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"budget_id\":\"bud_01J00000000000000000000004\",\"cancellation_policy\":\"cascade\",\"child_node_id\":\"nod_01J00000000000000000000003\",\"delegation_id\":\"dlg_01J00000000000000000000001\",\"evidence_scope_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"parent_node_id\":\"nod_01J00000000000000000000002\",\"schema_version\":\"psyche.delegation.v2\",\"scope_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+   "name": "delegation/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"budget_id\":\"bud_01J00000000000000000000004\",\"cancellation_policy\":\"cascade\",\"child_node_id\":\"nod_01J00000000000000000000003\",\"delegation_id\":\"dlg_01J00000000000000000000001\",\"evidence_scope_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"parent_node_id\":\"nod_01J00000000000000000000002\",\"schema_version\":\"psyche.delegation.v0\",\"scope_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+   "name": "delegation/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "delegation"
+   },
+   "input": "{\"budget_id\":\"bud_01J00000000000000000000004\",\"cancellation_policy\":\"cascade\",\"child_node_id\":\"nod_01J00000000000000000000003\",\"delegation_id\":\"dlg_01J00000000000000000000001\",\"evidence_scope_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"parent_node_id\":\"nod_01J00000000000000000000002\",\"schema_version\":\"psyche.delegation.v1\",\"scope_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"zz_unknown_field\":true}",
+   "name": "delegation/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "delegation"
+   },
+   "input": "{\"scope_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema_version\":\"psyche.delegation.v1\",\"parent_node_id\":\"nod_01J00000000000000000000002\",\"evidence_scope_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"delegation_id\":\"dlg_01J00000000000000000000001\",\"child_node_id\":\"nod_01J00000000000000000000003\",\"cancellation_policy\":\"cascade\",\"budget_id\":\"bud_01J00000000000000000000004\"}",
+   "name": "delegation/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "delegation"
+   },
+   "input": "{\n  \"budget_id\": \"bud_01J00000000000000000000004\",\n  \"cancellation_policy\": \"cascade\",\n  \"child_node_id\": \"nod_01J00000000000000000000003\",\n  \"delegation_id\": \"dlg_01J00000000000000000000001\",\n  \"evidence_scope_digest\": \"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"parent_node_id\": \"nod_01J00000000000000000000002\",\n  \"schema_version\": \"psyche.delegation.v1\",\n  \"scope_digest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+   "name": "delegation/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"budget_id\":\"bud_01J00000000000000000000001\",\"consumed\":125,\"graph_id\":\"grf_01J00000000000000000000002\",\"limit\":9007199254740991,\"released\":0,\"reserved\":250,\"resource_class\":\"tokens\",\"schema_version\":\"psyche.budget.v2\"}",
+   "name": "budget/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"budget_id\":\"bud_01J00000000000000000000001\",\"consumed\":125,\"graph_id\":\"grf_01J00000000000000000000002\",\"limit\":9007199254740991,\"released\":0,\"reserved\":250,\"resource_class\":\"tokens\",\"schema_version\":\"psyche.budget.v0\"}",
+   "name": "budget/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "budget"
+   },
+   "input": "{\"budget_id\":\"bud_01J00000000000000000000001\",\"consumed\":125,\"graph_id\":\"grf_01J00000000000000000000002\",\"limit\":9007199254740991,\"released\":0,\"reserved\":250,\"resource_class\":\"tokens\",\"schema_version\":\"psyche.budget.v1\",\"zz_unknown_field\":true}",
+   "name": "budget/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "budget"
+   },
+   "input": "{\"schema_version\":\"psyche.budget.v1\",\"resource_class\":\"tokens\",\"reserved\":250,\"released\":0,\"limit\":9007199254740991,\"graph_id\":\"grf_01J00000000000000000000002\",\"consumed\":125,\"budget_id\":\"bud_01J00000000000000000000001\"}",
+   "name": "budget/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "budget"
+   },
+   "input": "{\n  \"budget_id\": \"bud_01J00000000000000000000001\",\n  \"consumed\": 125,\n  \"graph_id\": \"grf_01J00000000000000000000002\",\n  \"limit\": 9007199254740991,\n  \"released\": 0,\n  \"reserved\": 250,\n  \"resource_class\": \"tokens\",\n  \"schema_version\": \"psyche.budget.v1\"\n}\n",
+   "name": "budget/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"approval_id\":\"apr_01J00000000000000000000001\",\"decision\":\"approved\",\"expires_at\":\"2026-08-01T00:30:00Z\",\"node_id\":\"nod_01J00000000000000000000002\",\"requester_principal_id\":\"principal:synthetic-1\",\"schema_version\":\"psyche.approval.v2\"}",
+   "name": "approval/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"approval_id\":\"apr_01J00000000000000000000001\",\"decision\":\"approved\",\"expires_at\":\"2026-08-01T00:30:00Z\",\"node_id\":\"nod_01J00000000000000000000002\",\"requester_principal_id\":\"principal:synthetic-1\",\"schema_version\":\"psyche.approval.v0\"}",
+   "name": "approval/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "approval"
+   },
+   "input": "{\"approval_id\":\"apr_01J00000000000000000000001\",\"decision\":\"approved\",\"expires_at\":\"2026-08-01T00:30:00Z\",\"node_id\":\"nod_01J00000000000000000000002\",\"requester_principal_id\":\"principal:synthetic-1\",\"schema_version\":\"psyche.approval.v1\",\"zz_unknown_field\":true}",
+   "name": "approval/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "approval"
+   },
+   "input": "{\"schema_version\":\"psyche.approval.v1\",\"requester_principal_id\":\"principal:synthetic-1\",\"node_id\":\"nod_01J00000000000000000000002\",\"expires_at\":\"2026-08-01T00:30:00Z\",\"decision\":\"approved\",\"approval_id\":\"apr_01J00000000000000000000001\"}",
+   "name": "approval/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "approval"
+   },
+   "input": "{\n  \"approval_id\": \"apr_01J00000000000000000000001\",\n  \"decision\": \"approved\",\n  \"expires_at\": \"2026-08-01T00:30:00Z\",\n  \"node_id\": \"nod_01J00000000000000000000002\",\n  \"requester_principal_id\": \"principal:synthetic-1\",\n  \"schema_version\": \"psyche.approval.v1\"\n}\n",
+   "name": "approval/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"attempt_id\":\"att_01J00000000000000000000003\",\"collection_method\":\"test\",\"content_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"created_at\":\"2026-08-01T00:03:00Z\",\"evidence_id\":\"evd_01J00000000000000000000001\",\"media_type\":\"text/plain\",\"node_id\":\"nod_01J00000000000000000000002\",\"producer\":\"producer-synthetic\",\"retention_policy\":\"default\",\"schema_version\":\"psyche.evidence.v2\",\"size\":2048}",
+   "name": "evidence/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"attempt_id\":\"att_01J00000000000000000000003\",\"collection_method\":\"test\",\"content_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"created_at\":\"2026-08-01T00:03:00Z\",\"evidence_id\":\"evd_01J00000000000000000000001\",\"media_type\":\"text/plain\",\"node_id\":\"nod_01J00000000000000000000002\",\"producer\":\"producer-synthetic\",\"retention_policy\":\"default\",\"schema_version\":\"psyche.evidence.v0\",\"size\":2048}",
+   "name": "evidence/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "evidence"
+   },
+   "input": "{\"attempt_id\":\"att_01J00000000000000000000003\",\"collection_method\":\"test\",\"content_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"created_at\":\"2026-08-01T00:03:00Z\",\"evidence_id\":\"evd_01J00000000000000000000001\",\"media_type\":\"text/plain\",\"node_id\":\"nod_01J00000000000000000000002\",\"producer\":\"producer-synthetic\",\"retention_policy\":\"default\",\"schema_version\":\"psyche.evidence.v1\",\"size\":2048,\"zz_unknown_field\":true}",
+   "name": "evidence/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "evidence"
+   },
+   "input": "{\"size\":2048,\"schema_version\":\"psyche.evidence.v1\",\"retention_policy\":\"default\",\"producer\":\"producer-synthetic\",\"node_id\":\"nod_01J00000000000000000000002\",\"media_type\":\"text/plain\",\"evidence_id\":\"evd_01J00000000000000000000001\",\"created_at\":\"2026-08-01T00:03:00Z\",\"content_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"collection_method\":\"test\",\"attempt_id\":\"att_01J00000000000000000000003\"}",
+   "name": "evidence/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "evidence"
+   },
+   "input": "{\n  \"attempt_id\": \"att_01J00000000000000000000003\",\n  \"collection_method\": \"test\",\n  \"content_digest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"created_at\": \"2026-08-01T00:03:00Z\",\n  \"evidence_id\": \"evd_01J00000000000000000000001\",\n  \"media_type\": \"text/plain\",\n  \"node_id\": \"nod_01J00000000000000000000002\",\n  \"producer\": \"producer-synthetic\",\n  \"retention_policy\": \"default\",\n  \"schema_version\": \"psyche.evidence.v1\",\n  \"size\": 2048\n}\n",
+   "name": "evidence/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"created_at\":\"2026-08-01T00:04:00Z\",\"node_id\":\"nod_01J00000000000000000000002\",\"outcome\":\"allow\",\"policy_revision\":\"policy:synthetic-rev-1\",\"reason_codes\":[\"tests_passed\",\"diff_reviewed\"],\"reviewer_id\":\"reviewer:synthetic-1\",\"schema_version\":\"psyche.verdict.v2\",\"sealed_evidence_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verdict_id\":\"vrd_01J00000000000000000000001\",\"verdict_type\":\"review\"}",
+   "name": "verdict/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"created_at\":\"2026-08-01T00:04:00Z\",\"node_id\":\"nod_01J00000000000000000000002\",\"outcome\":\"allow\",\"policy_revision\":\"policy:synthetic-rev-1\",\"reason_codes\":[\"tests_passed\",\"diff_reviewed\"],\"reviewer_id\":\"reviewer:synthetic-1\",\"schema_version\":\"psyche.verdict.v0\",\"sealed_evidence_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verdict_id\":\"vrd_01J00000000000000000000001\",\"verdict_type\":\"review\"}",
+   "name": "verdict/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "verdict"
+   },
+   "input": "{\"created_at\":\"2026-08-01T00:04:00Z\",\"node_id\":\"nod_01J00000000000000000000002\",\"outcome\":\"allow\",\"policy_revision\":\"policy:synthetic-rev-1\",\"reason_codes\":[\"tests_passed\",\"diff_reviewed\"],\"reviewer_id\":\"reviewer:synthetic-1\",\"schema_version\":\"psyche.verdict.v1\",\"sealed_evidence_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verdict_id\":\"vrd_01J00000000000000000000001\",\"verdict_type\":\"review\",\"zz_unknown_field\":true}",
+   "name": "verdict/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "verdict"
+   },
+   "input": "{\"verdict_type\":\"review\",\"verdict_id\":\"vrd_01J00000000000000000000001\",\"sealed_evidence_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema_version\":\"psyche.verdict.v1\",\"reviewer_id\":\"reviewer:synthetic-1\",\"reason_codes\":[\"tests_passed\",\"diff_reviewed\"],\"policy_revision\":\"policy:synthetic-rev-1\",\"outcome\":\"allow\",\"node_id\":\"nod_01J00000000000000000000002\",\"created_at\":\"2026-08-01T00:04:00Z\"}",
+   "name": "verdict/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "verdict"
+   },
+   "input": "{\n  \"created_at\": \"2026-08-01T00:04:00Z\",\n  \"node_id\": \"nod_01J00000000000000000000002\",\n  \"outcome\": \"allow\",\n  \"policy_revision\": \"policy:synthetic-rev-1\",\n  \"reason_codes\": [\n    \"tests_passed\",\n    \"diff_reviewed\"\n  ],\n  \"reviewer_id\": \"reviewer:synthetic-1\",\n  \"schema_version\": \"psyche.verdict.v1\",\n  \"sealed_evidence_digest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"verdict_id\": \"vrd_01J00000000000000000000001\",\n  \"verdict_type\": \"review\"\n}\n",
+   "name": "verdict/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"ambiguity\":\"adoption_unknown\",\"attempt_id\":\"att_01J00000000000000000000002\",\"fence_token\":\"fence-0001\",\"lease_id\":\"lease:synthetic-1\",\"operator_disposition\":\"reconcile\",\"reconciliation_count\":2,\"recovery_id\":\"rcv_01J00000000000000000000001\",\"schema_version\":\"psyche.recovery.v2\"}",
+   "name": "recovery/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"ambiguity\":\"adoption_unknown\",\"attempt_id\":\"att_01J00000000000000000000002\",\"fence_token\":\"fence-0001\",\"lease_id\":\"lease:synthetic-1\",\"operator_disposition\":\"reconcile\",\"reconciliation_count\":2,\"recovery_id\":\"rcv_01J00000000000000000000001\",\"schema_version\":\"psyche.recovery.v0\"}",
+   "name": "recovery/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "recovery"
+   },
+   "input": "{\"ambiguity\":\"adoption_unknown\",\"attempt_id\":\"att_01J00000000000000000000002\",\"fence_token\":\"fence-0001\",\"lease_id\":\"lease:synthetic-1\",\"operator_disposition\":\"reconcile\",\"reconciliation_count\":2,\"recovery_id\":\"rcv_01J00000000000000000000001\",\"schema_version\":\"psyche.recovery.v1\",\"zz_unknown_field\":true}",
+   "name": "recovery/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "recovery"
+   },
+   "input": "{\"schema_version\":\"psyche.recovery.v1\",\"recovery_id\":\"rcv_01J00000000000000000000001\",\"reconciliation_count\":2,\"operator_disposition\":\"reconcile\",\"lease_id\":\"lease:synthetic-1\",\"fence_token\":\"fence-0001\",\"attempt_id\":\"att_01J00000000000000000000002\",\"ambiguity\":\"adoption_unknown\"}",
+   "name": "recovery/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "recovery"
+   },
+   "input": "{\n  \"ambiguity\": \"adoption_unknown\",\n  \"attempt_id\": \"att_01J00000000000000000000002\",\n  \"fence_token\": \"fence-0001\",\n  \"lease_id\": \"lease:synthetic-1\",\n  \"operator_disposition\": \"reconcile\",\n  \"reconciliation_count\": 2,\n  \"recovery_id\": \"rcv_01J00000000000000000000001\",\n  \"schema_version\": \"psyche.recovery.v1\"\n}\n",
+   "name": "recovery/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"addon_id\":\"adn_01J00000000000000000000001\",\"allowlist_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"contributions_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"package\":\"addon-synthetic\",\"package_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provenance_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"revocation_state\":\"active\",\"schema_version\":\"psyche.addon.v2\",\"version\":\"1.0.0\"}",
+   "name": "addon/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"addon_id\":\"adn_01J00000000000000000000001\",\"allowlist_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"contributions_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"package\":\"addon-synthetic\",\"package_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provenance_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"revocation_state\":\"active\",\"schema_version\":\"psyche.addon.v0\",\"version\":\"1.0.0\"}",
+   "name": "addon/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "addon"
+   },
+   "input": "{\"addon_id\":\"adn_01J00000000000000000000001\",\"allowlist_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"contributions_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"package\":\"addon-synthetic\",\"package_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provenance_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"revocation_state\":\"active\",\"schema_version\":\"psyche.addon.v1\",\"version\":\"1.0.0\",\"zz_unknown_field\":true}",
+   "name": "addon/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "addon"
+   },
+   "input": "{\"version\":\"1.0.0\",\"schema_version\":\"psyche.addon.v1\",\"revocation_state\":\"active\",\"provenance_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"package_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"package\":\"addon-synthetic\",\"contributions_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"allowlist_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"addon_id\":\"adn_01J00000000000000000000001\"}",
+   "name": "addon/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "addon"
+   },
+   "input": "{\n  \"addon_id\": \"adn_01J00000000000000000000001\",\n  \"allowlist_digest\": \"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\n  \"contributions_digest\": \"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\n  \"package\": \"addon-synthetic\",\n  \"package_digest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"provenance_digest\": \"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"revocation_state\": \"active\",\n  \"schema_version\": \"psyche.addon.v1\",\n  \"version\": \"1.0.0\"\n}\n",
+   "name": "addon/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"error\":{\"code\":\"storage_unavailable\",\"correlation_id\":\"corr-synthetic-1\",\"details\":{\"component\":\"store\",\"operation\":\"write\"},\"message\":\"Synthetic storage is temporarily unavailable.\",\"retryable\":true},\"schema_version\":\"psyche.error.v2\"}",
+   "name": "error/unknown_major_v2"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"error\":{\"code\":\"storage_unavailable\",\"correlation_id\":\"corr-synthetic-1\",\"details\":{\"component\":\"store\",\"operation\":\"write\"},\"message\":\"Synthetic storage is temporarily unavailable.\",\"retryable\":true},\"schema_version\":\"psyche.error.v0\"}",
+   "name": "error/downgrade_major_v0"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "error"
+   },
+   "input": "{\"error\":{\"code\":\"storage_unavailable\",\"correlation_id\":\"corr-synthetic-1\",\"details\":{\"component\":\"store\",\"operation\":\"write\"},\"message\":\"Synthetic storage is temporarily unavailable.\",\"retryable\":true},\"schema_version\":\"psyche.error.v1\",\"zz_unknown_field\":true}",
+   "name": "error/unknown_field"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "error"
+   },
+   "input": "{\"schema_version\":\"psyche.error.v1\",\"error\":{\"retryable\":true,\"message\":\"Synthetic storage is temporarily unavailable.\",\"details\":{\"operation\":\"write\",\"component\":\"store\"},\"correlation_id\":\"corr-synthetic-1\",\"code\":\"storage_unavailable\"}}",
+   "name": "error/reordered_keys"
+  },
+  {
+   "expect": {
+    "result": "canonicalizes",
+    "vector": "error"
+   },
+   "input": "{\n  \"error\": {\n    \"code\": \"storage_unavailable\",\n    \"correlation_id\": \"corr-synthetic-1\",\n    \"details\": {\n      \"component\": \"store\",\n      \"operation\": \"write\"\n    },\n    \"message\": \"Synthetic storage is temporarily unavailable.\",\n    \"retryable\": true\n  },\n  \"schema_version\": \"psyche.error.v1\"\n}\n",
+   "name": "error/whitespace"
+  },
+  {
+   "expect": {
+    "code": "unknown_schema",
+    "result": "rejected"
+   },
+   "input": "{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.unregistered_kind.v1\",\"surface_event_id\":\"sev_01J00000000000000000000003\"}",
+   "name": "global/unknown_schema_kind"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 0,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.intent.vx\",\"surface_event_id\":\"sev_01J00000000000000000000003\"}",
+   "name": "global/malformed_major"
+  },
+  {
+   "expect": {
+    "code": "unsupported_major",
+    "found": 2,
+    "result": "rejected",
+    "supported": 1
+   },
+   "input": "{\"account_id\":\"account-synthetic-1\",\"action_class\":\"telegram.reply.send\",\"attempt_id\":\"att_01J00000000000000000000005\",\"created_at\":\"2026-08-01T00:01:00Z\",\"effect\":{\"text\":\"Synthetic review complete.\",\"type\":\"message\"},\"effect_digest\":\"sha256:975916fcbea469519e6e8a59e6da9f45c13845ee1664bc5c19e4ec1f116a8bb2\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000006\",\"graph_id\":\"grf_01J00000000000000000000003\",\"intent_id\":\"int_01J00000000000000000000002\",\"locator\":{\"chat_id\":\"-1000000000001\",\"message_id\":\"42\"},\"node_id\":\"nod_01J00000000000000000000004\",\"project_id\":\"project:synthetic-1\",\"schema_version\":\"psyche.surface_effect.v2\",\"surface_effect_id\":\"sfx_01J00000000000000000000001\"}",
+   "name": "global/excluded_kind_surface_effect_v2"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "schema_version",
+    "result": "rejected",
+    "schema": "error"
+   },
+   "input": "{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"surface_event_id\":\"sev_01J00000000000000000000003\"}",
+   "name": "global/missing_schema_version"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "json",
+    "result": "rejected",
+    "schema": "error"
+   },
+   "input": "{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.intent.v1\",\"surface_event_id\":\"sev_01J00000000000000000000003\",\"schema_version\":\"psyche.intent.v1\"}",
+   "name": "global/duplicate_key"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "json",
+    "result": "rejected",
+    "schema": "error"
+   },
+   "input": "{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.intent.v1\",\"surface_event_id\":\"sev_01J00000000000000000000003\"}{}",
+   "name": "global/trailing_data"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "json",
+    "result": "rejected",
+    "schema": "error"
+   },
+   "input": "{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.intent.v1\",\"surface_event_id\":\"sev_01J00000000000000000000003\"",
+   "name": "global/truncated"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "schema_version",
+    "result": "rejected",
+    "schema": "error"
+   },
+   "input": "[{\"constraints\":{\"allowed_actions\":[\"read\",\"test\"],\"limits\":{\"dry_run\":true,\"escalation\":null,\"max_attempts\":2}},\"created_at\":\"2026-08-01T00:00:00Z\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"familiar_snapshot_id\":\"ids_01J00000000000000000000002\",\"intent_id\":\"int_01J00000000000000000000001\",\"principal_id\":\"principal:synthetic-1\",\"project_id\":\"project:synthetic-1\",\"requested_outcome\":\"Review and verify the synthetic change.\",\"required_evidence\":[\"tests\",\"diff_review\"],\"schema_version\":\"psyche.intent.v1\",\"surface_event_id\":\"sev_01J00000000000000000000003\"}]",
+   "name": "global/not_an_object"
+  },
+  {
+   "expect": {
+    "code": "unknown_enum_value",
+    "field": "state",
+    "result": "rejected",
+    "schema": "graph"
+   },
+   "input": "{\"graph_id\":\"grf_01J00000000000000000000001\",\"owner_principal_id\":\"principal:synthetic-1\",\"policy_revision\":\"policy:synthetic-rev-1\",\"root_intent_id\":\"int_01J00000000000000000000002\",\"schema_version\":\"psyche.graph.v1\",\"state\":\"widened_state\",\"version\":4}",
+   "name": "global/unknown_enum_value"
+  },
+  {
+   "expect": {
+    "code": "invalid_shape",
+    "field": "document",
+    "result": "rejected",
+    "schema": "error"
+   },
+   "input": "{\"declaration_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"familiar_id\":\"familiar:synthetic-1\",\"identity_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"identity_file_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"principal_id\":\"principal:synthetic-1\",\"provenance\":{\"familiar_home_id\":\"home:synthetic-1\",\"resolver_version\":\"resolver-synthetic-1\"},\"resolved_at\":\"2026-08-01T00:00:00Z\",\"revision\":9007199254740993,\"role_skill_digest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"schema_version\":\"psyche.identity_snapshot.v1\",\"snapshot_id\":\"ids_01J00000000000000000000001\",\"soul_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}",
+   "name": "global/unsafe_integer"
+  }
+ ],
+ "format": "psyche.experimental.first-build-profile.denials.v1"
+}
