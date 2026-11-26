@@ -8,13 +8,17 @@
 //! allowed only when it is declared [`Expect::ParserOnly`] (or
 //! [`Expect::ParserDependent`]) and listed in the kind's parser-only table,
 //! because the typed decoder, not the schema, is the authority on validity.
+//! The one exception runs the other way: [`Expect::DecoderOnly`] pins a
+//! non-canonical encoding the decoder takes from serde and the schema
+//! refuses. Each is listed in the kind's decoder-only table, and
+//! [`Kind::check_non_canonical_forms`] searches for any that is not.
 //!
 //! Nothing here reads the network or any file outside the repository: the
 //! validator's URL loader refuses every load, and the 2020-12 metaschema is
 //! compiled into the validator.
 #![allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -45,6 +49,14 @@ pub(crate) enum Expect {
     /// bytes, but RFC 8259 leaves them to the implementation and common
     /// parsers accept some of them. Named alongside the parser-only cases.
     ParserDependent(ContractError),
+    /// The decoder accepts and the schema rejects: a non-canonical encoding
+    /// that serde's `Value` deserializer accepts and the decoder does not
+    /// refuse, a unit enum variant as a one-member object (`{"running":
+    /// null}`) or a closed object as a positional array. The schema
+    /// deliberately does not describe either form. Each case is named
+    /// `<path>_as_single_key_object` or `<path>_as_positional_array` and
+    /// listed in the kind's decoder-only table. A #11 finding, not a rule.
+    DecoderOnly,
 }
 
 pub(crate) struct Case {
@@ -317,6 +329,21 @@ impl Kind {
             .as_str()
             .unwrap_or_else(|| panic!("{} is not a string", path_name(path)))
             .to_owned()
+    }
+
+    /// The vector with the string member at `path` as the one-member object
+    /// `{value: null}`, serde's map encoding of a unit enum variant.
+    pub(crate) fn as_single_key_object(&self, path: &[&str]) -> Vec<u8> {
+        self.with_at(path, json!({ self.string_at(path): null }))
+    }
+
+    /// The vector with the object member at `path` as an array of its
+    /// values in `order`, serde's sequence encoding of a struct. `order`
+    /// must name every member once.
+    pub(crate) fn as_positional_array(&self, path: &[&str], order: &[&str]) -> Vec<u8> {
+        let mut map = self.vector_object();
+        let object = path_at(&mut map, path).clone();
+        self.with_at(path, positional(&object, order))
     }
 
     // --- case generators ------------------------------------------------
@@ -885,6 +912,7 @@ impl Kind {
                     decoded.as_ref().err() == Some(error)
                         && serde_json::from_slice::<Value>(&case.bytes).is_err()
                 }
+                Expect::DecoderOnly => decoded.is_ok() && !schema,
             };
             if !ok {
                 failures.push(format!(
@@ -903,10 +931,18 @@ impl Kind {
 
     /// Re-encoding through the typed record is what a producer emits, so the
     /// canonical form of every accepted case must pass the schema as well.
+    /// That includes the decoder-only cases: re-encoding turns each back
+    /// into the form the schema describes.
     pub(crate) fn check_canonical_forms(&self, corpus: &[Case]) {
-        for case in corpus.iter().filter(|c| c.expect == Expect::Accept) {
+        for case in corpus
+            .iter()
+            .filter(|c| matches!(c.expect, Expect::Accept | Expect::DecoderOnly))
+        {
             let decoded = decode_document(&case.bytes).unwrap();
             let canonical = canonical_bytes(&decoded).unwrap();
+            if case.expect == Expect::DecoderOnly {
+                assert_ne!(canonical, case.bytes, "{}: already canonical", case.name);
+            }
             assert!(
                 self.schema_accepts(&canonical),
                 "{}: canonical form rejected",
@@ -923,6 +959,20 @@ impl Kind {
 
     pub(crate) fn check_documented(&self, corpus: &[Case]) {
         let doc = String::from_utf8(repo_file(self.doc)).unwrap();
+        let decoder_only: BTreeSet<&str> = corpus
+            .iter()
+            .filter(|c| c.expect == Expect::DecoderOnly)
+            .map(|c| c.name)
+            .collect();
+        let section = format!("decoder-only-cases:{}", self.name);
+        let listed: BTreeSet<&str> = table_section(&doc, &section)
+            .map(|body| table_names(body, &section))
+            .unwrap_or_default();
+        assert_eq!(
+            listed, decoder_only,
+            "{}: the documented decoder-only cases differ from the corpus",
+            self.name
+        );
         let parser_only: BTreeSet<&str> = corpus
             .iter()
             .filter(|c| matches!(c.expect, Expect::ParserOnly(_) | Expect::ParserDependent(_)))
@@ -931,16 +981,9 @@ impl Kind {
         assert!(!parser_only.is_empty());
         let mut listed = BTreeSet::new();
         for section in self.doc_sections {
-            let body = doc
-                .split(&format!("<!-- {section}:start -->"))
-                .nth(1)
-                .and_then(|rest| rest.split(&format!("<!-- {section}:end -->")).next())
+            let body = table_section(&doc, section)
                 .unwrap_or_else(|| panic!("{} lacks the {section} markers", self.doc));
-            for name in body
-                .lines()
-                .filter_map(|line| line.strip_prefix("| `"))
-                .filter_map(|rest| rest.split('`').next())
-            {
+            for name in table_names(body, section) {
                 assert!(listed.insert(name), "{section}: `{name}` listed twice");
             }
         }
@@ -967,19 +1010,52 @@ impl Kind {
     }
 
     /// Exhaustive single-character substitutions in pattern-checked string
-    /// members. Where the schema states the decoder's whole rule (`exact`),
-    /// the verdicts must be equal. Otherwise the schema must accept whatever
-    /// the decoder accepts. Returns the number of documents checked.
+    /// members of the vector. Where the schema states the decoder's whole
+    /// rule (`exact`), the verdicts must be equal. Otherwise the schema must
+    /// accept whatever the decoder accepts. Returns the number of documents
+    /// checked.
     pub(crate) fn sweep(&self, fields: &[(&[&str], bool)]) -> usize {
+        let groups: Vec<(Vec<&[&str]>, bool)> = fields
+            .iter()
+            .map(|(path, exact)| (vec![*path], *exact))
+            .collect();
+        self.sweep_groups(&self.vector_object(), &groups)
+    }
+
+    /// The same sweep over `base`, where each group names members the
+    /// decoder binds by equality: the substitution is applied to all of them
+    /// at once, at each position of the first. A group that is not `exact`
+    /// must have at least one decoder-accepted substitution, or it checks
+    /// nothing.
+    pub(crate) fn sweep_groups(
+        &self,
+        base: &Map<String, Value>,
+        groups: &[(Vec<&[&str]>, bool)],
+    ) -> usize {
         let replacements: Vec<char> = (0u8..=0x7f)
             .map(char::from)
             .chain(['\u{e9}', '\u{0662}', '\u{ff10}', '\u{1f600}'])
             .collect();
         let mut unsound = Vec::new();
         let mut inexact = Vec::new();
+        let mut vacuous = Vec::new();
         let mut checked = 0usize;
-        for (path, exact) in fields {
-            let chars: Vec<char> = self.string_at(path).chars().collect();
+        for (paths, exact) in groups {
+            let label = paths
+                .iter()
+                .map(|p| path_name(p))
+                .collect::<Vec<_>>()
+                .join("+");
+            let original = {
+                let mut map = base.clone();
+                let (last, parent) = paths[0].split_last().unwrap();
+                path_at(&mut map, parent)[*last]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{label} is not a string"))
+                    .to_owned()
+            };
+            let chars: Vec<char> = original.chars().collect();
+            let mut accepted = 0usize;
             for position in 0..chars.len() {
                 for &replacement in &replacements {
                     if replacement == chars[position] {
@@ -988,19 +1064,33 @@ impl Kind {
                     let mut mutated = chars.clone();
                     mutated[position] = replacement;
                     let value: String = mutated.into_iter().collect();
-                    let bytes = self.with_at(path, json!(value));
+                    let mut map = base.clone();
+                    for path in paths {
+                        let (last, parent) = path.split_last().unwrap();
+                        let target = path_at(&mut map, parent);
+                        assert_eq!(
+                            target[*last].as_str(),
+                            Some(original.as_str()),
+                            "{label}: bound members differ"
+                        );
+                        target.insert((*last).to_owned(), json!(value));
+                    }
+                    let bytes = Self::doc_of(&map);
                     let decoder = decode_document(&bytes).is_ok();
                     let schema = self.schema_accepts(&bytes);
                     checked += 1;
+                    accepted += usize::from(decoder);
                     if decoder && !schema {
-                        unsound.push(format!("{}={value:?}", path_name(path)));
+                        unsound.push(format!("{label}={value:?}"));
                     } else if *exact && decoder != schema {
                         inexact.push(format!(
-                            "{}={value:?} decoder {decoder} schema {schema}",
-                            path_name(path)
+                            "{label}={value:?} decoder {decoder} schema {schema}"
                         ));
                     }
                 }
+            }
+            if accepted == 0 && !exact {
+                vacuous.push(label);
             }
         }
         assert!(
@@ -1015,8 +1105,175 @@ impl Kind {
             self.name,
             inexact.join("\n")
         );
+        assert!(
+            vacuous.is_empty(),
+            "{}: the decoder refuses every substitution, so these check nothing: {}",
+            self.name,
+            vacuous.join(", ")
+        );
         checked
     }
+
+    /// Searches every accepted case, and the vector, for the two
+    /// non-canonical encodings serde's `Value` deserializer accepts: each
+    /// string member rewritten as a one-member object `{value: null}`, and
+    /// each object member rewritten as an array of its values in every order.
+    /// The `(path, form)` pairs the decoder accepts and the schema rejects
+    /// must be exactly the corpus's [`Expect::DecoderOnly`] cases. Objects
+    /// with more than eight members are not permuted; each such object must
+    /// be open in the schema, where the array form is not a struct encoding.
+    pub(crate) fn check_non_canonical_forms(&self, corpus: &[Case]) {
+        let mut bases: Vec<Value> = vec![Value::Object(self.vector_object())];
+        bases.extend(
+            corpus
+                .iter()
+                .filter(|c| c.expect == Expect::Accept)
+                .filter_map(|c| serde_json::from_slice::<Value>(&c.bytes).ok()),
+        );
+        let schema = self.schema_value();
+        let mut found: BTreeMap<String, String> = BTreeMap::new();
+        let mut tried_strings = BTreeSet::new();
+        let mut tried_objects = BTreeSet::new();
+        for base in &bases {
+            let mut leaves = Vec::new();
+            collect_members(base, &mut Vec::new(), &mut leaves);
+            for (path, value) in leaves {
+                let name = path.join(".");
+                match &value {
+                    Value::String(s) if tried_strings.insert((name.clone(), s.clone())) => {
+                        let bytes = replaced(base, &path, json!({ s.as_str(): null }));
+                        if decode_document(&bytes).is_ok() && !self.schema_accepts(&bytes) {
+                            found
+                                .entry(format!("{name}_as_single_key_object"))
+                                .or_insert_with(|| format!("{{{s:?}: null}}"));
+                        }
+                    }
+                    Value::Object(object) if tried_objects.insert(name.clone()) => {
+                        if object.len() > 8 {
+                            let sub = lookup_subschema(&schema, &path);
+                            assert!(
+                                sub.is_none_or(|sub| resolve(&schema, sub)["additionalProperties"]
+                                    != json!(false)),
+                                "{name}: a closed object with more than eight members"
+                            );
+                            continue;
+                        }
+                        let keys: Vec<&String> = object.keys().collect();
+                        for order in permutations(keys.len()) {
+                            let array: Vec<Value> =
+                                order.iter().map(|&k| object[keys[k]].clone()).collect();
+                            let bytes = replaced(base, &path, Value::Array(array));
+                            if decode_document(&bytes).is_ok() && !self.schema_accepts(&bytes) {
+                                let names: Vec<&str> =
+                                    order.iter().map(|&k| keys[k].as_str()).collect();
+                                found
+                                    .entry(format!("{name}_as_positional_array"))
+                                    .or_insert_with(|| format!("[{}]", names.join(", ")));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let declared: BTreeSet<String> = corpus
+            .iter()
+            .filter(|c| c.expect == Expect::DecoderOnly)
+            .map(|c| c.name.to_owned())
+            .collect();
+        let found_names: BTreeSet<String> = found.keys().cloned().collect();
+        assert_eq!(
+            found_names, declared,
+            "{}: decoder-accepted, schema-rejected forms vs declared cases; found {found:?}",
+            self.name
+        );
+    }
+}
+
+/// Every member below the top level, by key path, with its value. Arrays
+/// are not entered: no kind has a closed object inside an array.
+fn collect_members(value: &Value, path: &mut Vec<String>, out: &mut Vec<(Vec<String>, Value)>) {
+    if let Value::Object(object) = value {
+        for (key, member) in object {
+            path.push(key.clone());
+            if path.len() > 1 || key != "schema_version" {
+                out.push((path.clone(), member.clone()));
+            }
+            collect_members(member, path, out);
+            path.pop();
+        }
+    }
+}
+
+fn replaced(base: &Value, path: &[String], value: Value) -> Vec<u8> {
+    let mut document = base.clone();
+    let mut target = &mut document;
+    for segment in path {
+        target = target.get_mut(segment.as_str()).unwrap();
+    }
+    *target = value;
+    serde_json::to_vec(&document).unwrap()
+}
+
+fn lookup_subschema<'a>(root: &'a Value, path: &[String]) -> Option<&'a Value> {
+    let mut current = root;
+    for segment in path {
+        current = resolve(root, current)
+            .get("properties")?
+            .get(segment.as_str())?;
+    }
+    Some(current)
+}
+
+/// Every ordering of `0..n`, by Heap's algorithm.
+fn permutations(n: usize) -> Vec<Vec<usize>> {
+    let mut items: Vec<usize> = (0..n).collect();
+    let mut out = vec![items.clone()];
+    let mut counters = vec![0usize; n];
+    let mut i = 0;
+    while i < n {
+        if counters[i] < i {
+            if i % 2 == 0 {
+                items.swap(0, i);
+            } else {
+                items.swap(counters[i], i);
+            }
+            out.push(items.clone());
+            counters[i] += 1;
+            i = 0;
+        } else {
+            counters[i] = 0;
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `object`'s values in `order`, which must name every member once.
+pub(crate) fn positional(object: &Map<String, Value>, order: &[&str]) -> Value {
+    let named: BTreeSet<&str> = order.iter().copied().collect();
+    let members: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+    assert_eq!(named, members, "the order must name every member once");
+    assert_eq!(named.len(), order.len(), "the order names a member twice");
+    Value::Array(order.iter().map(|k| object[*k].clone()).collect())
+}
+
+fn table_section<'a>(doc: &'a str, section: &str) -> Option<&'a str> {
+    doc.split(&format!("<!-- {section}:start -->"))
+        .nth(1)
+        .and_then(|rest| rest.split(&format!("<!-- {section}:end -->")).next())
+}
+
+fn table_names<'a>(body: &'a str, section: &str) -> BTreeSet<&'a str> {
+    let mut names = BTreeSet::new();
+    for name in body
+        .lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|rest| rest.split('`').next())
+    {
+        assert!(names.insert(name), "{section}: `{name}` listed twice");
+    }
+    names
 }
 
 fn check_object_members(

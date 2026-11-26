@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:opencoven:psyche:schema:psyche.identity_snapshot.v1",
   "title": "Psyche identity snapshot v1 (experimental, unpublished)",
-  "description": "Structural schema for one psyche.identity_snapshot.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity.",
+  "description": "Structural schema for one psyche.identity_snapshot.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts, except the decoder-only encodings listed in docs/protocol/RECORD-SCHEMAS.md (a unit enum variant as a one-member object, a closed object as a positional array), which it rejects on purpose. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity.",
   "type": "object",
   "additionalProperties": false,
   "required": [

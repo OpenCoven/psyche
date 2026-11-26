@@ -6,7 +6,7 @@
 use psyche_core::contracts::{ContractError, RecordKind, SchemaKind};
 use serde_json::{Map, Value, json};
 
-use crate::schema_parity::{Case, Expect, Kind, ULID, id, replace_once};
+use crate::schema_parity::{Case, Expect, Kind, ULID, id, positional, replace_once};
 
 const KIND: Kind = Kind {
     name: "execution_binding",
@@ -621,6 +621,83 @@ fn corpus() -> Vec<Case> {
             Reject(MISMATCH),
         ));
     }
+    let mut unknown = in_state("termination_unknown");
+    let evidence = unknown[UNRESOLVED].as_object().unwrap().clone();
+    unknown.insert(
+        UNRESOLVED.into(),
+        positional(
+            &evidence,
+            &[
+                "disposition_id",
+                "termination_request_id",
+                "session_id",
+                "execution_request_id",
+                "execution_request_digest",
+                "reason_code",
+                "recorded_at",
+            ],
+        ),
+    );
+    cases.extend([
+        Case::new(
+            "adoption_state_as_single_key_object",
+            KIND.as_single_key_object(&["adoption_state"]),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "cancellation_state_as_single_key_object",
+            KIND.as_single_key_object(&["cancellation_state"]),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "cancellation_acknowledgement.kind_as_single_key_object",
+            KIND.as_single_key_object(&[ACK, "kind"]),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "termination_request_as_positional_array",
+            KIND.as_positional_array(
+                &["termination_request"],
+                &["termination_request_id", "created_at", "valid_until"],
+            ),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "cancellation_acknowledgement_as_positional_array",
+            KIND.as_positional_array(
+                &[ACK],
+                &[
+                    "acknowledgement_id",
+                    "termination_request_id",
+                    "session_id",
+                    "execution_request_id",
+                    "execution_request_digest",
+                    "kind",
+                    "authority_evidence_digest",
+                    "acknowledged_at",
+                ],
+            ),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "cancellation_unresolved_as_positional_array",
+            doc(&unknown),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "cancellation_state_unknown_as_single_key_object",
+            KIND.with("cancellation_state", json!({"paused": null})),
+            Reject(ContractError::InvalidShape {
+                schema: SchemaKind::ExecutionBinding,
+                field: "document",
+            }),
+        ),
+        Case::new(
+            "acknowledgement_kind_unknown_as_single_key_object",
+            KIND.with_at(&[ACK, "kind"], json!({"revoked": null})),
+            Reject(MISMATCH),
+        ),
+    ]);
     cases
 }
 
@@ -630,18 +707,13 @@ parity_tests!(
         (["familiar_snapshot_id"], true),
         (["previous_revision_digest"], true),
         ([ACK, "authority_evidence_digest"], true),
-        (["request_id"], false),
-        (["request_digest"], false),
-        (["termination_request", "termination_request_id"], false),
-        ([ACK, "execution_request_id"], false),
-        ([ACK, "execution_request_digest"], false),
         (["revision_created_at"], false),
         (["request_created_at"], false),
         (["request_valid_until"], false),
         (["termination_request", "created_at"], false),
         ([ACK, "acknowledged_at"], false),
     ],
-    min_sweep: 60_000
+    min_sweep: 35_000
 );
 
 #[test]
@@ -686,4 +758,54 @@ fn the_acknowledgement_kind_enum_matches_the_decoder() {
         &[ACK, "kind"],
         &["terminated", "already_authoritatively_terminal"],
     );
+}
+
+/// Members the decoder binds by equality refuse every substitution made to
+/// one of them alone, so they are swept together: the same substitution at
+/// every bound member. The acknowledged vector and a termination-unknown
+/// binding each cover their own evidence member.
+#[test]
+fn bound_members_sweep_together() {
+    const TERMINATION_ID: &[&str] = &["termination_request", "termination_request_id"];
+    let acknowledged = KIND.vector_object();
+    let checked = KIND.sweep_groups(
+        &acknowledged,
+        &[
+            (vec![&["request_id"], &[ACK, "execution_request_id"]], false),
+            (
+                vec![&["request_digest"], &[ACK, "execution_request_digest"]],
+                false,
+            ),
+            (
+                vec![TERMINATION_ID, &[ACK, "termination_request_id"]],
+                false,
+            ),
+            (vec![&["termination_reason_code"]], true),
+        ],
+    );
+    let unknown = in_state("termination_unknown");
+    let checked = checked
+        + KIND.sweep_groups(
+            &unknown,
+            &[
+                (
+                    vec![&["request_id"], &[UNRESOLVED, "execution_request_id"]],
+                    false,
+                ),
+                (
+                    vec![
+                        &["request_digest"],
+                        &[UNRESOLVED, "execution_request_digest"],
+                    ],
+                    false,
+                ),
+                (
+                    vec![TERMINATION_ID, &[UNRESOLVED, "termination_request_id"]],
+                    false,
+                ),
+                (vec![&[UNRESOLVED, "reason_code"]], true),
+                (vec![&[UNRESOLVED, "recorded_at"]], false),
+            ],
+        );
+    assert!(checked >= 40_000, "sweep too small: {checked}");
 }

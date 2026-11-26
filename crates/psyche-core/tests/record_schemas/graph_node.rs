@@ -66,6 +66,16 @@ fn corpus() -> Vec<Case> {
     cases.extend(KIND.integer_cases(&["version"], 1, 9_007_199_254_740_991, &document));
     cases.extend([
         Case::new(
+            "state_as_single_key_object",
+            KIND.as_single_key_object(&["state"]),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "state_unknown_as_single_key_object",
+            KIND.with("state", json!({"done": null})),
+            Reject(document.clone()),
+        ),
+        Case::new(
             "delegation_id_null",
             KIND.with("delegation_id", Value::Null),
             Accept,

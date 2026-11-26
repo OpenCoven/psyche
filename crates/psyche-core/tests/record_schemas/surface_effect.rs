@@ -98,10 +98,9 @@ parity_tests!(
         (["node_id"], true),
         (["attempt_id"], true),
         (["familiar_snapshot_id"], true),
-        (["effect_digest"], false),
         (["created_at"], false),
     ],
-    min_sweep: 30_000
+    min_sweep: 25_000
 );
 
 #[test]

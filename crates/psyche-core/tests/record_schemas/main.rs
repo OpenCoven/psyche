@@ -53,6 +53,11 @@ macro_rules! parity_tests {
         }
 
         #[test]
+        fn every_non_canonical_form_the_decoder_accepts_is_declared() {
+            KIND.check_non_canonical_forms(&corpus());
+        }
+
+        #[test]
         fn single_character_sweeps_never_reject_what_the_decoder_accepts() {
             let checked = KIND.sweep(&[$((&$path[..], $exact)),*]);
             assert!(checked >= $min, "sweep too small: {checked}");
@@ -71,6 +76,7 @@ mod execution_binding;
 mod graph;
 mod graph_node;
 mod identity_snapshot;
+mod intent_forms;
 mod recovery;
 mod surface_effect;
 mod surface_event;

@@ -196,6 +196,14 @@ fn corpus() -> Vec<Case> {
             ParserOnly(crate::schema_parity::json_error()),
         ),
     ]);
+    cases.push(Case::new(
+        "error_as_positional_array",
+        KIND.as_positional_array(
+            &["error"],
+            &["code", "correlation_id", "retryable", "message", "details"],
+        ),
+        Expect::DecoderOnly,
+    ));
     cases
 }
 

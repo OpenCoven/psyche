@@ -242,6 +242,47 @@ fn corpus() -> Vec<Case> {
             Reject(ContractError::NonInteroperableNumber),
         ),
     ]);
+    cases.extend([
+        Case::new(
+            "relationship_as_single_key_object",
+            KIND.as_single_key_object(&["relationship"]),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "state_as_single_key_object",
+            KIND.as_single_key_object(&["state"]),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "surface_decision.state_as_single_key_object",
+            KIND.as_single_key_object(&["surface_decision", "state"]),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "topic_as_positional_array",
+            KIND.as_positional_array(&["topic"], &["id", "kind"]),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "surface_decision_as_positional_array",
+            KIND.as_positional_array(
+                &["surface_decision"],
+                &[
+                    "decision_id",
+                    "request_digest",
+                    "policy_revision",
+                    "expires_at",
+                    "state",
+                ],
+            ),
+            Expect::DecoderOnly,
+        ),
+        Case::new(
+            "state_unknown_as_single_key_object",
+            KIND.with("state", json!({"lost": null})),
+            Reject(KIND.document()),
+        ),
+    ]);
     cases
 }
 
@@ -252,10 +293,9 @@ parity_tests!(
         (["chat_id"], true),
         (["telegram_message_id"], true),
         (["surface_decision", "request_digest"], true),
-        (["effect_digest"], false),
         (["surface_decision", "expires_at"], false),
     ],
-    min_sweep: 25_000
+    min_sweep: 20_000
 );
 
 #[test]

@@ -55,6 +55,11 @@ fn corpus() -> Vec<Case> {
             Reject(document.clone()),
         ),
     ]);
+    cases.push(Case::new(
+        "provenance_as_positional_array",
+        KIND.as_positional_array(&["provenance"], &["familiar_home_id", "resolver_version"]),
+        Expect::DecoderOnly,
+    ));
     cases
 }
 

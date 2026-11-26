@@ -2,7 +2,7 @@
 
 **Status:** experimental and unpublished, under [#11](https://github.com/OpenCoven/psyche/issues/11). This is not a release, not a stable contract and not a selection of the publication surface. [#60](https://github.com/OpenCoven/psyche/pull/60) proposes which kinds are `stable-v1` targets, and that selection still belongs to the #11 owner.
 
-Each schema in [`schemas/`](../../schemas) describes the documents of one kind that `psyche_core::contracts::decode_document` accepts today, in Draft 2020-12, with `$id` `urn:opencoven:psyche:schema:psyche.<kind>.v1`. **The typed decoder is the authority on validity.** Each schema is meant to accept every document the decoder accepts. It also accepts the parser-only cases below, which only the decoder can refuse. A consumer that validates with a schema alone must therefore treat a pass as "structurally plausible", never as "valid". The intent schema came first and has its own page, [INTENT-SCHEMA.md](INTENT-SCHEMA.md). This page covers the other kinds in the #50 vector set.
+Each schema in [`schemas/`](../../schemas) describes the documents of one kind that `psyche_core::contracts::decode_document` accepts today, in Draft 2020-12, with `$id` `urn:opencoven:psyche:schema:psyche.<kind>.v1`. **The typed decoder is the authority on validity.** Each schema accepts every document the decoder accepts, in the encoding the decoder itself emits, and also accepts the parser-only cases below, which only the decoder can refuse. The one exception runs the other way: the decoder also takes two non-canonical encodings from serde, which six schemas reject on purpose. These are the [decoder-only cases](#decoder-only-cases). A consumer that validates with a schema alone must therefore treat a pass as "structurally plausible", never as "valid". The intent schema came first and has its own page, [INTENT-SCHEMA.md](INTENT-SCHEMA.md). This page covers the other kinds in the #50 vector set.
 
 ## Verifying
 
@@ -19,10 +19,11 @@ Every kind runs the same tests, in its own module of `crates/psyche-core/tests/r
 | `the_schema_compiles_offline_against_draft_2020_12` | The schema is a valid 2020-12 document and resolves without loading anything. |
 | `the_schema_names_exactly_the_typed_members` | `properties` equals the members of the typed record's canonical encoding, `required` is every member except the optional ones, unknown members are refused and `schema_version` is the exact constant. Closed nested objects have their own `..._members` test. This is the drift guard for a hand-written file. |
 | `the_pinned_vector_keeps_its_bytes_and_digest_through_both` | The vector matches its #50 digest and checksum line, decodes as its kind, re-encodes to identical canonical bytes and passes the schema. |
-| `schema_and_decoder_agree_on_the_corpus` | Positive cases pass both. Rejection cases fail both, with the decoder's error pinned. Parser-only cases fail only the decoder. Parser-dependent cases fail the decoder and this test's JSON parser. |
-| `the_canonical_form_of_every_accepted_case_passes_both` | The canonical re-encoding of every accepted case passes the schema and is a fixed point of decode and encode. |
-| `single_character_sweeps_never_reject_what_the_decoder_accepts` | Every single-character substitution, drawn from all 128 ASCII characters and four non-ASCII ones, at every position of the kind's identifiers, digests and timestamps. Where the schema states the decoder's whole rule the two verdicts must be equal. Elsewhere the schema must accept whatever the decoder accepts. |
-| `every_parser_only_case_is_documented` | The shared table and the kind's table below together list exactly the kind's parser-only and parser-dependent cases. |
+| `schema_and_decoder_agree_on_the_corpus` | Positive cases pass both. Rejection cases fail both, with the decoder's error pinned. Parser-only cases fail only the decoder. Parser-dependent cases fail the decoder and this test's JSON parser. Decoder-only cases pass only the decoder. |
+| `the_canonical_form_of_every_accepted_case_passes_both` | The canonical re-encoding of every accepted and decoder-only case passes the schema and is a fixed point of decode and encode. A decoder-only case re-encodes to different bytes. |
+| `single_character_sweeps_never_reject_what_the_decoder_accepts` | Every single-character substitution, drawn from all 128 ASCII characters and four non-ASCII ones, at every position of the kind's identifiers, digests and timestamps. Where the schema states the decoder's whole rule the two verdicts must be equal. Elsewhere the schema must accept whatever the decoder accepts, and the decoder must accept at least one substitution, or the sweep would check nothing. Members the decoder binds by equality are swept together, the same substitution at each (`bound_members_sweep_together` in the execution binding). |
+| `every_parser_only_case_is_documented` | The shared table and the kind's table below together list exactly the kind's parser-only and parser-dependent cases, and the kind's decoder-only table, where it has one, lists exactly its decoder-only cases. |
+| `every_non_canonical_form_the_decoder_accepts_is_declared` | Rewrites every string member of the vector and of every accepted case as a one-member object, and every object member of up to eight members as an array of its values in every order. The forms the decoder accepts and the schema rejects are exactly the kind's decoder-only cases. An object with more members must be open in the schema. |
 | `every_rejection_case_mutates_the_vector` | No rejection case is accidentally a byte-for-byte copy of the vector. |
 
 Kinds with a closed enum also run `..._enum` tests: the schema's `enum` equals the decoder's vocabulary, no listed value is refused as unknown, and the schema accepts every document the decoder accepts with each value.
@@ -59,6 +60,15 @@ Three rules recur in the kind tables:
 - **Byte bounds.** The decoder bounds UTF-8 bytes. `maxLength` counts code points, so the two agree only for ASCII. A byte bound always implies the code-point bound, so a schema never rejects a document for length that the decoder accepts. Each bounded member has a `..._multibyte_over_<n>_bytes` case.
 - **Integer spelling.** The decoder reads a typed integer member only from an integer literal. JSON Schema calls `3.0` and `3e0` integers, so the `..._integral_fraction` and `..._exponent` cases are parser-only. Free-form values accept both spellings.
 - **Calendar.** `..._impossible_date` (`2026-02-30`) and `..._leap_second_off_boundary` (a second of `60` where the `time` crate places no leap second).
+
+## Decoder-only cases
+
+The schemas describe each document in the encoding the decoder emits. `decode_document` also accepts two other encodings, which `serde_json::Value`'s deserializer allows and the decoder does not refuse:
+
+- **A unit enum variant as a one-member object.** `"state": {"running": null}` decodes as `"state": "running"`. Enum inspection looks only at strings, so this form also skips it. An unknown value in this form, such as `{"paused": null}`, is refused later, as a shape error and not as `UnknownEnumValue` (`..._unknown_as_single_key_object`).
+- **A closed object as a positional array.** `"provenance": ["home:synthetic-1", "resolver-synthetic-1"]` decodes as `familiar_home_id` and `resolver_version`, in the order the Rust type declares its fields. Where two members share a type, the array decodes in either order, with the values bound to whichever member sits at that position.
+
+The six affected schemas reject both forms on purpose. Describing them would publish the Rust field order and serde's enum encoding as part of the contract. It would also mean rewriting each `if`/`then` condition, which compares a state with `const`: `{"not_requested": null}` takes the `else` branch. The canonical re-encoding of every such case is the ordinary form, which passes the schema. Each affected kind lists its cases in a decoder-only table, and `every_non_canonical_form_the_decoder_accepts_is_declared` searches every member of every accepted case for any form the decoder accepts that is not listed. The same search over the intent vector finds none (`intent_has_no_decoder_only_form`), so [INTENT-SCHEMA.md](INTENT-SCHEMA.md) needs no such table. Finding 9 below records the consequences for the #11 owner.
 
 ## Kinds
 
@@ -99,7 +109,16 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `resolved_at_leap_second_off_boundary` | `InvalidShape { IdentitySnapshot, "document" }` | Calendar. |
 <!-- parser-only-cases:identity_snapshot:end -->
 
+[Decoder-only cases](#decoder-only-cases): the decoder accepts these and the schema rejects them.
+
+<!-- decoder-only-cases:identity_snapshot:start -->
+| Case | Form |
+|---|---|
+| `provenance_as_positional_array` | `[familiar_home_id, resolver_version]` |
+<!-- decoder-only-cases:identity_snapshot:end -->
+
 **Decoder behaviour recorded:** every rejection after the version probe, including a wrong-kind `snapshot_id` prefix, surfaces as `InvalidShape { IdentitySnapshot, "document" }`. As for intent, `validate()` runs inside `Deserialize` and its specific error is lost. The digests are not recomputed.
+
 ## `surface_event`
 
 **States:** `surface_event_id` with `sev_`. `adapter_id` and `account_id` are 1–256 long. `actor`, `locator` and `content` are objects, possibly empty, whose keys are unbounded and whose values are free-form. `adapter_event_digest` and `received_at` use the shared rules.
@@ -118,6 +137,7 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 <!-- parser-only-cases:surface_event:end -->
 
 **Decoder behaviour recorded:** every rejection after the version probe surfaces as `InvalidShape { SurfaceEvent, "document" }`. The free-form members accept `-0`, fractions and keys of any length, including the empty key.
+
 ## `execution_binding`
 
 **#11 minimum.** This kind carries three facts from the minimum consumer profile #11 lists for closing: the `fenced` adoption state (fencing, held row 11 in #60), and `cancellation_acknowledgement` and `cancellation_unresolved` (cancellation acknowledgement and unresolved outcomes, deferred row 12). The schema describes their current shape only and gives them no published meaning.
@@ -125,7 +145,7 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 **States:** `attempt_id` with `att_`, `familiar_snapshot_id` with `ids_`, and `request_id` and every evidence request ID with `req_`. `project_id`, `coven_contract_version`, `coven_session_id`, `event_cursor`, `terminal_state` and the evidence `acknowledgement_id`, `disposition_id` and `session_id` are 1–255 long. `revision` is 1 to 2^53−1. `revision_created_at` must be UTC (`Z`, `z`, `+00:00` or `-00:00`). Reason codes are lowercase ASCII words joined by single underscores, starting with a letter, at most 128 long. `authority_evidence_digest` may not be all zeros. The three evidence objects are closed. Through `allOf` conditions, the schema also states:
 
 - `revision` 1 has no `previous_revision_digest`, and any later revision has one.
-- `not_requested` carries no cancellation member. Every other state carries `termination_request` and `termination_reason_code`.
+- `not_requested` carries all four cancellation members as `null`. Every other state carries `termination_request` and `termination_reason_code`.
 - `termination_requested` carries no acknowledgement or unresolved evidence.
 - `acknowledged_terminated` and `acknowledged_already_terminal` carry an acknowledgement of the matching `kind`, no unresolved evidence and a `coven_session_id`.
 - `termination_unknown` carries unresolved evidence, no acknowledgement and a `coven_session_id`.
@@ -159,6 +179,19 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `unresolved_other_session` | `CancellationEvidenceMismatch` | Equality binding, for unresolved evidence. |
 | `unresolved_recorded_after_window` | `CancellationEvidenceMismatch` | Ordering, for unresolved evidence. |
 <!-- parser-only-cases:execution_binding:end -->
+
+[Decoder-only cases](#decoder-only-cases): the decoder accepts these and the schema rejects them.
+
+<!-- decoder-only-cases:execution_binding:start -->
+| Case | Form |
+|---|---|
+| `adoption_state_as_single_key_object` | `{"adopted": null}` |
+| `cancellation_state_as_single_key_object` | `{"acknowledged_terminated": null}` |
+| `cancellation_acknowledgement.kind_as_single_key_object` | `{"terminated": null}` |
+| `termination_request_as_positional_array` | `[termination_request_id, created_at, valid_until]` |
+| `cancellation_acknowledgement_as_positional_array` | `[acknowledgement_id, termination_request_id, session_id, execution_request_id, execution_request_digest, kind, authority_evidence_digest, acknowledged_at]` |
+| `cancellation_unresolved_as_positional_array` | `[disposition_id, termination_request_id, session_id, execution_request_id, execution_request_digest, reason_code, recorded_at]` |
+<!-- decoder-only-cases:execution_binding:end -->
 
 **Decoder behaviour recorded:**
 
@@ -200,6 +233,14 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `version_exponent` | `InvalidShape { Graph, "document" }` | Integer spelling. |
 <!-- parser-only-cases:graph:end -->
 
+[Decoder-only cases](#decoder-only-cases): the decoder accepts these and the schema rejects them.
+
+<!-- decoder-only-cases:graph:start -->
+| Case | Form |
+|---|---|
+| `state_as_single_key_object` | `{"waiting_evidence": null}` |
+<!-- decoder-only-cases:graph:end -->
+
 **Decoder behaviour recorded:** an unknown `state` string is refused as `UnknownEnumValue { Graph, "state" }` before decoding. A non-string `state` and every other rejection surface as `InvalidShape { Graph, "document" }`. No transition rule is checked: every state decodes alongside the vector's other members (`every_state_decodes_with_the_vector_members`).
 
 ## `graph_node`
@@ -213,6 +254,14 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `version_integral_fraction` | `InvalidShape { GraphNode, "document" }` | Integer spelling. |
 | `version_exponent` | `InvalidShape { GraphNode, "document" }` | Integer spelling. |
 <!-- parser-only-cases:graph_node:end -->
+
+[Decoder-only cases](#decoder-only-cases): the decoder accepts these and the schema rejects them.
+
+<!-- decoder-only-cases:graph_node:start -->
+| Case | Form |
+|---|---|
+| `state_as_single_key_object` | `{"awaiting_verification": null}` |
+<!-- decoder-only-cases:graph_node:end -->
 
 **Decoder behaviour recorded:**
 
@@ -334,6 +383,14 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `duplicate_details_key` | `InvalidShape { Error, "json" }` | A duplicate key inside `details`, as at the top level. |
 <!-- parser-only-cases:error:end -->
 
+[Decoder-only cases](#decoder-only-cases): the decoder accepts these and the schema rejects them.
+
+<!-- decoder-only-cases:error:start -->
+| Case | Form |
+|---|---|
+| `error_as_positional_array` | `[code, correlation_id, retryable, message, details]` |
+<!-- decoder-only-cases:error:end -->
+
 **Decoder behaviour recorded:** like the execution binding, the envelope decodes first and then validates, so bound failures name their member (`InvalidShape { Error, "message" }`, `InvalidShape { Error, "correlation_id" }`, `InvalidShape { Error, "details" }`, `InvalidShape { Error, "details.key" }`, `InvalidShape { Error, "details.value" }`). Shape failures surface as `InvalidShape { Error, "document" }`, and an unknown `code` as `UnknownEnumValue { Error, "code" }`. Because the envelope's own schema kind is `Error`, its denials share a `schema` value with the probe and JSON errors (`InvalidShape { Error, "json" }`, `InvalidShape { Error, "schema_version" }`) that every kind returns. A consumer cannot tell from `schema` alone whether an error envelope or some other document was refused.
 
 ## `surface_effect`
@@ -381,6 +438,18 @@ Kinds are ordered by #60's classification. "#11 minimum" names the kinds that ca
 | `effect_digest_not_of_effect` | `InvalidShape { Delivery, "document" }` | `effect_digest` must equal the SHA-256 of the RFC 8785 encoding of `effect`. |
 <!-- parser-only-cases:delivery:end -->
 
+[Decoder-only cases](#decoder-only-cases): the decoder accepts these and the schema rejects them.
+
+<!-- decoder-only-cases:delivery:start -->
+| Case | Form |
+|---|---|
+| `relationship_as_single_key_object` | `{"reply_same_topic": null}` |
+| `state_as_single_key_object` | `{"sent": null}` |
+| `surface_decision.state_as_single_key_object` | `{"consumed": null}` |
+| `topic_as_positional_array` | `[id, kind]` |
+| `surface_decision_as_positional_array` | `[decision_id, request_digest, policy_revision, expires_at, state]` |
+<!-- decoder-only-cases:delivery:end -->
+
 **Decoder behaviour recorded:** unknown enum strings are refused as `UnknownEnumValue` for `relationship`, `state` and `surface_decision.state`, and every other rejection surfaces as `InvalidShape { Delivery, "document" }`. Decimals may carry leading zeros (`chat_id_leading_zeros`). As for graph_node, the same document relabelled `psyche.graph.v1` is refused for its `state` before its members are seen (`schema_version_graph_with_delivery_state`).
 
 ## Findings for the #11 owner
@@ -389,12 +458,13 @@ These are current decoder behaviours across all sixteen kinds, including intent,
 
 1. **Denial detail is lost for fourteen of the sixteen kinds.** Thirteen record kinds and intent run `validate()` inside `Deserialize`, and `decode_document` maps every serde error to `InvalidShape { <kind>, "document" }`. A wrong-kind identifier, a bound failure and a wrong JSON type are indistinguishable. Only the execution binding and the error envelope decode first and validate after, so their errors name the member or say `WrongRecordKind`. A published vocabulary would need the other kinds to do the same, or the vocabulary to stop at `document`.
 2. **Cancellation failures collapse to one error.** In the execution binding, every failure in the cancellation members surfaces as `CancellationEvidenceMismatch`, from a missing evidence member to a wrong session. Only an unknown acknowledgement `kind` is distinguishable.
-3. **Enum inspection precedes shape and follows the declared kind.** An unknown enum string is refused as `UnknownEnumValue` before any other check. A document relabelled as another kind is refused for that kind's enum first, when it has one (`schema_version_graph_with_node_state`, `schema_version_graph_with_delivery_state`).
+3. **Enum inspection precedes the typed decode and follows the declared kind.** After the size, JSON and version checks, an unknown enum *string* is refused as `UnknownEnumValue` before the typed decode sees any other member. A document relabelled as another kind is refused for that kind's enum first, when it has one (`schema_version_graph_with_node_state`, `schema_version_graph_with_delivery_state`). An enum value in the object form of finding 9 is not inspected at all.
 4. **Error envelopes share `schema: Error` with probe and JSON errors.** A consumer cannot tell from `schema` alone whether an error envelope was malformed or some other document failed to parse.
 5. **Absent and null differ for four members.** The execution binding's cancellation members may be `null` but not absent. Every other optional member in every kind may be either.
 6. **Typed integers refuse `3.0` and `3e0`.** Free-form values accept both spellings. A consumer that normalizes number spelling can turn a valid document into an invalid one.
-7. **Only two digests are checked.** `effect_digest` in the surface effect and delivery is recomputed. Every other digest member is taken as given.
+7. **`effect_digest` is the only digest recomputed.** In the surface effect and delivery it must equal the digest of `effect`. The execution binding also compares digests with each other (each evidence `execution_request_digest` must equal `request_digest`) and refuses an all-zero `authority_evidence_digest`. Every other digest member is taken as given.
 8. **No cross-record or transition rule is checked at decode time.** Budgets may be overdrawn, approvals may be expired, nodes may depend on themselves, and any graph or node state decodes with any version. Those rules, if they exist, belong to the store or to policy owners that #60 lists as missing.
+9. **The decoder accepts two non-canonical encodings.** A unit enum variant may be a one-member object and a closed object may be a positional array, in six kinds ([decoder-only cases](#decoder-only-cases)). Three consequences follow. Two documents that are different JSON values, not merely different spellings of one value, decode to the same record, so RFC 8785 canonicalization of the input alone does not identify a record. An array binds values to members by the Rust field order, which no contract states, and two members of one type may be swapped without any error. An unknown enum value in object form is not refused as `UnknownEnumValue`: it surfaces as `InvalidShape` (or `CancellationEvidenceMismatch` for an acknowledgement `kind`), and `Store::ingest`, which quarantines only unknown schemas, majors and enum values, returns it as a contract error instead of quarantining it. Refusing both forms in the decoder would remove all three, and is a decoder change outside this slice.
 
 ## Coverage and blocked kinds
 
