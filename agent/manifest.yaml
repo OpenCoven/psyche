@@ -30,6 +30,7 @@ risk:
     evidence: docs/G2-SCOPE-EVIDENCE.md
   protected_paths:
     - crates/psyche-core/**
+    - schemas/**
     - crates/psyche-store/**
     - crates/psyche-coven/**
     - crates/psyche-test-support/**

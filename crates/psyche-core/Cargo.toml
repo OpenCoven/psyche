@@ -30,6 +30,9 @@ sha2 = { workspace = true }
 # actually enters the type in production — rather than only `TryFrom` directly.
 # Property test backing "any value change changes the digest" in digest.rs.
 proptest = { workspace = true }
+# Validates `schemas/psyche.intent.v1.schema.json` in `tests/intent_schema.rs`
+# so the schema and the typed decoder are compared on one corpus, offline.
+boon = { workspace = true }
 
 [lints]
 workspace = true

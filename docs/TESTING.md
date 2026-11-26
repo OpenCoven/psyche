@@ -78,4 +78,8 @@ not a G2 matrix row. The directory README gives the one regeneration command;
 a default test run never writes a file, and a regenerating run that creates
 or changes a file always fails.
 
+## Intent schema parity
+
+`crates/psyche-core/tests/intent_schema.rs` compares the experimental `schemas/psyche.intent.v1.schema.json` with `decode_document` on one corpus derived from the pinned intent vector. Each case pins the decoder's exact error and the schema's verdict. Positive: the vector keeps its bytes and digest, and every accepted case and its canonical re-encoding pass both. Negative: unknown members, missing members, unsupported majors, wrong ID prefixes, malformed ULIDs, digests and timestamps, bound violations and malformed input fail both. An exhaustive single-character sweep over the IDs, the digest and `created_at` requires that the schema never rejects a value the decoder accepts. Parser-only rules fail only the decoder and must be listed in `docs/protocol/INTENT-SCHEMA.md`. The test is offline: the validator refuses every URL load. It is not a G2 matrix row.
+
 A consumer can verify an offline copy with the generated `SHA256SUMS` index and a standard SHA-256 tool. The suite checks every entry against the exact fixture bytes. [Offline verification](../crates/psyche-core/tests/fixtures/vectors/README.md#verify-an-offline-copy)
