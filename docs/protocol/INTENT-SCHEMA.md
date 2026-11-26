@@ -7,7 +7,7 @@ The schema is [`schemas/psyche.intent.v1.schema.json`](../../schemas/psyche.inte
 ## Verifying
 
 ```sh
-cargo test --locked -p psyche-core --test intent_schema
+cargo test --locked -p psyche-core --test intent_schema -- --nocapture
 ```
 
 The test needs no network. The validator ([boon](https://crates.io/crates/boon) 0.6, a dev-dependency of `psyche-core` only) carries the 2020-12 metaschema and is given a loader that refuses every URL. The corpus is derived in code from the #50 vector `crates/psyche-core/tests/fixtures/vectors/psyche.intent.v1.json` (SHA-256 `8ef6700f6d72a7666b57cc051342bc04491c47782f73950cc60fb2666071f5ed`, as pinned in `SHA256SUMS`). Each case is one mutation of that vector, or a deliberate rewrite of its spelling, and pins the decoder's exact `ContractError` and the schema's verdict:
