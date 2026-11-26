@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opencoven:psyche:schema:psyche.surface_event.v1",
+  "title": "Psyche surface event v1 (experimental, unpublished)",
+  "description": "Structural schema for one psyche.surface_event.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "surface_event_id",
+    "adapter_id",
+    "account_id",
+    "actor",
+    "locator",
+    "adapter_event_digest",
+    "received_at",
+    "content"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "psyche.surface_event.v1"
+    },
+    "surface_event_id": {
+      "$ref": "#/$defs/surface_event_id"
+    },
+    "adapter_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "account_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "actor": {
+      "$ref": "#/$defs/free_object"
+    },
+    "locator": {
+      "$ref": "#/$defs/free_object"
+    },
+    "adapter_event_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "received_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "content": {
+      "$ref": "#/$defs/free_object"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "free_object": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/json_value"
+      }
+    },
+    "json_value": {
+      "description": "Any JSON value whose integers, at any depth, lie within the interoperable range +/-(2^53-1).",
+      "anyOf": [
+        {
+          "not": {
+            "type": "integer"
+          }
+        },
+        {
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      ],
+      "items": {
+        "$ref": "#/$defs/json_value"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/json_value"
+      }
+    },
+    "surface_event_id": {
+      "type": "string",
+      "pattern": "^sev_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])[\\x00-\\x7F]([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+    }
+  }
+}

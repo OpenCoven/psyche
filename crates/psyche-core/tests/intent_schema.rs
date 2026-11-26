@@ -3,185 +3,58 @@
 //!
 //! `schemas/psyche.intent.v1.schema.json` is hand-written. This file is its
 //! drift test (issue #11): one corpus, derived in code from the pinned #50
-//! vector, runs through both [`decode_document`] and a Draft 2020-12
+//! vector, runs through both `decode_document` and a Draft 2020-12
 //! validator. Every case pins the decoder's exact result and the schema's
 //! verdict. The schema must accept everything the decoder accepts. A case
 //! the decoder rejects and the schema accepts is allowed only when it is
 //! declared [`Expect::ParserOnly`] and listed in
 //! `docs/protocol/INTENT-SCHEMA.md`, because the typed decoder, not the
-//! schema, is the authority on validity.
-//!
-//! Nothing here reads the network or any file outside the repository: the
-//! validator's URL loader refuses every load, and the 2020-12 metaschema is
-//! compiled into the validator.
+//! schema, is the authority on validity. The shared harness in
+//! `schema_parity` runs the checks and keeps the validator offline.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use std::collections::BTreeSet;
-use std::error::Error;
-use std::path::PathBuf;
-use std::sync::OnceLock;
+mod schema_parity;
 
-use psyche_core::contracts::{CanonicalDocument, ContractError, SchemaKind, decode_document};
-use psyche_core::digest::canonical_bytes;
+use psyche_core::contracts::{ContractError, SchemaKind};
+use schema_parity::{
+    Case, Expect, Kind, MAX_DOCUMENT_BYTES, crate_file, json_error, nested, replace_once,
+};
 use serde_json::{Map, Value, json};
-use sha2::{Digest as _, Sha256};
 
-const SCHEMA_FILE: &str = "schemas/psyche.intent.v1.schema.json";
-const SCHEMA_ID: &str = "urn:opencoven:psyche:schema:psyche.intent.v1";
-const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
-const VECTOR_FILE: &str = "tests/fixtures/vectors/psyche.intent.v1.json";
-const CHECKSUMS_FILE: &str = "tests/fixtures/vectors/SHA256SUMS";
+const INTENT: Kind = Kind {
+    name: "intent",
+    schema: SchemaKind::Intent,
+    pinned_sha256: "8ef6700f6d72a7666b57cc051342bc04491c47782f73950cc60fb2666071f5ed",
+    // The one optional member: serde defaults an absent `Option` to `None`.
+    optional_members: &["surface_event_id"],
+    doc: "docs/protocol/INTENT-SCHEMA.md",
+    doc_sections: &["parser-only-cases"],
+};
 const LOCAL_FIXTURE_FILE: &str = "tests/fixtures/intent-local.json";
-const PARSER_ONLY_DOC: &str = "docs/protocol/INTENT-SCHEMA.md";
-/// The #50 pin for the intent vector (`SHA256SUMS` and `canonical_vectors.rs`).
-const PINNED_VECTOR_SHA256: &str =
-    "8ef6700f6d72a7666b57cc051342bc04491c47782f73950cc60fb2666071f5ed";
-const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
-/// The one optional member: serde defaults an absent `Option` to `None`.
-const OPTIONAL_MEMBERS: &[&str] = &["surface_event_id"];
-
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn repo_file(relative: &str) -> Vec<u8> {
-    let path = manifest_dir().join("../..").join(relative);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-fn crate_file(relative: &str) -> Vec<u8> {
-    let path = manifest_dir().join(relative);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
+const OPTIONAL_MEMBERS: &[&str] = INTENT.optional_members;
 
 fn vector() -> Vec<u8> {
-    crate_file(VECTOR_FILE)
+    INTENT.vector()
 }
 
 fn vector_object() -> Map<String, Value> {
-    match serde_json::from_slice(&vector()).unwrap() {
-        Value::Object(map) => map,
-        _ => unreachable!("the intent vector is an object"),
-    }
-}
-
-fn schema_value() -> Value {
-    serde_json::from_slice(&repo_file(SCHEMA_FILE)).unwrap()
-}
-
-/// Refuses every load, so a `$ref` to anything other than the embedded
-/// metaschema or the schema itself fails compilation instead of reading a
-/// file or the network.
-struct NoLoader;
-
-impl boon::UrlLoader for NoLoader {
-    fn load(&self, url: &str) -> Result<Value, Box<dyn Error>> {
-        Err(format!("offline parity test refuses to load {url}").into())
-    }
-}
-
-fn compiled() -> &'static (boon::Schemas, boon::SchemaIndex) {
-    static COMPILED: OnceLock<(boon::Schemas, boon::SchemaIndex)> = OnceLock::new();
-    COMPILED.get_or_init(|| {
-        let mut schemas = boon::Schemas::new();
-        let mut compiler = boon::Compiler::new();
-        compiler.set_default_draft(boon::Draft::V2020_12);
-        compiler.use_loader(Box::new(NoLoader));
-        compiler.add_resource(SCHEMA_ID, schema_value()).unwrap();
-        let index = compiler
-            .compile(SCHEMA_ID, &mut schemas)
-            .unwrap_or_else(|e| panic!("schema does not compile against 2020-12: {e:#}"));
-        (schemas, index)
-    })
-}
-
-/// The schema side: a consumer with an ordinary JSON parser and a 2020-12
-/// validator. Bytes the ordinary parser cannot read are rejected before the
-/// schema runs.
-fn schema_accepts(bytes: &[u8]) -> bool {
-    let Ok(instance) = serde_json::from_slice::<Value>(bytes) else {
-        return false;
-    };
-    let (schemas, index) = compiled();
-    schemas.validate(&instance, *index).is_ok()
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum Expect {
-    /// Both implementations accept.
-    Accept,
-    /// Both reject; the decoder with exactly this error.
-    Reject(ContractError),
-    /// The decoder rejects with this error and the schema accepts, because
-    /// the rule is outside what a structural schema states. Each such case
-    /// is named in `docs/protocol/INTENT-SCHEMA.md`.
-    ParserOnly(ContractError),
-    /// The decoder rejects with this error. Whether a schema-only consumer
-    /// rejects depends on its JSON parser: this test's parser refuses the
-    /// bytes, but RFC 8259 leaves them to the implementation and common
-    /// parsers accept some of them. Named in `docs/protocol/INTENT-SCHEMA.md`
-    /// alongside the parser-only cases.
-    ParserDependent(ContractError),
-}
-
-struct Case {
-    name: &'static str,
-    bytes: Vec<u8>,
-    expect: Expect,
-}
-
-fn doc(map: &Map<String, Value>) -> Vec<u8> {
-    serde_json::to_vec(map).unwrap()
+    INTENT.vector_object()
 }
 
 fn with(field: &str, value: Value) -> Vec<u8> {
-    let mut map = vector_object();
-    assert!(map.contains_key(field), "{field} is not a vector member");
-    map.insert(field.to_owned(), value);
-    doc(&map)
+    INTENT.with(field, value)
 }
 
 fn without(field: &str) -> Vec<u8> {
-    let mut map = vector_object();
-    assert!(
-        map.remove(field).is_some(),
-        "{field} is not a vector member"
-    );
-    doc(&map)
+    INTENT.without(field)
 }
 
 fn with_extra(field: &str, value: Value) -> Vec<u8> {
-    let mut map = vector_object();
-    assert!(map.insert(field.to_owned(), value).is_none());
-    doc(&map)
-}
-
-fn replace_once(source: &[u8], from: &str, to: &str) -> Vec<u8> {
-    let text = std::str::from_utf8(source).unwrap();
-    assert_eq!(text.matches(from).count(), 1, "{from:?} must occur once");
-    text.replacen(from, to, 1).into_bytes()
-}
-
-fn json_error() -> ContractError {
-    ContractError::InvalidShape {
-        schema: SchemaKind::Error,
-        field: "json",
-    }
-}
-
-fn nested(depth: usize) -> Value {
-    (0..depth).fold(json!(true), |inner, _| json!([inner]))
+    INTENT.with_extra(field, value)
 }
 
 fn ulid_like(prefix: &str, suffix: &str) -> Value {
-    Value::String(format!("{prefix}{suffix}"))
+    schema_parity::id(prefix, suffix)
 }
 
 /// The deepest `nested(n)` the decoder accepts under `constraints.deep`.
@@ -862,178 +735,37 @@ fn corpus() -> Vec<Case> {
 
 #[test]
 fn the_schema_compiles_offline_against_draft_2020_12() {
-    let schema = schema_value();
-    assert_eq!(schema["$schema"], DRAFT_2020_12);
-    assert_eq!(schema["$id"], SCHEMA_ID);
-    let _ = compiled();
+    INTENT.check_compiles();
 }
 
 #[test]
 fn the_schema_names_exactly_the_typed_members() {
-    let schema = schema_value();
-    // The member list comes from the vector, the typed record's canonical
-    // encoding, rather than the Rust type itself. A member added to `Intent`
-    // changes the vector's bytes and fails the #50 pin first, then this test.
-    let vector_members: BTreeSet<String> = vector_object().keys().cloned().collect();
-    let properties: BTreeSet<String> = schema["properties"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect();
-    assert_eq!(
-        properties, vector_members,
-        "schema properties vs typed members"
-    );
-
-    let required: BTreeSet<String> = schema["required"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_owned())
-        .collect();
-    let expected_required: BTreeSet<String> = vector_members
-        .iter()
-        .filter(|m| !OPTIONAL_MEMBERS.contains(&m.as_str()))
-        .cloned()
-        .collect();
-    assert_eq!(required, expected_required);
-    assert_eq!(schema["additionalProperties"], json!(false));
-    assert_eq!(
-        schema["properties"]["schema_version"]["const"],
-        "psyche.intent.v1"
-    );
+    INTENT.check_members();
 }
 
 #[test]
 fn the_pinned_vector_keeps_its_bytes_and_digest_through_both() {
-    let bytes = vector();
-    assert_eq!(sha256_hex(&bytes), PINNED_VECTOR_SHA256);
-    let sums = String::from_utf8(crate_file(CHECKSUMS_FILE)).unwrap();
-    assert!(
-        sums.lines()
-            .any(|line| line == format!("{PINNED_VECTOR_SHA256} *psyche.intent.v1.json")),
-        "SHA256SUMS must pin the intent vector"
-    );
-
-    let decoded = decode_document(&bytes).unwrap();
-    assert!(matches!(decoded, CanonicalDocument::Intent(_)));
-    assert_eq!(
-        canonical_bytes(&decoded).unwrap(),
-        bytes,
-        "canonical bytes drifted"
-    );
-    assert!(schema_accepts(&bytes), "schema rejects the pinned vector");
+    INTENT.check_pinned_vector();
 }
 
 #[test]
 fn schema_and_decoder_agree_on_the_corpus() {
-    let mut names = BTreeSet::new();
-    let mut failures = Vec::new();
-    for case in corpus() {
-        assert!(names.insert(case.name), "duplicate case {}", case.name);
-        let decoded = decode_document(&case.bytes).map(|_| ());
-        let (schema, reason) = match serde_json::from_slice::<Value>(&case.bytes) {
-            Err(error) => (false, format!("JSON parser: {error}")),
-            Ok(instance) => {
-                let (schemas, index) = compiled();
-                match schemas.validate(&instance, *index) {
-                    Ok(()) => (true, "schema accepted".to_string()),
-                    Err(error) => (false, format!("schema rejected: {error}")),
-                }
-            }
-        };
-        println!(
-            "{} | expected {:?} | {reason} | decoder {decoded:?}",
-            case.name, case.expect
-        );
-        let ok = match &case.expect {
-            Expect::Accept => decoded.is_ok() && schema,
-            Expect::Reject(error) => decoded.as_ref().err() == Some(error) && !schema,
-            Expect::ParserOnly(error) => decoded.as_ref().err() == Some(error) && schema,
-            Expect::ParserDependent(error) => {
-                decoded.as_ref().err() == Some(error)
-                    && serde_json::from_slice::<Value>(&case.bytes).is_err()
-            }
-        };
-        if !ok {
-            failures.push(format!(
-                "{}: expected {:?}, decoder {:?}, schema accepts {schema}",
-                case.name, case.expect, decoded
-            ));
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "parity failures:\n{}",
-        failures.join("\n")
-    );
+    INTENT.check_corpus(&corpus());
 }
 
 #[test]
 fn the_canonical_form_of_every_accepted_case_passes_both() {
-    // Re-encoding through the typed record is what a producer emits, so the
-    // canonical form of every accepted case must pass the schema as well.
-    for case in corpus().into_iter().filter(|c| c.expect == Expect::Accept) {
-        let decoded = decode_document(&case.bytes).unwrap();
-        let canonical = canonical_bytes(&decoded).unwrap();
-        assert!(
-            schema_accepts(&canonical),
-            "{}: canonical form rejected",
-            case.name
-        );
-        assert_eq!(
-            canonical_bytes(&decode_document(&canonical).unwrap()).unwrap(),
-            canonical,
-            "{}: canonical form is not a fixed point",
-            case.name
-        );
-    }
+    INTENT.check_canonical_forms(&corpus());
 }
 
 #[test]
 fn every_parser_only_case_is_documented() {
-    let doc = String::from_utf8(repo_file(PARSER_ONLY_DOC)).unwrap();
-    let parser_only: Vec<&str> = corpus()
-        .iter()
-        .filter(|c| matches!(c.expect, Expect::ParserOnly(_) | Expect::ParserDependent(_)))
-        .map(|c| c.name)
-        .collect();
-    assert!(!parser_only.is_empty());
-    for name in &parser_only {
-        assert!(
-            doc.contains(&format!("`{name}`")),
-            "{PARSER_ONLY_DOC} omits `{name}`"
-        );
-    }
-    // And the document lists no parser-only case the corpus lacks.
-    let section = doc
-        .split("<!-- parser-only-cases:start -->")
-        .nth(1)
-        .and_then(|rest| rest.split("<!-- parser-only-cases:end -->").next())
-        .expect("parser-only case markers");
-    let listed: BTreeSet<&str> = section
-        .lines()
-        .filter_map(|line| line.strip_prefix("| `"))
-        .filter_map(|rest| rest.split('`').next())
-        .collect();
-    assert_eq!(listed, parser_only.into_iter().collect::<BTreeSet<_>>());
+    INTENT.check_documented(&corpus());
 }
 
 #[test]
 fn every_rejection_case_mutates_the_vector() {
-    // Guards the corpus itself: a helper that silently returned the vector
-    // would turn a rejection case into a second copy of the positive case.
-    let original = vector();
-    for case in corpus() {
-        if case.expect != Expect::Accept {
-            assert_ne!(
-                case.bytes, original,
-                "{} did not mutate the vector",
-                case.name
-            );
-        }
-    }
+    INTENT.check_rejections_mutate(&corpus());
 }
 
 /// Exhaustive single-character substitutions in every pattern-checked member.
@@ -1043,53 +775,12 @@ fn every_rejection_case_mutates_the_vector() {
 /// whatever the decoder accepts.
 #[test]
 fn single_character_sweeps_never_reject_what_the_decoder_accepts() {
-    let replacements: Vec<char> = (0u8..=0x7f)
-        .map(char::from)
-        .chain(['\u{e9}', '\u{0662}', '\u{ff10}', '\u{1f600}'])
-        .collect();
-    let mut unsound = Vec::new();
-    let mut inexact = Vec::new();
-    let mut checked = 0usize;
-    for (field, exact) in [
-        ("intent_id", true),
-        ("familiar_snapshot_id", true),
-        ("surface_event_id", true),
-        ("digest", true),
-        ("created_at", false),
-    ] {
-        let original = vector_object()[field].as_str().unwrap().to_owned();
-        let chars: Vec<char> = original.chars().collect();
-        for position in 0..chars.len() {
-            for &replacement in &replacements {
-                if replacement == chars[position] {
-                    continue;
-                }
-                let mut mutated = chars.clone();
-                mutated[position] = replacement;
-                let value: String = mutated.into_iter().collect();
-                let bytes = with(field, json!(value));
-                let decoder = decode_document(&bytes).is_ok();
-                let schema = schema_accepts(&bytes);
-                checked += 1;
-                if decoder && !schema {
-                    unsound.push(format!("{field}={value:?}"));
-                } else if exact && decoder != schema {
-                    inexact.push(format!(
-                        "{field}={value:?} decoder {decoder} schema {schema}"
-                    ));
-                }
-            }
-        }
-    }
+    let checked = INTENT.sweep(&[
+        (&["intent_id"], true),
+        (&["familiar_snapshot_id"], true),
+        (&["surface_event_id"], true),
+        (&["digest"], true),
+        (&["created_at"], false),
+    ]);
     assert!(checked > 10_000, "sweep too small: {checked}");
-    assert!(
-        unsound.is_empty(),
-        "schema rejects decoder-accepted values:\n{}",
-        unsound.join("\n")
-    );
-    assert!(
-        inexact.is_empty(),
-        "schema and decoder disagree:\n{}",
-        inexact.join("\n")
-    );
 }
