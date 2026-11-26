@@ -199,13 +199,18 @@ pub enum FixtureAvailability {
     },
 }
 
-/// Eligibility reported by the durable reconciliation authority.
+/// What the durable reconciliation authority reports about one attempt.
+///
+/// No variant authorizes a dispatch. A fence resolves the ambiguity of its
+/// own attempt only, and a new dispatch needs its own admission (#12 ADR 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedispatchEligibility {
-    /// Redispatch is forbidden because no durable fence exists.
+    /// No durable fence exists for this exact correlation. The attempt is
+    /// unknown, ambiguous, abandoned or returned, and stays non-dispatchable.
     Blocked,
-    /// A durable fence makes a separate redispatch decision eligible.
-    EligibleAfterFence,
+    /// A durable fence resolved this attempt's ambiguity. Dispatch stays
+    /// blocked until a fresh admission is presented for a new attempt.
+    AmbiguityResolvedRequiresAdmission,
 }
 
 /// Structured conformance-fixture control failure.
@@ -243,7 +248,7 @@ pub trait CovenConformanceFixture {
     /// Returns an immutable, payload-free observation snapshot.
     async fn observations(&self) -> CovenConformanceObservations;
 
-    /// Queries durable redispatch eligibility without dispatching work.
+    /// Queries whether a durable fence resolved an attempt, without dispatching work.
     async fn redispatch_eligibility(
         &self,
         correlation: &ExecutionCorrelation,
@@ -1240,7 +1245,7 @@ impl FakeCoven {
         }
     }
 
-    /// Reports whether a durable reconciliation fence permits a later redispatch decision.
+    /// Reports whether a durable fence resolved this exact attempt. Never an admission.
     pub async fn redispatch_eligibility(
         &self,
         correlation: &ExecutionCorrelation,
@@ -1257,7 +1262,7 @@ impl FakeCoven {
                 .map(|(_, disposition)| disposition)
             {
                 Some(ReconciliationDisposition::Fenced { .. }) => {
-                    RedispatchEligibility::EligibleAfterFence
+                    RedispatchEligibility::AmbiguityResolvedRequiresAdmission
                 }
                 Some(
                     ReconciliationDisposition::Returned { .. }
