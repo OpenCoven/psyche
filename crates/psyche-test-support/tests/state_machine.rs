@@ -1084,11 +1084,33 @@ proptest! {
 #[derive(Debug, Clone)]
 enum CovenRecoveryOperation {
     MarkAmbiguous,
-    Reconcile { fenced: bool, mutation: u8 },
-    DisconnectBeforeDisposition { fenced: bool, stall: bool },
-    DisconnectAfterDisposition { fenced: bool },
+    Reconcile {
+        fenced: bool,
+        mutation: u8,
+    },
+    DisconnectBeforeDisposition {
+        fenced: bool,
+        stall: bool,
+    },
+    DisconnectAfterDisposition {
+        fenced: bool,
+    },
     Restart,
-    AttemptRedispatch,
+    AttemptRedispatch {
+        admission: PresentedAdmission,
+        stale: u8,
+    },
+}
+
+/// Admission evidence accompanying a proposed new dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresentedAdmission {
+    /// Nothing but the old attempt's durable disposition.
+    Absent,
+    /// The fenced attempt's own correlation offered again as if it were new.
+    ReusesFencedAttempt,
+    /// A distinct request and attempt for the same work.
+    Fresh,
 }
 
 impl Arbitrary for CovenRecoveryOperation {
@@ -1106,7 +1128,15 @@ impl Arbitrary for CovenRecoveryOperation {
             3 => any::<bool>()
                 .prop_map(|fenced| Self::DisconnectAfterDisposition { fenced }),
             2 => Just(Self::Restart),
-            3 => Just(Self::AttemptRedispatch),
+            3 => (
+                prop_oneof![
+                    Just(PresentedAdmission::Absent),
+                    Just(PresentedAdmission::ReusesFencedAttempt),
+                    Just(PresentedAdmission::Fresh),
+                ],
+                0_u8..10,
+            )
+                .prop_map(|(admission, stale)| Self::AttemptRedispatch { admission, stale }),
         ]
         .boxed()
     }
@@ -1120,10 +1150,30 @@ enum RecoveryState {
     Fenced,
 }
 
+/// Modeled dispatch decision; mirrors the C-S6 suite vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecoveryDispatchDecision {
-    Rejected,
-    RedispatchEligible,
+    /// No dispatch: the attempt is unknown, ambiguous, or returned.
+    Blocked,
+    /// A fence resolved the old attempt; no admission authorizes a new one.
+    AmbiguityResolvedRequiresAdmission,
+    /// A fresh admission authorizes a new dispatch after the old attempt was fenced.
+    FreshlyAdmitted,
+}
+
+/// Decides from the authority's observation, never from the model state.
+fn dispatch_decision(
+    eligibility: RedispatchEligibility,
+    admission: PresentedAdmission,
+) -> RecoveryDispatchDecision {
+    if eligibility != RedispatchEligibility::AmbiguityResolvedRequiresAdmission {
+        return RecoveryDispatchDecision::Blocked;
+    }
+    if admission == PresentedAdmission::Fresh {
+        RecoveryDispatchDecision::FreshlyAdmitted
+    } else {
+        RecoveryDispatchDecision::AmbiguityResolvedRequiresAdmission
+    }
 }
 
 #[derive(Debug)]
@@ -1378,30 +1428,48 @@ async fn compare_c_s6_model_and_fixture(
                 fixture.restart().await;
                 model.adoption_calls = 0;
             }
-            CovenRecoveryOperation::AttemptRedispatch => {
-                let decision = match model.state {
-                    RecoveryState::Fenced => RecoveryDispatchDecision::RedispatchEligible,
-                    RecoveryState::Clean | RecoveryState::Ambiguous | RecoveryState::Returned => {
-                        RecoveryDispatchDecision::Rejected
+            CovenRecoveryOperation::AttemptRedispatch { admission, stale } => {
+                let expected_decision = match (model.state, admission) {
+                    (RecoveryState::Fenced, PresentedAdmission::Fresh) => {
+                        RecoveryDispatchDecision::FreshlyAdmitted
                     }
+                    (
+                        RecoveryState::Fenced,
+                        PresentedAdmission::Absent | PresentedAdmission::ReusesFencedAttempt,
+                    ) => RecoveryDispatchDecision::AmbiguityResolvedRequiresAdmission,
+                    (
+                        RecoveryState::Clean | RecoveryState::Ambiguous | RecoveryState::Returned,
+                        _,
+                    ) => RecoveryDispatchDecision::Blocked,
                 };
-                if matches!(
-                    model.state,
-                    RecoveryState::Ambiguous | RecoveryState::Returned
-                ) {
-                    prop_assert_eq!(decision, RecoveryDispatchDecision::Rejected);
-                }
+                let expected_eligibility = if model.state == RecoveryState::Fenced {
+                    RedispatchEligibility::AmbiguityResolvedRequiresAdmission
+                } else {
+                    RedispatchEligibility::Blocked
+                };
                 let before = fixture.observations().await.adoption_calls;
                 let actual = fixture
                     .redispatch_eligibility(&correlation)
                     .await
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
-                let expected = if decision == RecoveryDispatchDecision::RedispatchEligible {
-                    RedispatchEligibility::EligibleAfterFence
-                } else {
-                    RedispatchEligibility::Blocked
-                };
-                prop_assert_eq!(actual, expected);
+                prop_assert_eq!(actual, expected_eligibility);
+                prop_assert_eq!(dispatch_decision(actual, admission), expected_decision);
+                if (1..=9).contains(&stale) {
+                    let stale_correlation = mutate_reconciliation(
+                        &reconciliation_for(correlation.clone(), false),
+                        stale,
+                    )
+                    .correlation;
+                    let stale_eligibility = fixture
+                        .redispatch_eligibility(&stale_correlation)
+                        .await
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                    prop_assert_eq!(stale_eligibility, RedispatchEligibility::Blocked);
+                    prop_assert_eq!(
+                        dispatch_decision(stale_eligibility, PresentedAdmission::Fresh),
+                        RecoveryDispatchDecision::Blocked
+                    );
+                }
                 prop_assert_eq!(fixture.observations().await.adoption_calls, before);
             }
             _ => {}
@@ -1780,16 +1848,104 @@ proptest! {
     }
 }
 
+fn attempt(admission: PresentedAdmission) -> CovenRecoveryOperation {
+    CovenRecoveryOperation::AttemptRedispatch {
+        admission,
+        stale: 0,
+    }
+}
+
+fn fence() -> CovenRecoveryOperation {
+    CovenRecoveryOperation::Reconcile {
+        fenced: true,
+        mutation: 0,
+    }
+}
+
 #[test]
-fn c_s6_fixture_reports_fence_eligibility_without_redispatch() {
+fn c_s6_fence_requires_fresh_admission_without_redispatch() {
     runtime()
         .block_on(compare_c_s6_model_and_fixture(vec![
             CovenRecoveryOperation::MarkAmbiguous,
-            CovenRecoveryOperation::Reconcile {
+            fence(),
+            attempt(PresentedAdmission::Absent),
+            attempt(PresentedAdmission::ReusesFencedAttempt),
+            attempt(PresentedAdmission::Fresh),
+        ]))
+        .unwrap();
+}
+
+#[test]
+fn c_s6_fence_after_restart_still_requires_fresh_admission() {
+    runtime()
+        .block_on(compare_c_s6_model_and_fixture(vec![
+            CovenRecoveryOperation::MarkAmbiguous,
+            fence(),
+            CovenRecoveryOperation::Restart,
+            attempt(PresentedAdmission::Absent),
+            CovenRecoveryOperation::Restart,
+            attempt(PresentedAdmission::ReusesFencedAttempt),
+            attempt(PresentedAdmission::Fresh),
+        ]))
+        .unwrap();
+}
+
+#[test]
+fn c_s6_fence_replay_is_not_an_admission() {
+    runtime()
+        .block_on(compare_c_s6_model_and_fixture(vec![
+            CovenRecoveryOperation::MarkAmbiguous,
+            CovenRecoveryOperation::DisconnectAfterDisposition { fenced: true },
+            attempt(PresentedAdmission::Absent),
+            fence(),
+            fence(),
+            attempt(PresentedAdmission::ReusesFencedAttempt),
+            attempt(PresentedAdmission::Fresh),
+        ]))
+        .unwrap();
+}
+
+#[test]
+fn c_s6_fence_does_not_cover_a_stale_or_mismatched_correlation() {
+    let mut operations = vec![CovenRecoveryOperation::MarkAmbiguous, fence()];
+    operations.extend(
+        (1..=9).map(|stale| CovenRecoveryOperation::AttemptRedispatch {
+            admission: PresentedAdmission::Fresh,
+            stale,
+        }),
+    );
+    operations.extend((1..=10).map(|mutation| CovenRecoveryOperation::Reconcile {
+        fenced: true,
+        mutation,
+    }));
+    operations.push(attempt(PresentedAdmission::Absent));
+    runtime()
+        .block_on(compare_c_s6_model_and_fixture(operations))
+        .unwrap();
+}
+
+#[test]
+fn c_s6_unknown_and_abandoned_attempts_stay_blocked_with_fresh_admission() {
+    runtime()
+        .block_on(compare_c_s6_model_and_fixture(vec![
+            attempt(PresentedAdmission::Fresh),
+            CovenRecoveryOperation::MarkAmbiguous,
+            attempt(PresentedAdmission::Fresh),
+            CovenRecoveryOperation::Restart,
+            attempt(PresentedAdmission::Fresh),
+            CovenRecoveryOperation::DisconnectBeforeDisposition {
                 fenced: true,
-                mutation: 0,
+                stall: false,
             },
-            CovenRecoveryOperation::AttemptRedispatch,
+            attempt(PresentedAdmission::Fresh),
+            CovenRecoveryOperation::DisconnectBeforeDisposition {
+                fenced: true,
+                stall: true,
+            },
+            CovenRecoveryOperation::AttemptRedispatch {
+                admission: PresentedAdmission::Fresh,
+                stale: 7,
+            },
         ]))
         .unwrap();
 }
