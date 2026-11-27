@@ -134,9 +134,11 @@ The invocation stays blocked in every other case:
 - the outcome is anything the consumer does not recognise. Unknown stays
   blocked.
 
-Reconciliation would never create an attempt or make one dispatchable. A new
-attempt would need a separate recovery decision from the graph-owning
-authority.
+Reconciliation would never create an attempt or make one dispatchable. A
+`Fenced` disposition resolves the ambiguity of its own attempt only. A new
+dispatch needs its own fresh admission that names a new request and attempt for
+the same work
+([#12 ADR 3](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214)).
 
 ### Not decided
 
@@ -146,16 +148,21 @@ authority.
 - The issuer the suites exercise. C-S6 and C-S11 call `CovenPort::reconcile`,
   where the scripted Coven port issues the disposition. This proposal has the
   graph-owning host issue it.
-- Redispatch after a fence. The conformance suite asserts
-  `RedispatchDecision::RedispatchEligible` and
-  `RedispatchEligibility::EligibleAfterFence` for a `Fenced` disposition, and
-  `docs/TESTING.md` says a fence makes a new dispatch eligible. This proposal
-  says a new attempt needs a separate recovery decision. Reconciling the two is
-  a producer decision.
 - The evidence that the old process, every delegated descendant and every
   already dispatched tool can no longer act. Only the host could establish it,
   and no fixture here does.
 - Durable replay of a disposition after the issuing host restarts.
+
+### Decided since this proposal
+
+- Redispatch after a fence. [#12 ADR 3](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214)
+  decided that a fence resolves only its own attempt and that a new dispatch
+  needs its own admission. [PR #72](https://github.com/OpenCoven/psyche/pull/72)
+  applied this to the conformance suite: a `Fenced` disposition now yields
+  `RedispatchEligibility::AmbiguityResolvedRequiresAdmission` and
+  `RedispatchDecision::AmbiguityResolvedRequiresAdmission`, and only a fresh
+  admission yields `RedispatchDecision::FreshlyAdmitted`. `docs/TESTING.md`
+  states the same rule. This matches the consumer obligation above.
 
 ### Evidence and its limits
 
