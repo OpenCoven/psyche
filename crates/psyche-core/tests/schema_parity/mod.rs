@@ -925,8 +925,8 @@ impl Kind {
                 }
             };
             println!(
-                "{} | expected {:?} | {reason} | decoder {decoded:?}",
-                case.name, case.expect
+                "psyche.{}.v1 | {} | expected {:?} | {reason} | decoder {decoded:?}",
+                self.name, case.name, case.expect
             );
             let ok = match &case.expect {
                 Expect::Accept => decoded.is_ok() && schema,

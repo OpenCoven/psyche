@@ -7,10 +7,10 @@ Each schema in [`schemas/`](../../schemas) describes the documents of one kind t
 ## Verifying
 
 ```sh
-cargo test --locked -p psyche-core --test record_schemas -- --nocapture
+cargo test --locked -p psyche-core --test intent_schema --test record_schemas -- --nocapture --test-threads=1
 ```
 
-`--nocapture` displays one line per case: its name, the expected result, the schema's verdict with the validator's or JSON parser's reason, and the decoder's result.
+This command covers all sixteen registered kinds. Each case reports its document kind, case name, expected result, the schema validator or JSON parser’s verdict and reason, and the public decoder’s result. A single test thread keeps each kind’s cases together.
 
 The test needs no network. It shares the harness `crates/psyche-core/tests/schema_parity/mod.rs` with `intent_schema`: the validator ([boon](https://crates.io/crates/boon) 0.6, a dev-dependency of `psyche-core` only) carries the 2020-12 metaschema and is given a loader that refuses every URL. Each kind's corpus is derived in code from its #50 vector in `crates/psyche-core/tests/fixtures/vectors/`, at the digest pinned in `SHA256SUMS`. Each case is one mutation of that vector, or a deliberate rewrite of its spelling, and pins the decoder's exact `ContractError` and the schema's verdict.
 
