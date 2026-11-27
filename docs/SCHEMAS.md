@@ -78,8 +78,12 @@ producer review under
 [#12](https://github.com/OpenCoven/psyche/issues/12), written for the
 `coven-agents` consumer in
 [Coven #804](https://github.com/OpenCoven/coven/issues/804). No producer has
-approved it. Who issues and enforces a fence disposition is not decided, and
-neither is the host binding. Until a profile is approved, a consumer keeps
+approved it.
+[#12 ADR 3](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214)
+decided that the graph-owning host issues a fence disposition for this profile,
+and only on authenticated containment evidence from the owner of each resource
+that can still act. Who enforces a fence in process is not decided, and neither
+is the host binding. Until a profile is approved, a consumer keeps
 every abandoned-running, termination-unknown and recovery-required invocation
 non-dispatchable. Nothing here changes a G2 schema or permits a consumer to
 act.
@@ -142,12 +146,13 @@ the same work
 
 ### Not decided
 
-- The issuer and enforcer of a `Fenced` disposition, and how a consumer
-  authenticates that issuer
-  ([#12](https://github.com/OpenCoven/psyche/issues/12)).
+- The in-process enforcer of a `Fenced` disposition. ADR 3 returned it to
+  [#19](https://github.com/OpenCoven/psyche/issues/19) and
+  [Coven #804](https://github.com/OpenCoven/coven/issues/804).
+- How a consumer authenticates the issuing host.
 - The issuer the suites exercise. C-S6 and C-S11 call `CovenPort::reconcile`,
-  where the scripted Coven port issues the disposition. This proposal has the
-  graph-owning host issue it.
+  where the scripted Coven port issues the disposition. This proposal and
+  ADR 3 have the graph-owning host issue it.
 - The evidence that the old process, every delegated descendant and every
   already dispatched tool can no longer act. Only the host could establish it,
   and no fixture here does.
@@ -155,6 +160,11 @@ the same work
 
 ### Decided since this proposal
 
+- The issuer of a `Fenced` disposition. [#12 ADR 3](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214)
+  decided that the graph-owning host issues it, for this profile only, on
+  authenticated containment evidence from the owner of each resource that can
+  still act. Coven is that owner for its sessions. The in-process enforcer is
+  still open (see above).
 - Redispatch after a fence. [#12 ADR 3](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214)
   decided that a fence resolves only its own attempt and that a new dispatch
   needs its own admission. [PR #72](https://github.com/OpenCoven/psyche/pull/72)
