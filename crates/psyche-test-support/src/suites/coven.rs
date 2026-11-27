@@ -772,7 +772,7 @@ impl CovenConformanceFixture for ScriptedG2Fixture {
                 .map(|stored| &stored.disposition)
             {
                 Some(ReconciliationDisposition::Fenced { .. }) => {
-                    RedispatchEligibility::EligibleAfterFence
+                    RedispatchEligibility::AmbiguityResolvedRequiresAdmission
                 }
                 Some(
                     ReconciliationDisposition::Returned { .. }
@@ -1895,10 +1895,17 @@ pub async fn assert_c_s4_stable_adoption(
     ConformanceOutcome::Verified
 }
 
+/// Modeled dispatch decision. Nothing in production code makes this decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RedispatchDecision {
+    /// No dispatch: the attempt is adopted, returned, unknown, or still ambiguous.
     Blocked,
+    /// C-S5 only: durable proof that the original request was never adopted.
     RedispatchEligible,
+    /// C-S6: a fence resolved the old attempt, but no admission authorizes a new one.
+    AmbiguityResolvedRequiresAdmission,
+    /// C-S6: a fresh admission authorizes a new dispatch after the old attempt was fenced.
+    FreshlyAdmitted,
 }
 
 /// Verifies adopted, proven-not-adopted, and unknown lookup authority.
@@ -1965,6 +1972,9 @@ fn redispatch_decision(disposition: &AdoptionDisposition) -> RedispatchDecision 
 }
 
 /// Verifies correlation-bound return-or-fence recovery without redispatch.
+///
+/// A fence resolves only its own attempt. Dispatch stays blocked until a fresh
+/// admission names a new request and attempt for the same work (#12 ADR 3).
 pub async fn assert_c_s6_ambiguity_fence(
     fixture: &mut dyn CovenConformanceFixture,
 ) -> ConformanceOutcome {
@@ -2018,6 +2028,24 @@ pub async fn assert_c_s6_ambiguity_fence(
                 .await
                 .unwrap_or_else(|error| panic!("ambiguous eligibility lookup failed: {error}")),
             RedispatchEligibility::Blocked
+        );
+        let fresh = fresh_admission_correlation(&request.correlation);
+        assert_eq!(
+            reconciliation_redispatch_decision(
+                &request.correlation,
+                &ReconciliationDisposition::Unresolved,
+                Some(&fresh),
+            ),
+            RedispatchDecision::Blocked,
+            "an abandoned attempt stays non-dispatchable even with a fresh admission"
+        );
+        assert_eq!(
+            fixture
+                .redispatch_eligibility(&fresh)
+                .await
+                .unwrap_or_else(|error| panic!("unknown eligibility lookup failed: {error}")),
+            RedispatchEligibility::Blocked,
+            "an attempt the authority has never seen is not eligible"
         );
         assert_eq!(
             fixture.observations().await.adoption_calls,
@@ -2088,11 +2116,45 @@ pub async fn assert_c_s6_ambiguity_fence(
             original_adoption,
             "replayed reconciliation must not alter the original adoption"
         );
+        assert_eq!(
+            fixture
+                .redispatch_eligibility(&request.correlation)
+                .await
+                .unwrap_or_else(|error| panic!("replayed eligibility lookup failed: {error}")),
+            expected_eligibility(fenced),
+            "a fence replayed after restart still resolves only the old attempt"
+        );
+        assert_eq!(
+            reconciliation_redispatch_decision(&request.correlation, &replay, None),
+            if fenced {
+                RedispatchDecision::AmbiguityResolvedRequiresAdmission
+            } else {
+                RedispatchDecision::Blocked
+            },
+            "a replayed disposition is never an admission"
+        );
         let replayed = fixture.observations().await;
         assert_eq!(replayed.adoption_calls, 0);
         assert_eq!(replayed.reconciliation_calls, 1);
     }
     ConformanceOutcome::Verified
+}
+
+fn expected_eligibility(fenced: bool) -> RedispatchEligibility {
+    if fenced {
+        RedispatchEligibility::AmbiguityResolvedRequiresAdmission
+    } else {
+        RedispatchEligibility::Blocked
+    }
+}
+
+/// A distinct request and attempt for the same project, graph and node.
+fn fresh_admission_correlation(fenced: &ExecutionCorrelation) -> ExecutionCorrelation {
+    let mut fresh = fenced.clone();
+    fresh.request_id = request_id(12);
+    fresh.request_digest = digest_of('f');
+    fresh.attempt_id = record_id(RecordKind::Attempt, 12);
+    fresh
 }
 
 async fn mark_ambiguous(fixture: &mut dyn CovenConformanceFixture) -> ExecutionCorrelation {
@@ -2171,10 +2233,17 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
                 }),
                 RedispatchDecision::Blocked
             );
-            assert_eq!(
-                reconciliation_redispatch_decision(&disposition),
-                RedispatchDecision::Blocked
-            );
+            for admission in [None, Some(fresh_admission_correlation(&correlation))] {
+                assert_eq!(
+                    reconciliation_redispatch_decision(
+                        &correlation,
+                        &disposition,
+                        admission.as_ref()
+                    ),
+                    RedispatchDecision::Blocked,
+                    "a returned original session is never redispatched"
+                );
+            }
         }
         ReconciliationDisposition::Fenced {
             fence_token,
@@ -2190,9 +2259,42 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
             assert!(!disposition_id.is_empty());
             assert!(*recorded_at >= correlation.created_at);
             assert_eq!(
-                reconciliation_redispatch_decision(&disposition),
-                RedispatchDecision::RedispatchEligible
+                reconciliation_redispatch_decision(&correlation, &disposition, None),
+                RedispatchDecision::AmbiguityResolvedRequiresAdmission,
+                "a fence alone never makes redispatch eligible"
             );
+            assert_eq!(
+                reconciliation_redispatch_decision(&correlation, &disposition, Some(&correlation)),
+                RedispatchDecision::AmbiguityResolvedRequiresAdmission,
+                "the fenced attempt's own correlation is not a fresh admission"
+            );
+            for (field, stale) in stale_admission_correlations(&correlation) {
+                assert_eq!(
+                    reconciliation_redispatch_decision(&correlation, &disposition, Some(&stale)),
+                    RedispatchDecision::AmbiguityResolvedRequiresAdmission,
+                    "{field}"
+                );
+            }
+            assert_eq!(
+                reconciliation_redispatch_decision(
+                    &correlation,
+                    &disposition,
+                    Some(&fresh_admission_correlation(&correlation)),
+                ),
+                RedispatchDecision::FreshlyAdmitted,
+                "only a fresh admission authorizes a new dispatch"
+            );
+            for (field, other) in changed_correlations(&correlation) {
+                assert_eq!(
+                    reconciliation_redispatch_decision(
+                        &other,
+                        &disposition,
+                        Some(&fresh_admission_correlation(&other)),
+                    ),
+                    RedispatchDecision::Blocked,
+                    "a fence never resolves a differently correlated attempt: {field}"
+                );
+            }
         }
         ReconciliationDisposition::Unresolved => {
             panic!("terminal script must not return unresolved")
@@ -2222,20 +2324,21 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
         .redispatch_eligibility(&correlation)
         .await
         .unwrap_or_else(|error| panic!("redispatch eligibility must be observable: {error}"));
-    assert_eq!(
-        eligibility,
-        if fenced {
-            RedispatchEligibility::EligibleAfterFence
-        } else {
-            RedispatchEligibility::Blocked
-        }
-    );
+    assert_eq!(eligibility, expected_eligibility(fenced));
     assert_eq!(
         fixture.observations().await.adoption_calls,
         adoption_calls_before_eligibility,
         "eligibility observation must not dispatch"
     );
     fixture.restart().await;
+    assert_eq!(
+        fixture
+            .redispatch_eligibility(&correlation)
+            .await
+            .unwrap_or_else(|error| panic!("restarted eligibility must be observable: {error}")),
+        expected_eligibility(fenced),
+        "restart must neither lose a fence nor widen it into eligibility"
+    );
     let replay = fixture
         .port()
         .reconcile(request.clone())
@@ -2246,11 +2349,27 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
         fixture.observations().await.durable_reconciliation,
         Some(first_observation.clone())
     );
+    assert_eq!(
+        fixture
+            .redispatch_eligibility(&correlation)
+            .await
+            .unwrap_or_else(|error| panic!("replayed eligibility must be observable: {error}")),
+        expected_eligibility(fenced),
+        "replaying a fence must not widen it into eligibility"
+    );
 
     let changed = changed_correlations(&correlation);
     let changed_count = u64::try_from(changed.len())
         .unwrap_or_else(|_| panic!("correlation matrix length must fit u64"));
     for (field, changed) in changed {
+        assert_eq!(
+            fixture
+                .redispatch_eligibility(&changed)
+                .await
+                .unwrap_or_else(|error| panic!("stale eligibility lookup failed: {error}")),
+            RedispatchEligibility::Blocked,
+            "a fence binds only its exact correlation: {field}"
+        );
         let changed_request = ReconciliationRequest {
             correlation: changed,
             ..request.clone()
@@ -2276,14 +2395,59 @@ async fn assert_reconciliation_terminal(fixture: &mut dyn CovenConformanceFixtur
     assert_eq!(observations.durable_reconciliation, Some(first_observation));
 }
 
+/// ADR 3: a fence resolves the ambiguity of its own attempt only. A new
+/// dispatch needs a fresh admission, and nothing else can stand in for one.
 fn reconciliation_redispatch_decision(
+    attempt: &ExecutionCorrelation,
     disposition: &ReconciliationDisposition,
+    admission: Option<&ExecutionCorrelation>,
 ) -> RedispatchDecision {
-    if matches!(disposition, ReconciliationDisposition::Fenced { .. }) {
-        RedispatchDecision::RedispatchEligible
-    } else {
-        RedispatchDecision::Blocked
+    match disposition {
+        ReconciliationDisposition::Fenced { correlation, .. } if correlation == attempt => {
+            match admission {
+                Some(admitted) if is_fresh_admission(attempt, admitted) => {
+                    RedispatchDecision::FreshlyAdmitted
+                }
+                _ => RedispatchDecision::AmbiguityResolvedRequiresAdmission,
+            }
+        }
+        ReconciliationDisposition::Fenced { .. }
+        | ReconciliationDisposition::Returned { .. }
+        | ReconciliationDisposition::Unresolved => RedispatchDecision::Blocked,
     }
+}
+
+/// A fresh admission names a new request and a new attempt for the same work.
+fn is_fresh_admission(fenced: &ExecutionCorrelation, admitted: &ExecutionCorrelation) -> bool {
+    admitted.request_id != fenced.request_id
+        && admitted.attempt_id != fenced.attempt_id
+        && admitted.project_id == fenced.project_id
+        && admitted.graph_id == fenced.graph_id
+        && admitted.node_id == fenced.node_id
+}
+
+/// Admissions that reuse the fenced identity or name different work.
+fn stale_admission_correlations(
+    fenced: &ExecutionCorrelation,
+) -> Vec<(&'static str, ExecutionCorrelation)> {
+    let fresh = fresh_admission_correlation(fenced);
+    let mut stale = Vec::new();
+    let mut candidate = fresh.clone();
+    candidate.request_id = fenced.request_id.clone();
+    stale.push(("reused request_id", candidate));
+    let mut candidate = fresh.clone();
+    candidate.attempt_id = fenced.attempt_id.clone();
+    stale.push(("reused attempt_id", candidate));
+    let mut candidate = fresh.clone();
+    candidate.project_id = "project:sha256:changed".to_owned();
+    stale.push(("other project_id", candidate));
+    let mut candidate = fresh.clone();
+    candidate.graph_id = record_id(RecordKind::Graph, 12);
+    stale.push(("other graph_id", candidate));
+    let mut candidate = fresh;
+    candidate.node_id = record_id(RecordKind::GraphNode, 12);
+    stale.push(("other node_id", candidate));
+    stale
 }
 
 /// Verifies ordered, restart-stable cursors without gaps, duplicates, or drift.

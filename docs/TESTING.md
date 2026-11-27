@@ -12,8 +12,10 @@ Property runs set `PROPTEST_CASES` and `PROPTEST_RNG_SEED`; CI fixes them to
 store state after each operation. Crash tests inject named before/after-commit
 points, kill a writer, reopen the database, and observe only committed state.
 The C-S6 matrix covers immutable correlation, durable return, durable fence,
-fault injection, restart, and a no-redispatch decision unless a fence makes a
-new dispatch eligible.
+fault injection, restart, and a no-redispatch decision. A fence resolves the
+ambiguity of its own attempt only. A new dispatch also needs a fresh admission
+that names a new request and attempt for the same work
+([#12 ADR 3](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117320214)).
 
 The full-request digest suite constructs digests only through
 `AdoptionRequest::new`, forces both owners to recompute them, and retains a
@@ -41,7 +43,9 @@ blob URLs and SHA-256 values bind the evidence to the reviewed sources.
   negative: unknown or adopted dispositions never masquerade as proof.
 - C-S6 positive: immutable correlation yields durable return or durable fence;
   negative: faults, restart, unresolved state, and no-redispatch without fence
-  remain blocked.
+  remain blocked. A fence, its replay and its restart only resolve the old
+  attempt. They never admit a new one, and neither does a stale or mismatched
+  correlation.
 - C-S7 positive: cursor pages are ordered and restart-stable; negative: gaps,
   duplicates, drift, and before/after-page faults are rejected.
 - C-S8 positive: typed terminal authority persists before use; negative: raw
