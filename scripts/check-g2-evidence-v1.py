@@ -656,7 +656,8 @@ def validate_sources(root: pathlib.Path, overrides: Mapping[str, str]) -> None:
         "assert_c_s6_ambiguity_fence", "ReconciliationDisposition::Returned",
         "ReconciliationDisposition::Fenced", "DurableDispositionKind::Returned",
         "DurableDispositionKind::Fenced", "fixture.restart().await", "require_fault(",
-        "redispatch_eligibility", "EligibleAfterFence", "assert_c_s10_result_artifact_binding",
+        "redispatch_eligibility", "AmbiguityResolvedRequiresAdmission", "fresh_admission_correlation",
+        "assert_c_s10_result_artifact_binding",
         "mutate_result_digest", "mutate_result_media_type", "mutate_result_size",
         "mutate_result_expiry", "mutate_artifact_digest", "mutate_artifact_media_type",
         "mutate_artifact_size", "mutate_artifact_expiry",
@@ -679,7 +680,8 @@ def validate_sources(root: pathlib.Path, overrides: Mapping[str, str]) -> None:
         "c_s6_model_never_redispatches_without_fence", "request_digest_binds_every_typed_field",
         "stale_digest_requests", "MutateRequestFieldRetainDigest", "RequestDigestMismatch",
         "ReconciliationDisposition::Returned", "ReconciliationDisposition::Fenced",
-        "fixture.restart().await", "select_fault(", "RedispatchEligibility::EligibleAfterFence",
+        "fixture.restart().await", "select_fault(",
+        "RedispatchEligibility::AmbiguityResolvedRequiresAdmission", "PresentedAdmission::Fresh",
     ))
     require_digest_mutation_matrix(state_path, state)
 
