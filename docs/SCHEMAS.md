@@ -70,6 +70,10 @@ quarantine adjudication to their later named authority owners. The schemas
 freeze interoperability; they do not silently assign those decisions to a
 boundary adapter.
 
+## Experimental JSON Schema
+
+`psyche.intent.v1` is the only kind with a JSON Schema: `schemas/psyche.intent.v1.schema.json` (Draft 2020-12, experimental, unpublished, #11). It describes what `decode_document` accepts and does not replace it. `crates/psyche-core/tests/intent_schema.rs` runs one corpus, derived from the pinned #50 vector, through both, and fails if the schema rejects a document the decoder accepts. Rules only the decoder enforces, such as duplicate keys, nesting depth, number overflow, UTF-8 byte bounds, calendar validity and the 1 MiB limits, are listed with their cases in [the intent schema notes](protocol/INTENT-SCHEMA.md). The other fifteen kinds have no schema.
+
 ## First Build profile
 
 The separately negotiated `psyche.build_receipt_binding.v1` wire record binds an execution request to exact native receipt bytes under the Psyche issuer’s signature. Use the first-profile verifier at the Build interchange boundary. Existing G2 journal readers retain their closed storage registry and compatibility behavior. [Schema, golden bytes and verifier](../profiles/build-receipt-binding/README.md) · [Approved ownership](https://github.com/OpenCoven/psyche/issues/12#issuecomment-7117194956)

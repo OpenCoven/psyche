@@ -37,6 +37,7 @@ Fifteen `RecordKind` variants, sixteen schema strings. The sixteenth, `psyche.er
 - Table definitions: `crates/psyche-store/migrations/001_foundation.sql` :: `canonical_records`, `execution_binding_revisions`, `transitions`, `quarantine_records`, `audit_events`, `schema_migrations`.
 - `canonical_records.kind` holds the schema name (`identity_snapshot`, `graph_node`), not the `RecordKind` variant: `crates/psyche-store/src/records.rs` :: `Store::ingest`, `Store::insert`, `Store::load`, `Store::load_canonical_bytes`, `insert_canonical_in_transaction`, `validate_stored_canonical_record`, `kind_key`.
 - `Attempt` never enters `canonical_records`; a row there with kind `execution_binding` is reported as corruption. Its append-only revisions: `crates/psyche-store/src/execution_bindings.rs` :: `insert_in_transaction`, `validate_revision_chain`, `validate_next_revision`, `Store::execution_binding_revisions`.
+- Experimental JSON Schema, intent only: `schemas/psyche.intent.v1.schema.json`. Parity with the decoder: `crates/psyche-core/tests/intent_schema.rs` :: `schema_and_decoder_agree_on_the_corpus`, `every_parser_only_case_is_documented`. Parser-only rules: `docs/protocol/INTENT-SCHEMA.md`. No other kind has a schema.
 - Durable but not record kinds: `crates/psyche-store/src/transitions.rs` :: `Transition` (table `transitions`); `crates/psyche-store/src/quarantine.rs` :: `QuarantineId`, `QuarantineRecord`, `AuditEvent` (`qua_`, tables `quarantine_records` and `audit_events`).
 
 ## Adding or changing a record kind
