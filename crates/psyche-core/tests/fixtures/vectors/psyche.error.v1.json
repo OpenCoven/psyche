@@ -1,0 +1,1 @@
+{"error":{"code":"storage_unavailable","correlation_id":"corr-synthetic-1","details":{"component":"store","operation":"write"},"message":"Synthetic storage is temporarily unavailable.","retryable":true},"schema_version":"psyche.error.v1"}
