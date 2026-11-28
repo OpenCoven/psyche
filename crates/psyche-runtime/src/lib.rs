@@ -1,5 +1,7 @@
 //! Composition root. Owns the daemon lifecycle and the only shutdown path.
 
+pub mod receipt_verification;
+
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
