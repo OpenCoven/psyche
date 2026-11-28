@@ -24,7 +24,7 @@ The launch builds the local CLI with Cargo's lockfile and discovers its executab
 
 Both Build actions run once during setup, before the first pause. A synthetic browser handler appends one line to each local witness. Build's test operator grants a scoped lease and approves each action. A disposable issuer signs the samples. Both verification IDs are registered and the private signing keys and native control tokens are removed before inspection starts.
 
-At each pause, copy the printed `Inspect` command into another terminal. It runs a fresh Psyche process using the session's config and verification ID. Press Enter to advance. Type `q` and press Enter, or send EOF (Ctrl-D on an empty line), to finish early with exit 0. Ctrl-C interrupts with exit 130. Once both requests are prepared, `--keep` retains their current state after a pause, an early exit from a pause, or a completed run. Either printed `Reopen` command works after exit. Without `--keep`, exit removes the private session. A setup failure discards the incomplete session.
+At each pause, copy the printed `Inspect` command into another terminal. It runs a fresh Psyche process using the session's config and verification ID. Press Enter to advance. Type `q` and press Enter, or send EOF (Ctrl-D on an empty line), to finish early with exit 0. Ctrl-C interrupts with exit 130. With `--keep`, finishing the demo or exiting at a pause retains both requests at the last decision shown. Either printed `Reopen` command works after exit. Without `--keep`, exit removes the private session. A setup failure discards the incomplete session.
 
 For an unattended rehearsal, omit `--step`. This command completes the same decisions without reading input.
 

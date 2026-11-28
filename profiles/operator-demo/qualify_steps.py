@@ -154,7 +154,8 @@ if __name__ == "__main__":
         ("complete", None, b"", True, 0),
         ("early quit", 0, b"q\n", True, 0),
         ("terminal EOF", 1, b"\x04", True, 0),
-        ("terminal interrupt", 2, b"\x03", False, 130),
+        ("terminal interrupt with retention", 2, b"\x03", True, 130),
+        ("terminal interrupt with cleanup", 2, b"\x03", False, 130),
     ]:
         started = time.monotonic()
         rehearse(options.build_checkout, options.psyche, index, key, keep, status)
