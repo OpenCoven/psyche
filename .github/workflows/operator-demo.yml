@@ -12,6 +12,19 @@ on:
       - 'Cargo.*'
       - 'rust-toolchain.toml'
       - 'docs/G2-SCOPE-EVIDENCE.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/operator-demo.yml'
+      - 'profiles/operator-demo/**'
+      - 'crates/psyche-cli/**'
+      - 'crates/psyche-runtime/**'
+      - 'crates/psyche-store/**'
+      - 'crates/psyche-core/**'
+      - 'crates/psyche-coven/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - 'docs/G2-SCOPE-EVIDENCE.md'
 permissions:
   contents: read
 
@@ -26,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           path: psyche
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -69,12 +82,17 @@ jobs:
             done
             sed '/^CLI binary:/d; /^Private operator session:/d' "$log" > "$RUNNER_TEMP/rehearsal-$rehearsal.txt"
           done
+      - name: Operate all four pauses and exercise terminal exits
+        working-directory: psyche
+        shell: bash
+        run: python3 profiles/operator-demo/qualify_steps.py --build-checkout ../psyche-build-operator-demo | tee "$RUNNER_TEMP/stepped.txt"
       - name: Retain the bounded transcripts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: operator-demo-${{ matrix.os }}-${{ github.event.pull_request.head.sha }}
+          name: operator-demo-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
+            ${{ runner.temp }}/stepped.txt
             ${{ runner.temp }}/build-baseline.ndjson
             ${{ runner.temp }}/rehearsal-*.txt
           if-no-files-found: warn

@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -109,7 +110,7 @@ def command(psyche, root, native, label, args, expected, exit_code):
     return view
 
 
-def present_lane(psyche, root, node, canary, fixture, keys, ambiguous):
+def prepare_lane(psyche, root, node, canary, fixture, keys, ambiguous):
     name = "lost-ack" if ambiguous else "acknowledged"
     lane = root / name
     lane.mkdir()
@@ -133,6 +134,37 @@ def present_lane(psyche, root, node, canary, fixture, keys, ambiguous):
     (lane / "verification-id").write_text(verification_id + "\n", encoding="ascii")
     print(f"  Psyche verification ID: {verification_id}")
 
+    return native, verification_id
+
+
+def show_command(psyche, root, verification_id):
+    return shlex.join([str(psyche), "--config", str(root / "psyche.toml"), "verification", "show", verification_id])
+
+
+class PresenterQuit(Exception):
+    pass
+
+
+def checkpoint(psyche, root, verification_id, decision):
+    print(f"\nCheckpoint: {decision} ({verification_id})")
+    print("Inspect: " + show_command(psyche, root, verification_id))
+    while True:
+        try:
+            answer = input("Enter to continue, q to quit > ").strip().lower()
+        except EOFError:
+            raise PresenterQuit from None
+        if not answer:
+            return
+        if answer in ("q", "quit"):
+            raise PresenterQuit
+        print("Press Enter to continue or type q to quit.")
+
+
+def present_lane(psyche, root, native, verification_id, step):
+    lane = native.cwd.parent
+    before = native.check_unchanged()
+    print(f"\n{lane.name}  verification={verification_id}")
+
     def invoke(label, args, expected, exit_code):
         result = command(psyche, root, native, label, [args[0], verification_id, *args[1:]], expected, exit_code)
         require(result["verification_id"] == verification_id, f"{label}: verification ID changed")
@@ -142,11 +174,13 @@ def present_lane(psyche, root, node, canary, fixture, keys, ambiguous):
         return invoke(label, ["supply", "--verifier", root / "verify-build-binding", "--receipt", lane / receipt,
                               "--binding", lane / record, "--signature", lane / signature], expected, 0 if expected == VERIFIED else 5)
 
-    if not ambiguous:
+    if not native.ambiguous:
         missing = supply("Missing receipt", RECOVERY, receipt="absent.bin")
         require(missing["missing_evidence"] == ["receipt"], "Incorrect missing evidence")
+        if step:
+            checkpoint(psyche, root, verification_id, "Missing receipt")
         supply("Wrong signer", ("denied", "untrusted_issuer"), signature="wrong.json.sig")
-    expected = AMBIGUOUS if ambiguous else VERIFIED
+    expected = AMBIGUOUS if native.ambiguous else VERIFIED
     original = supply("Signed receipt", expected)
     receipt_digest = before["receipt_digest"]
     require((original["original_result"], original["original_code"], original["original_receipt_digest"])
@@ -154,7 +188,9 @@ def present_lane(psyche, root, node, canary, fixture, keys, ambiguous):
     native.reopen()  # Fresh native reader using only the original Build IDs and its journal.
     reopened = invoke("Reopen both", ["show"], expected, 0)  # A new psyche process opens its configured data.
     require(reopened == original, "Restart changed the persisted operator view")
-    if not ambiguous:
+    if step:
+        checkpoint(psyche, root, verification_id, "Lost acknowledgment" if native.ambiguous else "Verified receipt")
+    if not native.ambiguous:
         quarantined = supply("Signed conflict", CONFLICT, record="conflict.json", signature="conflict.json.sig")
         require((quarantined["original_result"], quarantined["original_code"], quarantined["original_receipt_digest"])
                 == (*expected, receipt_digest) and quarantined["quarantine_count"] == 1,
@@ -163,10 +199,11 @@ def present_lane(psyche, root, node, canary, fixture, keys, ambiguous):
         require(again == quarantined, "Restart changed the quarantine or the original evidence")
         print(f"  Quarantined observations: {again['quarantine_count']}. "
               f"Retained original: {again['original_result']}/{again['original_code']}")
+        if step:
+            checkpoint(psyche, root, verification_id, "Quarantined conflict")
     after = native.check_unchanged()
     require(before == after, "Build changed while verifying")
     print(f"  Original receipt {receipt_digest}\n  Unchanged Build journal {after['journal_digest']}")
-    return verification_id
 
 
 def main():
@@ -174,6 +211,7 @@ def main():
     parser.add_argument("--build-checkout", required=True, type=Path, help="clean pinned Build checkout with frozen dependencies")
     parser.add_argument("--psyche", type=Path, help="use this built Psyche CLI (default: cargo build --locked)")
     parser.add_argument("--keep", action="store_true", help="keep the private session directory for manual CLI inspection")
+    parser.add_argument("--step", action="store_true", help="pause at four decisions for read-only inspection")
     args = parser.parse_args()
     os.umask(0o077)
     cli = args.psyche.resolve(strict=True) if args.psyche else build_cli()
@@ -195,16 +233,32 @@ def main():
             for name in ("trusted", "other"):
                 canary.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "operator-demo", "-f", name], cwd=keys)
             (root / "allowed_signers").write_bytes(canary.ISSUER.encode() + b" " + (keys / "trusted.pub").read_bytes())
-            acknowledged = present_lane(cli, root, node, canary, fixture, keys, False)
-            lost_ack = present_lane(cli, root, node, canary, fixture, keys, True)
-            require(acknowledged != lost_ack, "Independent native actions must have separate verification IDs")
-        print("\nPASS  Both restarts preserved the receipts. Each Build handler ran once.")
+            print("Preparing two synthetic Build handlers and signing the examples with a disposable issuer.")
+            lanes = [prepare_lane(cli, root, node, canary, fixture, keys, ambiguous) for ambiguous in (False, True)]
+            require(lanes[0][1] != lanes[1][1], "Independent native actions must have separate verification IDs")
+        # Both effects and registrations are complete. Inspections only use the saved evidence.
+        for credential in root.glob("*/native/fixture-credentials.json"):
+            credential.unlink()
+        if args.step:
+            for native, verification_id in lanes:
+                print(f"Reopen {native.cwd.parent.name}: {show_command(cli, root, verification_id)}")
+        exit_code = 0
+        try:
+            for native, verification_id in lanes:
+                present_lane(cli, root, native, verification_id, args.step)
+        except PresenterQuit:
+            print("\nStopped at the presenter's request.")
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
+            exit_code = 130
+        else:
+            print("\nPASS  Both restarts preserved the receipts. Each Build handler ran once.")
+        for native, _ in lanes:
+            native.check_unchanged()
         if args.keep:
-            # The fixture's local socket has closed. Manual evidence inspection needs no control token.
-            for credential in root.glob("*/native/fixture-credentials.json"):
-                credential.unlink()
             retained = True
             print(f"CLI binary: {cli}\nPrivate operator session: {root}")
+        return exit_code
     finally:
         if not retained:
             shutil.rmtree(root)
@@ -212,7 +266,9 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
     except subprocess.CalledProcessError as error:
         # Native canary subprocesses capture stderr. Identify a missing host identity without printing child data.
         if error.stderr and b"No user exists for uid" in error.stderr:
