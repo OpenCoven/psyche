@@ -17,7 +17,11 @@ permissions:
 
 jobs:
   rehearse:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -57,7 +61,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: operator-demo-${{ github.event.pull_request.head.sha }}
+          name: operator-demo-${{ matrix.os }}-${{ github.event.pull_request.head.sha }}
           path: |
             ${{ runner.temp }}/build-baseline.ndjson
             ${{ runner.temp }}/rehearsal-*.txt
