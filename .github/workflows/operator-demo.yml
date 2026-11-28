@@ -34,18 +34,18 @@ jobs:
           repository: OpenCoven/psyche-build
           ref: dfd4b3cf2f06c7d415e647f778f007c6042fdbba
           persist-credentials: false
-          path: build
+          path: psyche-build-operator-demo
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
-          package_json_file: build/package.json
+          package_json_file: psyche-build-operator-demo/package.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - name: Install the reference client's frozen dependencies
-        working-directory: build
+        working-directory: psyche-build-operator-demo
         run: pnpm install --frozen-lockfile
       - name: Run the original offline Build canary
-        working-directory: build
+        working-directory: psyche-build-operator-demo
         shell: bash
         run: bash protocol-fixtures/psyche-receipt-binding/qualify.sh | tee "$RUNNER_TEMP/build-baseline.ndjson"
       - name: Build the candidate and rehearse twice from clean state
@@ -53,9 +53,21 @@ jobs:
         shell: bash
         run: |
           git rev-parse HEAD
-          cargo build --locked -p psyche-cli --bin psyche
           for rehearsal in 1 2; do
-            python3 profiles/operator-demo/run.py --build-checkout ../build --psyche target/debug/psyche | tee "$RUNNER_TEMP/rehearsal-$rehearsal.txt"
+            log="$RUNNER_TEMP/launch-$rehearsal.txt"
+            python3 profiles/operator-demo/run.py --build-checkout ../psyche-build-operator-demo --keep | tee "$log"
+            session=$(sed -n 's/^Private operator session: //p' "$log")
+            for lane in acknowledged lost-ack; do
+              id=$(cat "$session/$lane/verification-id")
+              target/debug/psyche --config "$session/psyche.toml" verification show "$id" > "$RUNNER_TEMP/$lane.json"
+              case "$lane" in
+                acknowledged) jq -e '.result == "quarantine" and .original_result == "verified" and .quarantine_count == 1 and .redispatch == false' "$RUNNER_TEMP/$lane.json" ;;
+                lost-ack) jq -e '.native_outcome == "ambiguous" and .code == "reconciliation_required" and .redispatch == false' "$RUNNER_TEMP/$lane.json" ;;
+              esac
+              test "$(wc -l < "$session/$lane/native/effects" | tr -d ' ')" = 1
+              test ! -e "$session/$lane/native/fixture-credentials.json"
+            done
+            sed '/^CLI binary:/d; /^Private operator session:/d' "$log" > "$RUNNER_TEMP/rehearsal-$rehearsal.txt"
           done
       - name: Retain the bounded transcripts
         if: always()
