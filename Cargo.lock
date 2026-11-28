@@ -670,8 +670,13 @@ name = "psyche-runtime"
 version = "0.0.0"
 dependencies = [
  "psyche-config",
+ "psyche-core",
+ "psyche-coven",
  "psyche-store",
  "rusqlite",
+ "rustix",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
