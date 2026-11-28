@@ -11,19 +11,26 @@ publish.workspace = true
 
 [dependencies]
 psyche-config = { workspace = true }
+psyche-core = { workspace = true }
+psyche-coven = { workspace = true }
 psyche-store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 # `shutdown` observers wait asynchronously for the elected synchronous driver
 # to publish its terminal outcome.
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 # `#[tokio::test]` needs the `macros` and `rt` features; the workspace entry
 # carries both.
 tokio = { workspace = true }
 rusqlite = { workspace = true }
-tempfile = { workspace = true }
 toml = { workspace = true }
 
 [lints]

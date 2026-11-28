@@ -8,6 +8,7 @@ mod execution_bindings;
 pub mod migration_test_support;
 mod migrations;
 mod quarantine;
+pub mod receipt_verification;
 mod records;
 mod retention;
 mod transitions;
@@ -100,6 +101,7 @@ impl Store {
             transaction.pragma_update(None, "user_version", CURRENT_DATABASE_VERSION)?;
         }
         migrations::validate_current_schema(&transaction)?;
+        receipt_verification::schema_present(&transaction)?;
         transaction.commit()?;
 
         Ok(Self { connection })

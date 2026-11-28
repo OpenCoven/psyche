@@ -101,6 +101,15 @@ pub enum StoreError {
         /// Digest of the competing resolution.
         resolution_digest: Sha256Digest,
     },
+    /// A local verifier input, observation, or handle is malformed or exceeds its bound.
+    #[error("receipt verification input is invalid")]
+    InvalidVerification,
+    /// A valid handle has no local verifier submission.
+    #[error("receipt verification request was not found")]
+    VerificationNotFound,
+    /// A retry supplied different bytes for an existing request, context, or policy.
+    #[error("receipt verification registration conflicts with immutable inputs")]
+    VerificationRegistrationConflict,
     /// A retention cutoff was not expressed in UTC.
     #[error("retention cutoff is invalid")]
     InvalidRetentionCutoff,

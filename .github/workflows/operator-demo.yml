@@ -1,0 +1,64 @@
+name: Operator demo
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/operator-demo.yml'
+      - 'profiles/operator-demo/**'
+      - 'crates/psyche-cli/**'
+      - 'crates/psyche-runtime/**'
+      - 'crates/psyche-store/**'
+      - 'crates/psyche-core/**'
+      - 'crates/psyche-coven/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - 'docs/G2-SCOPE-EVIDENCE.md'
+permissions:
+  contents: read
+
+jobs:
+  rehearse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          path: psyche
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: OpenCoven/psyche-build
+          ref: dfd4b3cf2f06c7d415e647f778f007c6042fdbba
+          persist-credentials: false
+          path: build
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: build/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install the reference client's frozen dependencies
+        working-directory: build
+        run: pnpm install --frozen-lockfile
+      - name: Run the original offline Build canary
+        working-directory: build
+        shell: bash
+        run: bash protocol-fixtures/psyche-receipt-binding/qualify.sh | tee "$RUNNER_TEMP/build-baseline.ndjson"
+      - name: Build the candidate and rehearse twice from clean state
+        working-directory: psyche
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          cargo build --locked -p psyche-cli --bin psyche
+          for rehearsal in 1 2; do
+            python3 profiles/operator-demo/run.py --build-checkout ../build --psyche target/debug/psyche | tee "$RUNNER_TEMP/rehearsal-$rehearsal.txt"
+          done
+      - name: Retain the bounded transcripts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: operator-demo-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/build-baseline.ndjson
+            ${{ runner.temp }}/rehearsal-*.txt
+          if-no-files-found: warn
