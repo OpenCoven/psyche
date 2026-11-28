@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opencoven:psyche:schema:psyche.delegation.v1",
+  "title": "Psyche delegation v1 (experimental, unpublished)",
+  "description": "Structural schema for one psyche.delegation.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "delegation_id",
+    "parent_node_id",
+    "child_node_id",
+    "scope_digest",
+    "budget_id",
+    "evidence_scope_digest",
+    "cancellation_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "psyche.delegation.v1"
+    },
+    "delegation_id": {
+      "$ref": "#/$defs/delegation_id"
+    },
+    "parent_node_id": {
+      "$ref": "#/$defs/graph_node_id"
+    },
+    "child_node_id": {
+      "$ref": "#/$defs/graph_node_id"
+    },
+    "scope_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "budget_id": {
+      "$ref": "#/$defs/budget_id"
+    },
+    "evidence_scope_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "cancellation_policy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    }
+  },
+  "$defs": {
+    "budget_id": {
+      "type": "string",
+      "pattern": "^bud_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "delegation_id": {
+      "type": "string",
+      "pattern": "^dlg_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "graph_node_id": {
+      "type": "string",
+      "pattern": "^nod_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    }
+  }
+}

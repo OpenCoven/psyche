@@ -43,6 +43,10 @@ sha2 = "0.10"
 time = { version = "0.3.47", features = ["formatting", "parsing", "serde"] }
 ulid = { version = "1", features = ["serde"] }
 proptest = "1"
+# Test-only Draft 2020-12 validator for the experimental JSON Schemas under
+# `schemas/`. Never a dependency of a shipped crate: the typed decoder stays the
+# only authority on validity, and the schema parity tests compare the two.
+boon = "0.6"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 thiserror = "2"

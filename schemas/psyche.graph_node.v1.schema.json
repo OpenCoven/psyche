@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opencoven:psyche:schema:psyche.graph_node.v1",
+  "title": "Psyche graph node v1 (experimental, unpublished)",
+  "description": "Structural schema for one psyche.graph_node.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts, except the decoder-only encodings listed in docs/protocol/RECORD-SCHEMAS.md (a unit enum variant as a one-member object, a closed object as a positional array), which it rejects on purpose. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "node_id",
+    "graph_id",
+    "familiar_snapshot_id",
+    "dependencies",
+    "budget_id",
+    "required_evidence",
+    "state",
+    "version"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "psyche.graph_node.v1"
+    },
+    "node_id": {
+      "$ref": "#/$defs/graph_node_id"
+    },
+    "graph_id": {
+      "$ref": "#/$defs/graph_id"
+    },
+    "familiar_snapshot_id": {
+      "$ref": "#/$defs/identity_snapshot_id"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/graph_node_id"
+      }
+    },
+    "delegation_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/delegation_id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "budget_id": {
+      "$ref": "#/$defs/budget_id"
+    },
+    "required_evidence": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "state": {
+      "enum": [
+        "proposed",
+        "admitted",
+        "rejected",
+        "blocked",
+        "ready",
+        "skipped",
+        "reserved",
+        "dispatching",
+        "adopted",
+        "adoption_unknown",
+        "proven_not_adopted",
+        "failed",
+        "running",
+        "waiting_approval",
+        "candidate",
+        "awaiting_verification",
+        "verified",
+        "escalation_required",
+        "cancelling",
+        "cancelled",
+        "termination_unknown",
+        "recovery_required"
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "$defs": {
+    "budget_id": {
+      "type": "string",
+      "pattern": "^bud_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "delegation_id": {
+      "type": "string",
+      "pattern": "^dlg_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "graph_id": {
+      "type": "string",
+      "pattern": "^grf_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "graph_node_id": {
+      "type": "string",
+      "pattern": "^nod_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "identity_snapshot_id": {
+      "type": "string",
+      "pattern": "^ids_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    }
+  }
+}

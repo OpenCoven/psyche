@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opencoven:psyche:schema:psyche.error.v1",
+  "title": "Psyche error envelope v1 (experimental, unpublished)",
+  "description": "Structural schema for one psyche.error.v1 document as accepted by psyche_core::contracts::decode_document. Experimental under #11: not a released artifact and not a stable contract. The schema accepts every document the typed decoder accepts, except the decoder-only encodings listed in docs/protocol/RECORD-SCHEMAS.md (a unit enum variant as a one-member object, a closed object as a positional array), which it rejects on purpose. It cannot express the parser-only rules listed in docs/protocol/RECORD-SCHEMAS.md, so a document that passes this schema is not thereby valid. Only the typed decoder decides validity. An error envelope is never stored and has no record identifier.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "error"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "psyche.error.v1"
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "correlation_id",
+        "details"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "config_invalid",
+            "secret_unavailable",
+            "telegram_unauthorized",
+            "telegram_bot_identity_mismatch",
+            "telegram_conflict",
+            "telegram_rate_limited",
+            "telegram_unavailable",
+            "webhook_auth_failed",
+            "storage_unavailable",
+            "event_schema_unsupported",
+            "principal_mapping_invalid",
+            "graph_invalid",
+            "delegation_widened",
+            "budget_unenforceable",
+            "evidence_incomplete",
+            "verdict_invalid",
+            "route_not_found",
+            "route_ambiguous",
+            "sender_unauthorized",
+            "identity_invalid",
+            "identity_changed",
+            "coven_unavailable",
+            "coven_version_unsupported",
+            "coven_capability_missing",
+            "coven_policy_denied",
+            "coven_execution_binding_invalid",
+            "coven_binding_mismatch",
+            "coven_artifact_rejected",
+            "coven_intent_conflict",
+            "coven_adoption_unknown",
+            "coven_cancellation_unknown",
+            "coven_session_failed",
+            "delivery_unknown",
+            "preview_finalize_blocked",
+            "media_rejected",
+            "callback_invalid"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "details": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      }
+    }
+  }
+}
