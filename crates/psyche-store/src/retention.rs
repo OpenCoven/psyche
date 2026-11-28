@@ -1,7 +1,9 @@
 use rusqlite::{TransactionBehavior, params};
 use time::format_description::well_known::Rfc3339;
 
-use crate::{Store, StoreError, execution_bindings, quarantine, records, transitions};
+use crate::{
+    Store, StoreError, execution_bindings, quarantine, receipt_verification, records, transitions,
+};
 
 /// Counts returned by one conservative retention pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -31,6 +33,7 @@ impl Store {
         records::validate_all(&transaction)?;
         execution_bindings::validate_all(&transaction)?;
         transitions::validate_all(&transaction)?;
+        receipt_verification::validate_all(&transaction)?;
         let quarantine = quarantine::all_records(&transaction)?;
         quarantine::audit_events_from_connection(&transaction)?;
 

@@ -11,6 +11,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod verification;
+
 use clap::{Parser, Subcommand};
 // From the `psyche_cli` library target, which `psyched` also links. See that
 // crate root for why the daemon path and the log subscriber are shared rather
@@ -54,6 +56,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Submit and inspect experimental Build receipt verification requests.
+    Verification {
+        #[command(subcommand)]
+        command: verification::Command,
+    },
     /// Start the daemon in the foreground. Equivalent to running `psyched`.
     Start {
         /// Start, then immediately shut down. Used by tests and smoke checks so
@@ -173,6 +180,7 @@ async fn main() -> ExitCode {
     tracing::debug!(path = %path.display(), "configuration loaded");
 
     match command {
+        Command::Verification { command } => verification::run(&config, command),
         // Returned by the match above, which is the only way `command` is
         // bound. Exhaustiveness still demands the arm; `unreachable!` is the
         // honest thing to put in it, and it names the reason so the next reader

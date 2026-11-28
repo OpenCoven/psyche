@@ -31,6 +31,13 @@ in this build.
 | `psyche stop` | **Nothing.** There is no daemon IPC in this build. Exits 4. |
 | `psyche status` | Reports that it could not observe a state, and why. |
 | `psyche doctor` | Runs local, credential-free environment checks. |
+| `psyche verification submit` | Registers the canonical request, independently observed Build context and operator-selected issuer policy. Prints a local verification ID. |
+| `psyche verification supply ID` | Runs the pinned experimental verifier against the registered inputs and candidate evidence. Prints the resulting decision and original receipt digest. |
+| `psyche verification show ID` | Reads the latest decision and original evidence digest from the local store in a fresh process. |
+
+The verification commands print JSON. A successful registration or lookup exits 0. Supplying evidence exits 0 for a verified binding and 5 for an unknown, denied or quarantined result. The native outcome comes from the original Build context. `original_result` and `original_receipt_digest` identify the first authenticated receipt, including an ambiguous receipt. Each disposition leaves dispatch disabled. The five-minute walkthrough includes a signed conflict, a lost acknowledgment, restart and a native handler witness. [Run the operator demo](../profiles/operator-demo/README.md)
+
+`missing_evidence` lists the files the operator still needs to supply for the latest submission. On registration these are `receipt`, `binding` and `signature`. An empty receipt also counts as missing. A malformed binding or signature can be present and still fail verification.
 
 `psyche stop` is listed as unimplemented rather than quietly returning 0 because
 `psyche stop && deploy` would otherwise read "the old daemon is gone" when

@@ -59,6 +59,8 @@ The GitHub workflow remains the source of truth for the full Linux, macOS, Windo
 
 ## Quick start
 
+To demonstrate receipt verification, register a Psyche request, check a native Build receipt, and reopen the result after a restart. The second example follows a lost acknowledgment through recovery. [Five-minute operator walkthrough](profiles/operator-demo/README.md)
+
 In Bash or zsh, put the installed rustup proxies first so the helpers use the version in `rust-toolchain.toml`. The PATH change applies to the current shell.
 
 ```sh
